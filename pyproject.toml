@@ -1,0 +1,44 @@
+[project]
+name = "quill-agent"
+version = "0.1.0"
+description = "本地优先的 Agent 应用：提示词、工具、会话都可配可改，业务层与 Streamlit UI 完全分离"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+
+dependencies = [
+    "streamlit>=1.40",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.5",
+    "python-dotenv>=1.0",
+    "openai>=3.14.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.8",
+]
+
+[project.scripts]
+quill = "quill_agent.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# src 布局：源码放在 src/ 下，避免本地目录被意外 import
+[tool.hatch.build.targets.wheel]
+packages = ["src/quill_agent"]
+
+[tool.ruff]
+src = ["src", "app"]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
