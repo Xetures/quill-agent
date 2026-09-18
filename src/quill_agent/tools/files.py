@@ -1,20 +1,31 @@
 """文件工具：让 Agent 能在工作目录内查看和修改文件。
 
-安全是这个模块的第一原则。这四个工具的能力边界完全由工作目录决定：
+安全是这个模块的第一原则。所有工具的能力边界完全由工作目录决定：
 模型给出的任何路径都会先过 PathGuard 校验，越界（例如 ../../.ssh/id_rsa）
 直接拒绝 —— 而不是指望模型「看到工作目录后自觉不去碰外面」。
 
-四个工具的分工：
+七个工具的分工：
 
-    list_dir    看目录里有什么（模型的「眼睛」，没有它只能猜文件名）
-    read_file   读文件内容（带行号，超长自动截断并给出续读方式）
-    write_file  写入 / 覆盖（自动建父目录，原子写入）
-    edit_file   局部替换（比整文件重写省 token，也不容易误改别处）
+    list_dir        看目录里有什么（模型的「眼睛」，没有它只能猜文件名）
+    read_file       读文件内容（带行号，超长自动截断并给出续读方式）
+    write_file      写入 / 覆盖（自动建父目录，原子写入）
+    edit_file       局部替换（比整文件重写省 token，也不容易误改别处）
+    search_content  按正则搜文件内容（跳过依赖缓存与构建产物）
+    search_files    按文件名模式找文件
+    delete_file     删除文件（写操作里最危险的一个）
 
 两条贯穿始终的约束：
     1. 读取一律截断 —— 一个几千行的文件足以把上下文吃光；
     2. 编辑要求 old_string 唯一 —— 出现多次就拒绝，逼模型给出足够上下文，
        否则它很可能改错地方。
+
+除工具之外，这个模块还兼着两件事（因为落点都是「工作目录」）：
+
+    - 工作目录本身的读写（current_work_dir / set_work_dir / clear_work_dir）
+    - 系统目录选择器与目录浏览（供界面挑目录用）
+
+它们严格说属于「界面/系统」而非「工具」，放在这里是为了保证**界面看到的目录
+和工具实际遵守的边界永远是同一个来源**。将来若要拆出去，别让这个来源分裂成两份。
 """
 
 from __future__ import annotations
@@ -35,8 +46,16 @@ from quill_agent.tools.base import registry
 # 界面选中的工作目录存这个键。有它就用它，没有就回落配置里的 work_dir。
 WORK_DIR_PREF_KEY = "work_dir"
 
-# 搜索时跳过的目录：依赖缓存、版本控制内部数据、构建产物。
+# 上传附件的落脚目录（相对工作目录）。
+# 必须放在工作目录**里面** —— 文件工具的安全边界就是工作目录，
+# 放到外面去，模型反而读不到这些附件。
+ATTACHMENTS_DIR = ".attachments"
+
+# 搜索时跳过的目录：依赖缓存、版本控制内部数据、构建产物、工具留下的临时文件。
 # 不跳过的话，搜一个函数名会被 .venv 里的几万行命中淹掉。
+#
+# 判据是「内容不是人写的，但可能大量命中」—— 所以 .playwright-cli（浏览器自动化
+# 工具存的页面快照）和 .pytest_cache 是一类，尽管它并不常见。
 IGNORED_DIRS = frozenset(
     {
         ".git",
@@ -145,6 +164,50 @@ def set_work_dir(raw: str) -> str | None:
 def clear_work_dir() -> None:
     """清除界面选择，回到配置里的默认工作目录。"""
     PreferenceStore(get_settings().preferences_path).remove(WORK_DIR_PREF_KEY)
+
+
+def save_attachments(files: list) -> list[str]:
+    """把界面上传的附件保存进工作目录。
+
+    为什么落盘、而不是把内容直接拼进消息：
+        文件工具只能访问工作目录内。落盘之后，模型用现成的 `read_file` /
+        `search_content` 就能处理附件，不必为「附件」另造一套工具语义；
+        二进制文件（PDF、图片）也能先存下来，将来接上解析工具就能直接读。
+
+    同名文件直接覆盖：附件是这一轮的输入，不需要保留历史版本。
+
+    Args:
+        files: 上传的文件对象列表（Streamlit 的 UploadedFile）。
+
+    Returns:
+        每个附件一行说明 —— 成功时是相对工作目录的路径，失败时是
+        「文件名（保存失败：原因）」。调用方把这些行原样列给模型即可。
+    """
+    if not files:
+        return []
+
+    target_dir = current_work_dir() / ATTACHMENTS_DIR
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return [f"附件目录创建失败：{exc}"]
+
+    results: list[str] = []
+    for item in files:
+        # 只取末级文件名：这个名字来自浏览器，不能当作可信路径直接用
+        name = Path(str(getattr(item, "name", "attachment"))).name or "attachment"
+
+        try:
+            # Streamlit 的 UploadedFile 是 BytesIO 子类，getbuffer() 拿到原始字节
+            raw = item.getbuffer() if hasattr(item, "getbuffer") else item.read()
+            (target_dir / name).write_bytes(bytes(raw))
+        except (OSError, AttributeError) as exc:
+            results.append(f"{name}（保存失败：{exc}）")
+            continue
+
+        results.append(f"{ATTACHMENTS_DIR}/{name}")
+
+    return results
 
 
 def guard() -> PathGuard:
@@ -273,6 +336,46 @@ def _atomic_write(target: Path, content: str) -> None:
             tmp.unlink(missing_ok=True)
 
 
+def _target(
+    path: str,
+    *,
+    want: str = "any",
+    must_exist: bool = True,
+) -> tuple[Path | None, str]:
+    """把模型给的路径解析到工作目录内，并校验存在性与类型。
+
+    这是每个文件工具都要做的第一步。原先它散在七处，文案和校验组合各不相同 ——
+    改一条规则要改七遍，还容易漏出行为不一致（比如 write_file 不判存在、
+    edit_file 把「目录」也报成「不存在」）。
+
+    Args:
+        path: 模型给的路径，相对工作目录或绝对路径都行。
+        want: 期望的类型 —— "file" / "dir" / "any"。
+        must_exist: 为 False 时允许路径还不存在（write_file 要新建文件）。
+
+    Returns:
+        (路径, 错误文案)。成功时错误是空串，失败时路径是 None。
+        文案只说明「哪里不对」；「该改用哪个工具」的建议由调用方补上 ——
+        那属于各个工具自己的语境，塞进来会让这里变成文案大全。
+    """
+    try:
+        target = guard().resolve(path)
+    except ValueError as exc:
+        # 越界（../../.ssh/id_rsa 之类）在这里被拦下，文案由 PathGuard 给
+        return None, str(exc)
+
+    if not target.exists():
+        # 允许新建时不算错：路径本身合法，只是还没落盘
+        return (target, "") if not must_exist else (None, f"路径不存在：{path}")
+
+    if want == "file" and target.is_dir():
+        return None, f"这是目录不是文件：{path}"
+    if want == "dir" and not target.is_dir():
+        return None, f"不是目录：{path}"
+
+    return target, ""
+
+
 @registry.tool(
     description=(
         "列出目录下的文件和子目录。"
@@ -292,15 +395,9 @@ def _atomic_write(target: Path, content: str) -> None:
 )
 def list_dir(path: str = ".") -> str:
     """列出目录内容。"""
-    try:
-        target = guard().resolve(path)
-    except ValueError as exc:
-        return str(exc)
-
-    if not target.exists():
-        return f"路径不存在：{path}"
-    if not target.is_dir():
-        return f"不是目录：{path}（读文件内容请用 read_file）"
+    target, error = _target(path, want="dir")
+    if error:
+        return f"{error}（读文件内容请用 read_file）"
 
     try:
         # 目录排在文件前面，各自按名称排序
@@ -351,15 +448,9 @@ def list_dir(path: str = ".") -> str:
 )
 def read_file(path: str, offset: int = 1, limit: int = DEFAULT_READ_LINES) -> str:
     """读取文件内容。"""
-    try:
-        target = guard().resolve(path)
-    except ValueError as exc:
-        return str(exc)
-
-    if not target.exists():
-        return f"文件不存在：{path}"
-    if target.is_dir():
-        return f"这是目录不是文件：{path}（看目录里有什么请用 list_dir）"
+    target, error = _target(path, want="file")
+    if error:
+        return f"{error}（看目录里有什么请用 list_dir）"
 
     try:
         size = target.stat().st_size
@@ -413,13 +504,10 @@ def read_file(path: str, offset: int = 1, limit: int = DEFAULT_READ_LINES) -> st
 )
 def write_file(path: str, content: str) -> str:
     """写入（覆盖）文件。"""
-    try:
-        target = guard().resolve(path)
-    except ValueError as exc:
-        return str(exc)
-
-    if target.is_dir():
-        return f"目标是个目录，不能当文件写入：{path}"
+    # 允许路径不存在 —— 这个工具的职责就是把它建出来
+    target, error = _target(path, want="file", must_exist=False)
+    if error:
+        return error
 
     existed = target.exists()
 
@@ -467,13 +555,9 @@ def edit_file(path: str, old_string: str, new_string: str) -> str:
     if not old_string:
         return "替换失败：old_string 不能为空。"
 
-    try:
-        target = guard().resolve(path)
-    except ValueError as exc:
-        return str(exc)
-
-    if not target.is_file():
-        return f"文件不存在：{path}"
+    target, error = _target(path, want="file")
+    if error:
+        return f"{error}（edit_file 只能改已经存在的文件）"
 
     try:
         text = target.read_text(encoding="utf-8")
@@ -589,16 +673,13 @@ def search_content(
     except re.error as exc:
         return f"正则表达式不合法：{exc}"
 
-    try:
-        instance = guard()
-        root = instance.resolve(path)
-    except ValueError as exc:
-        return str(exc)
+    root, error = _target(path, want="dir")
+    if error:
+        return f"{error}（搜索起点需要是一个目录）"
 
-    if not root.exists():
-        return f"路径不存在：{path}"
-    if not root.is_dir():
-        return f"不是目录：{path}（搜索起点需要是一个目录）"
+    # 结果里要显示相对工作目录的路径，所以还得拿一次 guard。
+    # 它只是把当前工作目录包一层，开销可以忽略
+    base = guard().root
 
     hits: list[str] = []
     scanned = 0
@@ -618,7 +699,7 @@ def search_content(
             if len(snippet) > MAX_LINE_CHARS:
                 snippet = snippet[:MAX_LINE_CHARS] + "…"
 
-            hits.append(f"{file.relative_to(instance.root)}:{number}: {snippet}")
+            hits.append(f"{file.relative_to(base)}:{number}: {snippet}")
             if len(hits) >= max(1, max_results):
                 truncated = True
                 break
@@ -672,16 +753,12 @@ def search_files(
     max_results: int = DEFAULT_MAX_RESULTS,
 ) -> str:
     """按通配符查找文件。"""
-    try:
-        instance = guard()
-        root = instance.resolve(path)
-    except ValueError as exc:
-        return str(exc)
+    root, error = _target(path, want="dir")
+    if error:
+        return f"{error}（查找起点需要是一个目录）"
 
-    if not root.exists():
-        return f"路径不存在：{path}"
-    if not root.is_dir():
-        return f"不是目录：{path}（查找起点需要是一个目录）"
+    # 结果里要显示相对工作目录的路径，所以还得拿一次 guard
+    base = guard().root
 
     matched: list[str] = []
     truncated = False
@@ -690,7 +767,7 @@ def search_files(
         if not _match_pattern(file.relative_to(root), pattern):
             continue
 
-        matched.append(str(file.relative_to(instance.root)))
+        matched.append(str(file.relative_to(base)))
         if len(matched) >= max(1, max_results):
             truncated = True
             break
@@ -722,15 +799,9 @@ def search_files(
 )
 def delete_file(path: str) -> str:
     """删除文件（不删目录）。"""
-    try:
-        target = guard().resolve(path)
-    except ValueError as exc:
-        return str(exc)
-
-    if not target.exists():
-        return f"文件不存在：{path}"
-    if target.is_dir():
-        return f"这是一个目录，本工具只删除文件：{path}"
+    target, error = _target(path, want="file")
+    if error:
+        return f"{error}（本工具只删除文件）"
 
     try:
         target.unlink()

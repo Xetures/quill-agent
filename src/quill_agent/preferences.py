@@ -14,6 +14,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from quill_agent.store import read_json
+
 # 草稿类偏好的键前缀：一个会话一份，避免互相覆盖
 DRAFT_KEY_PREFIX = "prompt_draft"
 
@@ -35,6 +37,14 @@ class PreferenceStore:
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
+
+    def all(self) -> dict[str, str]:
+        """读出全部偏好。
+
+        界面启动时要一次性拿到「上次选的模型 / 模式 / 工作目录」，逐个 `get`
+        得来回好几趟；顺便把非字符串的值过滤掉，和 `get` 的口径保持一致。
+        """
+        return {key: value for key, value in self._load().items() if isinstance(value, str)}
 
     def get(self, key: str, default: str = "") -> str:
         """读取一个偏好；不存在或不可用时返回 default。"""
@@ -69,10 +79,6 @@ class PreferenceStore:
 
     def _load(self) -> dict[str, Any]:
         """读取整个文件；任何异常都退回空字典。"""
-        try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return {}
-
+        data = read_json(self.path, {})
         # 顶层不是对象（比如手滑写成了数组）也当空处理
         return data if isinstance(data, dict) else {}

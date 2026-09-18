@@ -74,19 +74,3 @@ class PromptLibrary:
         if not path.is_file():
             return None
         return path.read_text(encoding="utf-8")
-
-    def collect(self, settings: dict[str, str]) -> dict[str, str]:
-        """按模式配置取出所有提示词正文。
-
-        Args:
-            settings: {类别: 提示词名}，即模式里的选择结果。
-
-        Returns:
-            {类别: 正文}；文件已不存在的条目会被跳过。
-        """
-        collected: dict[str, str] = {}
-        for category, name in settings.items():
-            content = self.read(category, name)
-            if content is not None:
-                collected[category] = content
-        return collected

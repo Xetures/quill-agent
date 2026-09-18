@@ -23,20 +23,18 @@ from quill_agent.store import ToolStateStore
 class ToolKind(str, Enum):
     """工具的实现形态。
 
-    本地工具走函数调用，HTTP 工具走远程请求。
-    将来接 MCP 时在这里加一个成员即可，注册表与页面都不用改结构。
+    目前只有「本地函数」一种：注册表里存的就是可调用的 Python 函数。
+    将来接 MCP 或远程工具时在这里加成员，注册表和页面都不用改结构 ——
+    但没有实际实现之前不预置占位成员：一个永远取不到的枚举值，只会让读的人
+    以为「远程工具这条路已经通了」。
     """
 
     LOCAL = "local"
-    HTTP = "http"
 
     @property
     def label(self) -> str:
         """界面展示用的名称。"""
-        return {
-            ToolKind.LOCAL: "本地",
-            ToolKind.HTTP: "HTTP",
-        }[self]
+        return {ToolKind.LOCAL: "本地"}[self]
 
 
 class ToolSpec(BaseModel):
@@ -47,7 +45,7 @@ class ToolSpec(BaseModel):
         description: 何时使用该工具 —— 模型判断的唯一依据。
         category: 分类，只用于界面筛选，不会发给模型。
         parameters: JSON Schema 格式的入参定义。
-        kind: 实现形态（本地函数 / HTTP 请求）。
+        kind: 实现形态；见 ToolKind。
         enabled: 是否启用；为假时不会出现在给模型的工具列表里。
     """
 

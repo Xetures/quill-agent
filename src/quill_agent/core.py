@@ -1,8 +1,8 @@
-"""核心逻辑层：项目的业务代码放在这里。
+"""接口连通性：测试模型服务是否可用、拉取它提供的模型列表。
 
-约束：
-- 不 import streamlit，任何 UI 相关的东西都不应出现在这一层；
-- 输入输出使用明确的类型标注，方便单独写单元测试。
+放在业务层的原因：它要发 HTTP 请求，而界面层不该自己拼 SDK 调用。
+（名字里的 core 是历史原因 —— 它并不是「核心逻辑」，业务代码分散在
+ quill_agent 包的各个模块里。）
 """
 
 from __future__ import annotations
@@ -32,11 +32,6 @@ class ConnectionResult:
     message: str
     models: list[str] = field(default_factory=list)
     detail: str = ""
-
-
-def echo(message: str) -> str:
-    """占位实现：返回原字符串。"""
-    return message
 
 
 def fetch_models(

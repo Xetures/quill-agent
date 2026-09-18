@@ -13,13 +13,22 @@ Agent 循环、API 请求、响应解析全部留白在文件末尾的 run_agent
 
 from __future__ import annotations
 
+import time
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 
-from quill_agent.agent import AgentResult, ToolStep, run_agent_stream
+from quill_agent.agent import (
+    AgentResult,
+    Notice,
+    ReasoningDelta,
+    RunStats,
+    ToolStep,
+    run_agent_stream,
+)
 from quill_agent.config import get_settings
 from quill_agent.history import ConversationStore
 from quill_agent.models import ModelChoice, ModelConfig, PromptMode, model_choice_key
@@ -148,6 +157,66 @@ def apply_page_style() -> None:
     st.markdown(PAGE_CSS, unsafe_allow_html=True)
 
 
+# 让输出区自动跟随到最新内容。
+#
+# 为什么需要它：st.container(height=...) 不会因为内容变长而自动滚动。流式内容
+# 都长在底部，用户只要不在底部（刚切会话、或往上翻了记录），就完全看不到正在
+# 生成的思考过程和回答 —— 必须手动往下拖。
+#
+# 实现要点：
+#   - components.html 的 iframe 与原页面同源，可以拿到父页面的 document；
+#   - 只在用户「本来就在底部附近」时才跟随：他手动往上翻看时不要把他拽回去；
+#   - 用定时器比对 scrollHeight，而不是监听每一次 DOM 变化 —— 流式输出每几十
+#     毫秒就改一次 DOM，那样会反复打断用户的滚动。
+AUTO_SCROLL_HTML = """
+<script>
+(function () {
+  const doc = window.parent.document;
+
+  function attach() {
+    const el = doc.querySelector('.st-key-task_output');
+    if (!el) {
+      setTimeout(attach, 300);   // 输出区可能还没渲染出来，稍后重试
+      return;
+    }
+
+    // 每次重跑后先对齐到底部：用户刚发了消息、或刚切了会话，
+    // 想看的都是最新内容。之后才交给下面的「跟随」逻辑。
+    el.scrollTop = el.scrollHeight;
+
+    let sticky = true;
+    el.addEventListener('scroll', function () {
+      // 距底部 40px 以内算「还在底部」；用户往上翻之后就不再自动跟随
+      sticky = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    });
+
+    let seen = el.scrollHeight;
+    setInterval(function () {
+      if (el.scrollHeight === seen) return;
+      seen = el.scrollHeight;
+      if (sticky) el.scrollTop = el.scrollHeight;
+    }, 200);
+  }
+
+  attach();
+})();
+</script>
+"""
+
+
+def enable_auto_scroll() -> None:
+    """让输出区在内容增长时自动滚到底部。
+
+    必须用 components.html 而不是 st.markdown(unsafe_allow_html=True)：
+    后者会把 <script> 过滤掉。height=0 表示这个 iframe 只作为脚本载体，不占空间。
+
+    时间戳注释不是装饰：它让每次重跑产出的 HTML 都不同，iframe 才会真正重新加载。
+    否则 React 会复用同一个 iframe，脚本只在第一次打开页面时执行过一次，之后重跑
+    都不会再把视图对齐到底部 —— 用户发完消息就看不到正在生成的内容。
+    """
+    components.html(f"<!--{time.time()}-->{AUTO_SCROLL_HTML}", height=0)
+
+
 def build_model_store() -> ModelStore:
     """读取模型配置，供「模型选择」使用。"""
     return ModelStore(get_settings().models_path)
@@ -195,29 +264,95 @@ def init_state() -> None:
     st.session_state.messages = store.load(conv_id)
 
 
+def format_elapsed(seconds: float) -> str:
+    """耗时展示：不到 1 秒用毫秒，够长的用秒。
+
+    两个量级都要看得清 —— 读个小文件是几毫秒，直接按秒显示永远是 0.00s，
+    等于白记。
+    """
+    if seconds < 1:
+        return f"{seconds * 1000:.0f}ms"
+    return f"{seconds:.2f}s"
+
+
+def format_stats(stats: dict) -> str:
+    """把用量字典拼成一行展示文本。
+
+    接口不支持用量统计时只会拿到耗时，所以两项都按可缺失处理。
+    """
+    parts = [f"{stats.get('elapsed', 0):.1f}s"]
+
+    total = stats.get("total_tokens", 0)
+    if total:
+        prompt_tokens = stats.get("prompt_tokens", 0)
+        completion_tokens = stats.get("completion_tokens", 0)
+        parts.append(f"{total} tokens（{prompt_tokens} in / {completion_tokens} out）")
+
+    return " · ".join(parts)
+
+
 def render_output_area():
     """第 2 块：模型返回文本的展示区。
 
-    返回容器内预留的一个空位，供流式输出实时写入 —— 这样流式文本就出现在
-    输出区里，用户在视觉上看到的是「答案在这个框里长出来」。
+    返回容器内预留的两个空位，供流式输出实时写入 —— 这样流式内容就出现在
+    输出区里，用户在视觉上看到的是「回答在这个框里长出来」。
+
+    为什么是两个空位：思考过程和正文要各自原地更新、互不覆盖。它们也必须待在
+    输出区里，不能另开一个 st.status 面板 —— 那个面板渲染在页面最底部（输入框
+    之后），思考过程越长它越膨胀，会把「一屏布局」撑破，而用户几乎看不到它。
 
     height 传入的是兜底像素值，实际高度由 PAGE_CSS 里基于 key 的样式覆盖成视口比例。
+
+    Returns:
+        (思考过程占位, 正文占位)。
     """
     with st.container(height=OUTPUT_HEIGHT, border=True, key="task_output"):
         if not st.session_state.messages:
             st.caption("模型返回的文本会显示在这里。在下方输入内容并回车开始。")
         else:
             for message in st.session_state.messages:
-                with st.chat_message(message["role"]):
-                    st.markdown(message["content"])
+                # 系统提示（没选模型、调用失败、模型空回答）单独标黄。
+                # 它不是模型说的话，也不会进入下一轮上下文
+                for notice in message.get("notices", []):
+                    st.warning(notice)
 
-                    # 工具调用过程折叠展示；它只用于回看，不会作为历史发给模型
+                # 只有提示、什么内容都没有的记录不再渲染一个空气泡
+                if (
+                    not message["content"]
+                    and not message.get("steps")
+                    and not message.get("reasoning")
+                ):
+                    continue
+
+                with st.chat_message(message["role"]):
+                    # 思维链折叠展示。模型先想后答，所以放在正文上面；
+                    # 它只在本机留存，不会回传给模型（见 build_history_messages）
+                    if message.get("reasoning"):
+                        with st.expander("💭 思考过程"):
+                            st.markdown(message["reasoning"])
+
+                    if message["content"]:
+                        st.markdown(message["content"])
+
+                    # 工具调用过程折叠展示；下一轮会由 agent 层还原成 tool 消息
+                    # 发给模型（见 build_history_messages），这里只是回看
                     for step in message.get("steps", []):
-                        with st.expander(f"🔧 {step['name']}"):
+                        # 旧记录里没有 elapsed，用 get 兜底
+                        elapsed = format_elapsed(step.get("elapsed", 0))
+                        with st.expander(f"🔧 {step['name']}　{elapsed}"):
                             st.code(step["arguments"] or "{}", language="json")
                             st.text(step["result"])
 
-        return st.empty()
+                    # 这一轮花了多久、多少 token；接口不支持用量时只有耗时
+                    if message.get("stats"):
+                        st.caption(f"⏱ {format_stats(message['stats'])}")
+
+        # 实时输出的两个位置：思考过程在上、正文在下，与历史消息的顺序一致。
+        # 没有内容时 st.empty() 不占空间，普通模型不会多看到一块空白
+        reasoning_slot = st.empty()
+        text_slot = st.empty()
+
+    return reasoning_slot, text_slot
 
 
 def render_model_picker(configs: list[ModelConfig]) -> ModelChoice | None:
@@ -564,7 +699,8 @@ def handle_submit(
     files: list,
     mode: PromptMode | None,
     model: ModelChoice | None,
-    stream_slot,
+    reasoning_slot,
+    text_slot,
 ) -> None:
     """把用户输入与选中的参数交给 run_agent()，并把结果写回历史。"""
     text = prompt.strip()
@@ -583,10 +719,15 @@ def handle_submit(
         files=files,
         mode=mode,
         model=model,
-        stream_slot=stream_slot,
+        reasoning_slot=reasoning_slot,
+        text_slot=text_slot,
     )
 
-    # 助手消息：带工具调用记录（回看用；发请求时会被过滤掉）
+    # 助手消息：带工具调用记录。它既用于界面回看，也会在下一轮被还原成
+    # tool 消息发给模型 —— 模型因此能记住「上一轮查到了什么」。
+    # notices 单独存：界面会把它们标黄，但 agent 层组历史时会跳过「没有正文
+    # 也没有工具调用」的记录，所以「请先选择模型」这类提示不会污染上下文。
+    # reasoning（思维链）同理只是本地留存，组历史时不会带上。
     remember(
         store,
         conv_id,
@@ -594,6 +735,9 @@ def handle_submit(
             "role": "assistant",
             "content": result.text,
             "steps": [asdict(step) for step in result.steps],
+            "notices": result.notices,
+            "reasoning": result.reasoning,
+            "stats": asdict(result.stats),
         },
     )
 
@@ -609,11 +753,12 @@ def main() -> None:
     # 第 1 块：标题
     st.title("quill")
     apply_page_style()
+    enable_auto_scroll()
 
     init_state()
 
-    # 第 2 块：输出区（返回值是容器内的空位，供流式输出实时写入）
-    stream_slot = render_output_area()
+    # 第 2 块：输出区（返回值是容器内的两个空位，供流式输出实时写入）
+    reasoning_slot, text_slot = render_output_area()
 
     # 第 3 块：功能区
     files, mode, model = render_toolbar(build_model_store(), build_mode_store())
@@ -630,7 +775,8 @@ def main() -> None:
             files=files,
             mode=mode,
             model=model,
-            stream_slot=stream_slot,
+            reasoning_slot=reasoning_slot,
+            text_slot=text_slot,
         )
         # 输出区在上面已经渲染过了，重跑一次才能把新消息显示进去
         st.rerun()
@@ -645,22 +791,32 @@ def run_agent(
     files: list,
     mode: PromptMode | None,
     model: ModelChoice | None,
-    stream_slot,
+    reasoning_slot,
+    text_slot,
 ) -> AgentResult:
     """流式执行一轮 Agent 对话。
 
-    文本增量写进输出区预留的空位（实时渲染），工具调用写进状态面板。
-    接口请求与上下文组装都在 src/quill_agent/agent.py，这里只负责渲染和汇总。
+    四类事件分别处理：文本增量与思维链增量写进输出区预留的两个空位（实时渲染）、
+    工具调用与系统提示写进状态面板。接口请求与上下文组装都在
+    src/quill_agent/agent.py，这里只负责渲染和汇总。
     """
     # 最后一条是本轮的 user 消息（handle_submit 刚写进去的），要排除掉：
     # 它会由 agent 层重新组装（带上运行时上下文），避免重复。
-    history = [
-        {"role": item["role"], "content": item["content"]}
-        for item in st.session_state.messages[:-1]
-    ]
+    # 其余记录整条传下去，不用在这里清洗字段 —— 把 steps（工具调用）还原成
+    # API 消息、以及历史截断，都是 agent 层的职责，见 agent.build_history_messages。
+    history = st.session_state.messages[:-1]
 
     text_parts: list[str] = []
     steps: list[ToolStep] = []
+    notices: list[str] = []
+    reasoning_parts: list[str] = []
+
+    # 用量与耗时：生成器没法「返回」值，所以由这里创建、由 agent 层就地填充
+    stats = RunStats()
+
+    # 思考过程折叠块内部的内容占位符。惰性创建：普通模型没有思维链，
+    # 就不必在输出区里留一个空的折叠块。
+    reasoning_box = None
 
     with st.status("思考中…", expanded=True) as status:
         for item in run_agent_stream(
@@ -669,20 +825,45 @@ def run_agent(
             mode=mode,
             choice=model,
             history=history,
+            stats=stats,
         ):
-            if isinstance(item, str):
+            if isinstance(item, Notice):
+                # 系统提示：先收着（稍后写进消息里标黄展示），本次运行也顺带显示
+                notices.append(item.text)
+                status.write(f"⚠️ {item.text}")
+            elif isinstance(item, ReasoningDelta):
+                # 思维链增量：实时画进输出区，最后随消息存下来供回看。
+                # 刻意「折叠块只建一次、之后只更新它内部的占位符」——
+                # 若每个增量都重建折叠块，用户手动折叠的状态会被立刻冲掉。
+                reasoning_parts.append(item.text)
+                if reasoning_box is None:
+                    with reasoning_slot.container():
+                        with st.expander("💭 思考过程", expanded=True):
+                            reasoning_box = st.empty()
+                reasoning_box.markdown("".join(reasoning_parts))
+            elif isinstance(item, str):
                 # 文本增量：追加到输出区，实时渲染
                 text_parts.append(item)
-                stream_slot.markdown("".join(text_parts))
+                text_slot.markdown("".join(text_parts))
             else:
-                # 工具调用完成：写进状态面板，让用户看到中间过程
+                # 工具调用完成：写进状态面板，让用户看到中间过程与耗时
                 steps.append(item)
-                status.write(f"🔧 调用 `{item.name}`")
+                status.write(f"🔧 调用 `{item.name}`（{format_elapsed(item.elapsed)}）")
                 status.write(f"　→ {item.result[:300]}")
 
-        status.update(label="已完成", state="complete", expanded=False)
+        status.update(
+            label="已完成" if not notices else "未完成",
+            state="error" if notices else "complete",
+            expanded=False,
+        )
 
-    return AgentResult(text="".join(text_parts), steps=steps)
+    return AgentResult(
+        text="".join(text_parts),
+        steps=steps,
+        notices=notices,
+        reasoning="".join(reasoning_parts),
+        stats=stats,
+    )
 
 
 main()

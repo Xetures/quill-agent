@@ -28,11 +28,6 @@ class Settings(BaseSettings):
     )
 
     app_name: str = Field(default="quill", description="应用名称，用于页面标题等")
-    app_debug: bool = Field(default=False, description="调试模式：开启后输出更详细的日志")
-
-    # 后续要接 LLM 时可以替换 / 扩展的配置项
-    agent_model: str = Field(default="gpt-4o-mini", description="默认模型名称")
-    openai_api_key: str = Field(default="", description="OpenAI API Key")
 
     # 模型配置的存储文件位置
     models_path: Path = Field(default=Path("data/models.json"), description="模型配置 JSON 路径")
@@ -44,10 +39,27 @@ class Settings(BaseSettings):
     # 工具：定义在代码里，这里只存开关状态
     tools_path: Path = Field(default=Path("data/tools.json"), description="工具开关状态 JSON 路径")
 
+    # 技能：一个技能 = 一个目录（内含 SKILL.md），正文由用户维护
+    skills_dir: Path = Field(default=Path("skills"), description="技能目录")
+    skills_state_path: Path = Field(
+        default=Path("data/skills.json"),
+        description="技能开关状态 JSON 路径",
+    )
+
+    # 记忆：跨会话保留的长期事实，条目由模型调用 remember 写入
+    memory_path: Path = Field(default=Path("data/memory.json"), description="记忆 JSON 路径")
+
     # 文件工具的工作目录 —— 同时是安全边界：
     # 模型给出的路径一律限制在这个目录内，越界直接拒绝。
+    #
+    # 默认值取**进程启动时**的当前目录：default_factory 在实例化配置时求值一次，
+    # 不是每次访问都求值。用 Path(".") 的话，谁中途 chdir 一下边界就跟着飘走了 ——
+    # 而这是个安全边界，不该有这种隐式行为。
+    #
+    # 生产环境建议在 .env 里显式配 WORK_DIR：默认值取决于「从哪个目录启动」，
+    # 换个启动位置就等于换了个沙箱根目录。
     work_dir: Path = Field(
-        default=Path("."),
+        default_factory=Path.cwd,
         description="文件工具的工作目录（也是安全边界）",
     )
 

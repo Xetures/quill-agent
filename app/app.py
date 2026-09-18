@@ -25,6 +25,7 @@ pages = [
     st.Page("prompt.py", title="提示词"),
     st.Page("tools.py", title="工具"),
     st.Page("skills.py", title="技能"),
+    st.Page("memory.py", title="记忆"),
     st.Page("archived.py", title="归档"),
 ]
 

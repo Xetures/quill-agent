@@ -1,0 +1,235 @@
+/* 全局样式。
+ *
+ * 三件事：
+ *   1. 两套主题的颜色变量（浅色 / 深色）
+ *   2. 页面骨架（整页撑满、字体、排版基调）
+ *   3. 消息里的 Markdown 排版
+ *
+ * 配色取自 `quill-source/color.jpg` 与图标 SVG：**深海军蓝 + 米白 + 赭金**。
+ * 整体走「纸感」—— 浅色像米白纸张，深色像靛蓝夜色。
+ *
+ * 铁律：组件里不写死颜色，一律用这里的变量。要加一套主题，只需要在下面补
+ * 一组语义色，不必去每个组件里改样式。
+ */
+
+/* ---------------------------------------------------------------------------
+ * 品牌色：两套主题共用，来自设计稿，不要随手改
+ * ------------------------------------------------------------------------- */
+:root {
+  --quill-navy: #1b3a5c; /* 深海军蓝：图标底色，也是浅色模式的主色 */
+  --quill-blue: #3a6588; /* 中蓝：次级 */
+  --quill-gold: #c8933f; /* 赭金：强调色、笔尖 */
+  --quill-cream: #f5f0e6; /* 米白：图标里的羽毛 */
+  --quill-sand: #e0ccaf; /* 浅米：分隔、次级底 */
+  --quill-slate: #535762; /* 灰蓝：中性 */
+
+  /* 侧边栏品牌区与主区顶栏共用一个高度。
+   * 两者在视觉上是同一条横带，各写一个数就会错位 —— 差 4px 都看得出来 */
+  --topbar-height: 60px;
+}
+
+/* ---------------------------------------------------------------------------
+ * 浅色模式（默认）：米白纸感
+ * ------------------------------------------------------------------------- */
+:root {
+  --bg: #faf6ee; /* 页面底色：比纯白暖一点，贴近纸 */
+  --bg-soft: #f3ecdf; /* 次级底：侧边栏、代码块 */
+  --bg-card: #fffdf8; /* 卡片：接近白，但和页面底色留一点区分 */
+  --bg-hover: #ece4d5; /* 悬停底 */
+
+  /* 正文用深蓝而不是纯黑：与品牌色同源，整页更统一，
+   * 也比 #000 柔和 —— 大段文字读起来不刺眼 */
+  --text: #1b3a5c;
+  --text-soft: #6d7a86;
+  --text-faint: #9aa5b0;
+
+  --border: #e7ddca;
+
+  --accent: #1b3a5c; /* 主色：按钮、选中、链接 */
+  --accent-hover: #26507a;
+  --accent-soft: #e9eff5; /* 主色的浅底：选中的导航项 */
+  --on-accent: #f5f0e6; /* 压在 accent 上的文字色 */
+  --gold: #c8933f; /* 强调：只用在小面积上，铺大会腻 */
+
+  --shadow-sm: 0 1px 2px rgba(27, 58, 92, 0.06);
+  --shadow: 0 2px 8px rgba(27, 58, 92, 0.08);
+}
+
+/* ---------------------------------------------------------------------------
+ * 深色模式：靛蓝夜色
+ *
+ * 只覆盖语义色，品牌色不动。两处刻意的调整：
+ *   - 主色换成亮蓝：深蓝在深底上对比度不够，按钮会「糊」进背景
+ *   - 金色提亮一档：它在这套底色上反而更出彩，适合做强调
+ * ------------------------------------------------------------------------- */
+html.dark {
+  --bg: #0f1e2b;
+  --bg-soft: #152836;
+  --bg-card: #1a3244;
+  --bg-hover: #223d52;
+
+  --text: #eae3d5;
+  --text-soft: #97a7b6;
+  --text-faint: #6b7d8c;
+
+  /* 比 accent-soft 再亮一点：深色下表格分隔线、输入框描边都要靠它才看得清 */
+  --border: #2d4a61;
+
+  --accent: #5b9bd5;
+  --accent-hover: #78b0e0;
+  --accent-soft: #1e3a52;
+  /* 深色下的主色是亮蓝，压在上面的字反而要用深色 —— 继续用米白会糊在一起 */
+  --on-accent: #0f1e2b;
+  --gold: #d9a04a;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+
+  /* 让浏览器把滚动条、原生控件也切到深色，不然会突兀地白一块 */
+  color-scheme: dark;
+}
+
+/* ---------------------------------------------------------------------------
+ * 把 Element Plus 的变量接到我们的语义色上
+ *
+ * 这样表格、输入框、下拉、弹窗这些不用逐个写样式就能融入主题。
+ * 两套主题共用这段 —— 变量本身已经分主题定义过了。
+ * ------------------------------------------------------------------------- */
+:root,
+html.dark {
+  --el-color-primary: var(--accent);
+  --el-color-primary-light-3: var(--accent-hover);
+  --el-color-primary-light-5: var(--accent-hover);
+  --el-color-primary-light-7: var(--accent-soft);
+  --el-color-primary-light-8: var(--accent-soft);
+  --el-color-primary-light-9: var(--accent-soft);
+  --el-color-primary-dark-2: var(--accent-hover);
+
+  --el-bg-color: var(--bg-card);
+  --el-bg-color-overlay: var(--bg-card);
+  --el-bg-color-page: var(--bg);
+
+  --el-text-color-primary: var(--text);
+  --el-text-color-regular: var(--text);
+  --el-text-color-secondary: var(--text-soft);
+  --el-text-color-placeholder: var(--text-faint);
+
+  --el-border-color: var(--border);
+  --el-border-color-light: var(--border);
+  --el-border-color-lighter: var(--border);
+  --el-border-color-extra-light: var(--border);
+
+  --el-fill-color-blank: var(--bg-card);
+  --el-fill-color-light: var(--bg-soft);
+  --el-fill-color: var(--bg-soft);
+
+  --el-mask-color: rgba(15, 30, 43, 0.6);
+  --el-font-family: inherit;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+
+  /* 切主题时整页平滑过渡。只过渡颜色，别把布局属性也带上 —— 那会让
+   * 抽屉、折叠这类动画变得黏糊 */
+  transition:
+    background-color 0.2s ease,
+    color 0.2s ease;
+}
+
+/* ---------- 工具类 ---------- */
+
+.muted {
+  color: var(--text-soft);
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
+  font-size: 12px;
+}
+
+/* 页面外壳：所有页面用它保证「撑满 + 自己滚动」 */
+.page {
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px 24px;
+}
+
+/* 页面里的第一行：放筛选、搜索这类控件。
+ * 标题不在里面了 —— 它们由各页面 Teleport 到顶栏（见 App.vue） */
+.page-head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+/* ---------- 消息里的 Markdown ---------- */
+
+.md > *:first-child {
+  margin-top: 0;
+}
+
+.md > *:last-child {
+  margin-bottom: 0;
+}
+
+.md pre {
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  overflow-x: auto;
+}
+
+.md code {
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
+  font-size: 12.5px;
+}
+
+.md :not(pre) > code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--bg-soft);
+  color: var(--gold); /* 行内代码用金色点一下，和正文区分开 */
+}
+
+.md table {
+  border-collapse: collapse;
+}
+
+.md th,
+.md td {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+}
+
+.md blockquote {
+  margin: 8px 0;
+  padding-left: 12px;
+  border-left: 3px solid var(--border);
+  color: var(--text-soft);
+}
+
+.md a {
+  color: var(--accent);
+}

@@ -1,4 +1,4 @@
-.PHONY: install dev run test lint fmt clean
+.PHONY: install dev run api web test lint fmt clean
 
 install:            ## 安装运行时依赖
 	uv sync
@@ -6,8 +6,14 @@ install:            ## 安装运行时依赖
 dev:                ## 安装运行时 + 开发依赖
 	uv sync --extra dev
 
-run:                ## 启动 Streamlit UI
+run:                ## 启动 Streamlit UI（旧界面，8501）
 	uv run streamlit run app/app.py
+
+api:                ## 启动后端 API（FastAPI，8000）
+	uv run uvicorn server.main:app --reload --port 8000
+
+web:                ## 启动前端开发服务器（Vue，5173）
+	cd web && npm run dev
 
 cli:                ## 运行命令行入口
 	uv run quill -v
