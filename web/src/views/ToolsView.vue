@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Plus } from '@element-plus/icons-vue'
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 
 import { api } from '../api/client'
 import type { ToolGroup, ToolSpec } from '../api/types'
@@ -57,26 +57,57 @@ async function load(): Promise<void> {
 const dialogOpen = ref(false)
 /** 正在编辑的组 id；空串表示新建。 */
 const editingId = ref('')
-const form = reactive({ name: '', description: '', tools: [] as string[] })
+const form = reactive({
+  name: '',
+  description: '',
+  tools: [] as string[],
+  /** `tools` 里每次调用都要用户点头的那些。是它的子集，见下面那个 watch。 */
+  confirm: [] as string[],
+})
 
 function openCreate(): void {
   editingId.value = ''
   form.name = ''
   form.description = ''
   form.tools = []
+  form.confirm = []
   dialogOpen.value = true
 }
 
-function openEdit(id: string, name: string, description: string, toolNames: string[]): void {
+function openEdit(
+  id: string,
+  name: string,
+  description: string,
+  toolNames: string[],
+  confirmNames: string[],
+): void {
   editingId.value = id
   form.name = name
   form.description = description
   // 拷贝一份再改：直接绑原数组的话，取消编辑也会改动列表里的数据
   form.tools = [...toolNames]
+  form.confirm = [...(confirmNames ?? [])]
   dialogOpen.value = true
 }
 
 const canSubmit = computed(() => Boolean(form.name.trim() && form.description.trim()))
+
+/**
+ * 可以要求确认的候选：只有组内已有的工具。
+ *
+ * 「不在场却要求确认」是自相矛盾的配置（那个工具压根不会发给模型），后端会直接
+ * 400。与其让用户撞一次报错，不如这里就不给选。
+ */
+const confirmableTools = computed(() => tools.value.filter((tool) => form.tools.includes(tool.name)))
+
+// 工具被移出组时，连带把它从「需要确认」里摘掉 —— 否则提交必然 400
+watch(
+  () => [...form.tools],
+  () => {
+    form.confirm = form.confirm.filter((name) => form.tools.includes(name))
+  },
+  { deep: true },
+)
 
 /** 全选：一次把所有工具放进组里。工具总数不多，比逐个点省事。 */
 function selectAllTools(): void {
@@ -90,6 +121,7 @@ async function submit(): Promise<void> {
     name: form.name.trim(),
     description: form.description.trim(),
     tools: form.tools,
+    confirm: form.confirm,
   }
 
   try {
@@ -185,7 +217,7 @@ onMounted(() => {
                 size="small"
                 text
                 type="primary"
-                @click="openEdit(row.id, row.name, row.description, row.tools)"
+                @click="openEdit(row.id, row.name, row.description, row.tools, row.confirm)"
               >
                 编辑
               </el-button>
@@ -276,6 +308,40 @@ onMounted(() => {
             </el-select>
           </div>
         </el-form-item>
+
+        <!-- 「给，但动手前问我」。这是把 run_command 这类工具变得敢用的关键一档：
+             没有它，用户只能在「把一台机器交给模型」和「这工具一点用没有」之间选 -->
+        <el-form-item label="需要确认">
+          <div class="select-block">
+            <span class="muted confirm-hint">
+              勾上的工具每次调用前都会停下来问你一句。留空表示全部直接执行。
+            </span>
+
+            <el-select
+              v-model="form.confirm"
+              multiple
+              collapse-tags
+              collapse-tags-tooltip
+              popper-class="tool-opt-popper"
+              :disabled="!form.tools.length"
+              :placeholder="
+                form.tools.length ? '这些工具每次调用都要你点头' : '先从上面选几个工具'
+              "
+              class="tool-select"
+            >
+              <el-option
+                v-for="tool in confirmableTools"
+                :key="tool.name"
+                :label="tool.name"
+                :value="tool.name"
+              >
+                <span class="opt-name mono">{{ tool.name }}</span>
+                <el-tag size="small" effect="plain">{{ tool.category }}</el-tag>
+                <span class="opt-desc muted">{{ tool.description }}</span>
+              </el-option>
+            </el-select>
+          </div>
+        </el-form-item>
       </el-form>
 
       <template #footer>
@@ -345,6 +411,12 @@ onMounted(() => {
 
 .tool-select {
   width: 100%;
+}
+
+.confirm-hint {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12px;
 }
 
 /* 工具列表：一行「已选 x/y」+ 全选 / 清空，再下面是多选下拉 */

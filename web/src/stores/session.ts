@@ -10,7 +10,7 @@
 
 import { reactive } from 'vue'
 
-import { streamChat } from '../api/chat'
+import { answerQuestion as postAnswer, cancelRun, streamChat } from '../api/chat'
 import { api } from '../api/client'
 import type {
   ConversationBrief,
@@ -19,6 +19,8 @@ import type {
   ModeList,
   ModelOption,
   PickResult,
+  Question,
+  SubagentEvent,
   WorkDirInfo,
 } from '../api/types'
 import { errorText } from '../utils/error'
@@ -56,6 +58,31 @@ export const session = reactive({
 
   /** 正在跑一轮对话；期间禁用输入。 */
   busy: false,
+
+  /**
+   * 运行中抛回来、还没回答的问题（目前只有执行前确认）。
+   *
+   * 挂在会话上而不是那条流式消息上：它要在消息列表**下方**渲染成一张卡片，
+   * 答完就消失。混进消息里的话，它会跟着消息一起写进会话文件 ——
+   * 回看历史时会看到一串早已失效的按钮。
+   */
+  pendingQuestion: null as Question | null,
+
+  /**
+   * 正在跑的运行 id（来自流开头的 `start` 事件）。空串表示没有在跑。
+   *
+   * 必须存下来：取消接口要它，而它是**运行开始时才生成的** —— 前端除了从流里接住
+   * 没有别的办法知道。
+   */
+  activeRunId: '',
+
+  /**
+   * 子代理的实时动静（它调了哪些工具）。
+   *
+   * 子代理的中间过程**不进这条消息**（那正是它存在的意义），所以单独播一份出来；
+   * 它跑完（`spawn_agent` 那一步到达）就清空 —— 成品在工具步骤里，看板没必要留着。
+   */
+  subagentEvents: [] as SubagentEvent[],
 })
 
 /** 后端偏好文件里的键。 */
@@ -294,16 +321,28 @@ export async function sendMessage(options: {
       mode_id: session.modeId,
       files,
     })) {
-      if (event.type === 'text') {
+      if (event.type === 'start') {
+        session.activeRunId = event.runId
+      } else if (event.type === 'text') {
         reply.content += event.text
         void onProgress?.()
       } else if (event.type === 'reasoning') {
         reply.reasoning = (reply.reasoning ?? '') + event.text
       } else if (event.type === 'tool') {
         reply.steps?.push(event.step)
+        // 子代理那一步到了 = 它跑完了，实时看板收掉（成品已经在这个步骤里）
+        if (event.step.name === 'spawn_agent') session.subagentEvents = []
+        void onProgress?.()
+      } else if (event.type === 'subagent') {
+        session.subagentEvents.push(event.event)
         void onProgress?.()
       } else if (event.type === 'notice') {
         reply.notices?.push(event.text)
+      } else if (event.type === 'question') {
+        // 这一轮会在服务端**卡在这里等答案**，流不会继续往下走。
+        // 卡片在消息列表下方，所以要滚一下，否则用户只看到界面停了
+        session.pendingQuestion = event.question
+        void onProgress?.()
       } else if (event.type === 'done') {
         // 以后端落盘的那份为准：字段更全，也和之后从历史里读出来的一致
         Object.assign(reply, event.message)
@@ -313,9 +352,65 @@ export async function sendMessage(options: {
     reply.notices?.push(`请求失败：${errorText(exc)}`)
   } finally {
     session.busy = false
+    // 流都结束了还留着一张卡片，用户会以为还能点 —— 点了也没人接
+    session.pendingQuestion = null
+    // 运行已经收尾，再留着这个 id 只会让「停止」按钮指向一个不存在的运行
+    session.activeRunId = ''
+    // 被取消 / 出错时子代理看板可能还在，一并收掉
+    session.subagentEvents = []
     void onProgress?.()
     // 标题和排序时间可能变了，刷一下侧边栏
     void loadConversations()
+  }
+}
+
+/**
+ * 停止正在跑的这一轮。
+ *
+ * **不在这里把 `busy` 改成 false。** 服务端的取消是「请求停止」：标记立起来之后，
+ * agent 循环在下一个检查点退出，中间可能还要跑一小会儿（正在等的那次模型请求会先结束）。
+ * 提前解锁输入框会让用户以为可以发下一条，而那一轮其实还在收尾。
+ * 真正的结束信号始终是流里收到 `done` —— 到时候 `sendMessage` 的 finally 会收拾状态。
+ */
+export async function stopRun(): Promise<void> {
+  const runId = session.activeRunId
+  if (!runId) return
+
+  try {
+    const accepted = await cancelRun(runId)
+    if (!accepted) {
+      // 和回答一样：没被接受通常是正常竞态（那一轮刚好自己结束了），不弹错误。
+      // 真正的失败信号在流那边 —— 收不到 done 才是要管的事
+      console.warn('取消请求没有被接受，这一轮可能已经结束')
+    }
+  } catch (exc) {
+    // 网络出错同理：这一轮多半也收不到 done，但那是另一条流自己会处理的事，
+    // 不该让一个 rejected promise 冒到点击处理器外面去
+    console.warn('取消请求没有发出去：', errorText(exc))
+  }
+}
+
+/**
+ * 回答运行中抛出的一个问题。
+ *
+ * 答完**不重发 `/chat`** —— 那一轮还在服务端跑着，只是卡在等这个答案上。
+ * 我们只把答案递过去，然后继续从原来那条流里收后续事件。
+ */
+export async function answerQuestion(value: string): Promise<void> {
+  const question = session.pendingQuestion
+  if (!question) return
+
+  // 先清掉再发：两个按钮都点一下的话，第二个请求会因为 id 对不上而被拒
+  session.pendingQuestion = null
+
+  const accepted = await postAnswer(question.run_id, question.id, value)
+
+  if (!accepted) {
+    // 没被接受**通常是正常竞态**（点「允许」的同时那一轮刚好超时结束），
+    // 所以不弹错误，但必须说一句 —— 不说的话用户会以为答案生效了，
+    // 而模型那边收到的其实是「没能问到用户」
+    const last = session.messages[session.messages.length - 1]
+    last?.notices?.push('这个回答没能送达（这一轮可能已经结束或被中断），模型未必看得到它。')
   }
 }
 

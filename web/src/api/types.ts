@@ -173,6 +173,13 @@ export interface ToolGroup {
   name: string
   description: string
   tools: string[]
+  /**
+   * `tools` 里**每次调用都要用户点头**的那些（是它的子集）。
+   *
+   * 用来表达「给，但动手前问我」这一档：没有它，`run_command` 这类工具就只能
+   * 在「加进组 = 把一台机器交出去」和「不加 = 一点用没有」之间二选一。
+   */
+  confirm: string[]
 }
 
 export interface SkillItem {
@@ -247,10 +254,55 @@ export interface UsageReport {
   tasks: UsageTask[]
 }
 
+/**
+ * 运行中抛给用户的一个问题。
+ *
+ * 目前只有一种来源：**执行前确认** —— 某个工具被标成「需要确认」（工具组的
+ * `confirm`），或者 `run_command` 认出这条命令看着危险。模型主动提问走的是同一条
+ * 通道，前端不用改就能支持。
+ */
+export interface Question {
+  /** 哪一次运行在等 —— 回答时要带上它，服务端靠它找到那一轮。 */
+  run_id: string
+  /** 问题的 id。答案按它匹配；不带的话迟到的答案会落到下一个问题上。 */
+  id: string
+  /**
+   * `confirm`（执行前确认）/ `ask`（模型提问）/ `plan`（审批一份实施方案）。
+   *
+   * 三者决定卡片长什么样：`confirm` 和 `ask` 都是「要不要做」，`plan` 多一份要读的
+   * 正文（用 Markdown 渲染）和一句可选的意见。
+   */
+  kind: 'confirm' | 'ask' | 'plan'
+  text: string
+  /**
+   * 补充材料：确认题放要执行的命令，计划题放**计划正文**。
+   * 用户就是靠它做判断的，所以它不能省。
+   */
+  detail: string
+  /** 可选项；为空表示让用户自由输入。 */
+  options: string[]
+  /** 等待上限（秒），给倒计时用。 */
+  timeout: number
+}
+
+/**
+ * 子代理干活时播报的一行动静。
+ *
+ * 子代理有自己的一份上下文，它的中间过程**不进这条消息** —— 所以单独播出来，
+ * 否则一个几十秒的 `spawn_agent` 期间界面上什么都没有，看着像卡死了。
+ */
+export type SubagentEvent =
+  | { type: 'tool'; name: string; arguments: string }
+  | { type: 'notice'; text: string }
+
 /** 一轮对话里 SSE 推回来的事件。 */
 export type ChatEvent =
+  /** 这一轮开始，带着它的 id。取消要用它，所以必须最先到。 */
+  | { type: 'start'; runId: string }
   | { type: 'text'; text: string }
   | { type: 'reasoning'; text: string }
   | { type: 'tool'; step: ToolStep }
   | { type: 'notice'; text: string }
+  | { type: 'question'; question: Question }
+  | { type: 'subagent'; event: SubagentEvent }
   | { type: 'done'; message: Message }

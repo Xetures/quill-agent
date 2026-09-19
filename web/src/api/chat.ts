@@ -7,7 +7,7 @@
  * 自己解析的代码量比引一个库还少。
  */
 
-import type { ChatEvent, Message, ToolStep } from './types'
+import type { ChatEvent, Message, Question, SubagentEvent, ToolStep } from './types'
 
 const BASE = '/api'
 
@@ -87,6 +87,8 @@ function parseBlock(block: string): ChatEvent | null {
   const payload = JSON.parse(data) as Record<string, unknown>
 
   switch (name) {
+    case 'start':
+      return { type: 'start', runId: String(payload.run_id ?? '') }
     case 'text':
       return { type: 'text', text: String(payload.text ?? '') }
     case 'reasoning':
@@ -95,9 +97,60 @@ function parseBlock(block: string): ChatEvent | null {
       return { type: 'notice', text: String(payload.text ?? '') }
     case 'tool':
       return { type: 'tool', step: payload as unknown as ToolStep }
+    case 'question':
+      return { type: 'question', question: payload as unknown as Question }
+    case 'subagent':
+      return { type: 'subagent', event: payload as unknown as SubagentEvent }
     case 'done':
       return { type: 'done', message: payload as unknown as Message }
     default:
       return null
   }
+}
+
+/**
+ * 回答运行中抛出的一个问题。
+ *
+ * **单独一个普通 POST，不走那条 SSE。** 流的方向始终是「服务端 → 前端」，
+ * 中途回传一次用户输入不值得把整条通道换成 WebSocket；而请求-响应天然能重试、
+ * 能超时，也不用在流里再定一套反向协议。
+ *
+ * 返回 false 表示这次回答没被接受 —— 通常是**正常竞态**（点「允许」的同时那一轮
+ * 刚好超时结束了）。所以调用方不要把它当错误弹提示。
+ */
+export async function answerQuestion(
+  runId: string,
+  questionId: string,
+  answer: string,
+): Promise<boolean> {
+  const response = await fetch(`${BASE}/chat/answer`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ run_id: runId, question_id: questionId, answer }),
+  })
+
+  if (!response.ok) return false
+
+  const body = (await response.json()) as { accepted?: boolean }
+  return body.accepted === true
+}
+
+/**
+ * 停止一次运行。
+ *
+ * 注意它只是**请求停止**：接口返回 true 表示标记立起来了，真正结束仍以流里收到
+ * `done` 为准。所以调用方不要在这里就把界面切成「空闲」—— 那一轮可能还要跑一小会儿，
+ * 提前解锁输入框会让用户以为能发下一条了。
+ */
+export async function cancelRun(runId: string): Promise<boolean> {
+  const response = await fetch(`${BASE}/chat/cancel`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ run_id: runId }),
+  })
+
+  if (!response.ok) return false
+
+  const body = (await response.json()) as { cancelled?: boolean }
+  return body.cancelled === true
 }

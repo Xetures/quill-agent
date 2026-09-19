@@ -19,7 +19,7 @@ def test_saves_attachment_into_work_dir(monkeypatch, tmp_path: Path) -> None:
 
     results = files.save_attachments([FakeUpload("a.txt", b"hello")])
 
-    assert results == [f"{files.ATTACHMENTS_DIR}/a.txt"]
+    assert [item.describe() for item in results] == [f"{files.ATTACHMENTS_DIR}/a.txt"]
     assert (tmp_path / files.ATTACHMENTS_DIR / "a.txt").read_bytes() == b"hello"
 
 
@@ -29,7 +29,7 @@ def test_attachment_name_cannot_escape_work_dir(monkeypatch, tmp_path: Path) -> 
 
     results = files.save_attachments([FakeUpload("../../evil.txt", b"x")])
 
-    assert results == [f"{files.ATTACHMENTS_DIR}/evil.txt"]
+    assert [item.describe() for item in results] == [f"{files.ATTACHMENTS_DIR}/evil.txt"]
     assert not (tmp_path.parent / "evil.txt").exists()
 
 
@@ -58,7 +58,10 @@ def test_multiple_attachments(monkeypatch, tmp_path: Path) -> None:
         [FakeUpload("a.txt", b"1"), FakeUpload("b.md", b"2")],
     )
 
-    assert results == [f"{files.ATTACHMENTS_DIR}/a.txt", f"{files.ATTACHMENTS_DIR}/b.md"]
+    assert [item.describe() for item in results] == [
+        f"{files.ATTACHMENTS_DIR}/a.txt",
+        f"{files.ATTACHMENTS_DIR}/b.md",
+    ]
 
 
 # ---------------------------------------------------------------------------

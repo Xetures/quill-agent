@@ -1,17 +1,27 @@
 <script setup lang="ts">
-import { Plus, Promotion } from '@element-plus/icons-vue'
+import {
+  CloseBold,
+  Document,
+  Loading,
+  Plus,
+  Promotion,
+  WarningFilled,
+} from '@element-plus/icons-vue'
 import { computed, nextTick, ref, watch } from 'vue'
 
 import ContextMeter from '../components/ContextMeter.vue'
 import MessageItem from '../components/MessageItem.vue'
 import WorkDirPicker from '../components/WorkDirPicker.vue'
+import { renderMarkdown } from '../utils/markdown'
 import {
+  answerQuestion,
   loadDraft,
   persistMode,
   persistModel,
   saveDraft,
   sendMessage,
   session,
+  stopRun,
 } from '../stores/session'
 
 // 这里读到的 currentId 多半还是空串 —— bootstrap 在父组件 App 的 onMounted 里
@@ -58,6 +68,54 @@ async function scrollToBottom(): Promise<void> {
   await nextTick()
   // 传一个足够大的值，滚动条内部会自己夹到实际最大位置
   scrollBox.value?.setScrollTop(Number.MAX_SAFE_INTEGER)
+}
+
+/**
+ * 模型主动提问时的自由输入（确认题给按钮，用不到它）。
+ *
+ * 提问卡片的几种形态共用 `answerTo`：选项按钮和输入框最终都是「抛一个字符串回去」。
+ */
+const freeAnswer = ref('')
+
+/** 审批计划时写在按钮旁边的那句补充说明（驳回时用来说明要改什么）。 */
+const planNote = ref('')
+
+const isPlan = computed(() => session.pendingQuestion?.kind === 'plan')
+
+const planHtml = computed(() => renderMarkdown(session.pendingQuestion?.detail ?? ''))
+
+/** 子代理看板只看尾巴。它的完整过程没必要留在屏幕上，那是它自己上下文里的事。 */
+const SUBAGENT_TAIL = 6
+
+const recentSubagentEvents = computed(() =>
+  session.subagentEvents.slice(-SUBAGENT_TAIL),
+)
+
+/** 工具参数是一整块 JSON，压成一行放着；太长就砍掉。 */
+function abbreviate(text: string, limit = 88): string {
+  const flat = (text ?? '').replace(/\s+/g, ' ')
+  return flat.length > limit ? `${flat.slice(0, limit)}…` : flat
+}
+
+/**
+ * 把「按钮 + 补充说明」拼成回传的字符串。
+ *
+ * 约定：**第一行是按钮文本，其余是补充说明**（后端 `builtin.submit_plan` 按第一个
+ * 换行切开）。用换行而不是冒号当分隔符，是因为用户写的说明里完全可能有冒号，
+ * 而按钮文本那一行一定是干净的。
+ */
+function compose(option: string): string {
+  const note = planNote.value.trim()
+  planNote.value = ''
+  return note ? `${option}\n${note}` : option
+}
+
+async function answerTo(value: string): Promise<void> {
+  freeAnswer.value = ''
+  // 清掉残留：计划卡片消失之后那半句说明不该留到下一次提问上
+  planNote.value = ''
+  await answerQuestion(value)
+  void scrollToBottom()
 }
 
 function pickFiles(): void {
@@ -111,6 +169,99 @@ function onKeydown(event: Event | KeyboardEvent): void {
     <el-scrollbar ref="scrollBox" class="stream">
       <div class="stream-inner">
         <MessageItem v-for="(message, index) in session.messages" :key="index" :message="message" />
+
+        <!-- 子代理正在干活。它的中间过程**不进这条消息**（那正是它存在的意义），
+             所以单独开一块把它调了哪些工具播出来 —— 否则一个几十秒的工具调用期间
+             界面上什么都没有，看着像卡死了。
+
+             只显示最近几条：这是个「现在在干嘛」的看板，不是日志。成品在它的
+             工具步骤里，跑完自己就收掉了。 -->
+        <div v-if="recentSubagentEvents.length" class="confirm subagent">
+          <div class="confirm-head">
+            <el-icon class="confirm-icon spin"><Loading /></el-icon>
+            <span>子代理正在工作</span>
+          </div>
+
+          <div class="subagent-log">
+            <div v-for="(item, index) in recentSubagentEvents" :key="index" class="subagent-line">
+              <span v-if="item.type === 'tool'" class="mono">
+                → {{ item.name }} {{ abbreviate(item.arguments) }}
+              </span>
+              <span v-else class="muted">{{ item.text }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 执行前确认。这一轮在服务端**卡在这里等答案**，流不会继续往下走。
+
+             放在消息流末尾而不是弹窗：该不该允许，判断依据就在上面的上下文里
+             （模型说它要干什么、之前调过什么），弹窗会把那些盖住。 -->
+        <div v-if="session.pendingQuestion" class="confirm">
+          <div class="confirm-head">
+            <!-- 图标跟着 kind 走：审批计划不是「警告」，用警示图标会让人以为出了事 -->
+            <el-icon class="confirm-icon">
+              <component :is="isPlan ? Document : WarningFilled" />
+            </el-icon>
+            <span>{{ session.pendingQuestion.text }}</span>
+          </div>
+
+          <!-- 计划用 Markdown 渲染：它是要读的方案（标题、列表、代码块都有），
+               塞进等宽 pre 里会糊成一坨。样式复用全局的 .md -->
+          <div
+            v-if="isPlan && session.pendingQuestion.detail"
+            class="md confirm-plan"
+            v-html="planHtml"
+          />
+          <!-- 确认题的 detail 是「要执行的命令」：等宽 + 原样保留换行才看得准 -->
+          <pre v-else-if="session.pendingQuestion.detail" class="confirm-detail">{{
+            session.pendingQuestion.detail
+          }}</pre>
+
+          <!-- 驳回计划时得说清要改什么，否则模型只能猜。批准时也可以补充 -->
+          <el-input
+            v-if="isPlan"
+            v-model="planNote"
+            size="small"
+            class="confirm-note"
+            placeholder="补充说明（驳回时请写清要改什么）"
+          />
+
+          <div class="confirm-actions">
+            <!-- 有选项就给按钮：选项就那么两三个，点一下比打字快也更不容易出错。
+                 第一个是肯定项（后端按 options=(批准, 驳回) 定义），给主色 -->
+            <template v-if="session.pendingQuestion.options.length">
+              <el-button
+                v-for="(option, index) in session.pendingQuestion.options"
+                :key="option"
+                size="small"
+                :type="index === 0 ? 'primary' : 'default'"
+                @click="answerTo(compose(option))"
+              >
+                {{ option }}
+              </el-button>
+            </template>
+
+            <!-- 模型主动提问时通常没有选项，退回输入框 -->
+            <template v-else>
+              <el-input
+                v-model="freeAnswer"
+                size="small"
+                class="confirm-input"
+                placeholder="输入你的回答"
+                @keydown.enter="freeAnswer.trim() && answerTo(freeAnswer)"
+              />
+              <el-button
+                size="small"
+                type="primary"
+                :disabled="!freeAnswer.trim()"
+                @click="answerTo(freeAnswer)"
+              >
+                回答
+              </el-button>
+            </template>
+          </div>
+        </div>
+
         <el-empty v-if="!session.messages.length" description="在下面输入内容，开始对话" />
       </div>
     </el-scrollbar>
@@ -189,13 +340,23 @@ function onKeydown(event: Event | KeyboardEvent): void {
           "
           @keydown="onKeydown"
         />
-        <!-- 图标按钮融进输入框右下角，比一整块「发送」按钮克制 -->
+        <!-- 图标按钮融进输入框右下角，比一整块按钮克制。
+             跑着的时候，同一个位置换成「停止」—— 那是此刻最想做的动作，
+             不该另找个地方放它。用户不用在界面里找第二个按钮 -->
         <el-button
+          v-if="session.busy"
+          class="send"
+          circle
+          :icon="CloseBold"
+          title="停止这一轮"
+          @click="stopRun"
+        />
+        <el-button
+          v-else
           class="send"
           type="primary"
           circle
           :icon="Promotion"
-          :loading="session.busy"
           :disabled="!canSend"
           title="发送"
           @click="send"
@@ -225,6 +386,104 @@ function onKeydown(event: Event | KeyboardEvent): void {
   flex-direction: column;
   gap: 14px;
   padding: 16px 20px;
+}
+
+/* ---------- 执行前确认 ----------
+ * 它是「这一轮停在这里等你」，不是一条消息 —— 所以用警示色描边，
+ * 在一屏对话里一眼能找到，又不像错误提示那样吓人
+ */
+.confirm {
+  padding: 12px 14px;
+  border: 1px solid var(--warn, #c8933f);
+  border-radius: 8px;
+  background: var(--bg-soft);
+}
+
+.confirm-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.confirm-icon {
+  color: var(--warn, #c8933f);
+}
+
+/* 要执行的命令 / 要动的东西。等宽 + 可滚，命令里的空格和换行必须原样保留 */
+.confirm-detail {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  max-height: 220px;
+  overflow: auto;
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text-soft);
+  font-family: var(--mono, monospace);
+  font-size: 12px;
+  /* pre：保留换行；pre-wrap 让长命令自己折行，不至于横向撑出去 */
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* 计划正文。它比一条命令长得多，所以给高度上限、超出在卡片内滚动 ——
+ * 不然一份详细计划会把输入框顶到屏幕外面去 */
+.confirm-plan {
+  margin-top: 10px;
+  max-height: 340px;
+  overflow: auto;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.confirm-note {
+  margin-top: 10px;
+}
+
+/* ---------- 子代理看板 ---------- */
+
+.subagent {
+  /* 它是个「进行中」的提示，比待确认的卡片弱一档：
+   * 虚线边框而不是实线，不抢注意力 */
+  border-style: dashed;
+}
+
+.subagent-log {
+  margin-top: 10px;
+  max-height: 160px;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.subagent-line {
+  /* 长参数压一行，超出部分省略；不折行，免得把看板撑成一大块 */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-soft);
+}
+
+/* 图标转起来 —— 不转的话它看着像个静态装饰，传达不了「还在跑」 */
+.spin {
+  animation: spin 1.4s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.confirm-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.confirm-input {
+  max-width: 320px;
 }
 
 .composer {

@@ -153,7 +153,14 @@ class ToolGroupStore:
         """按组名查找 —— 组名对用户是主要标识，用它判断重名。"""
         return next((item for item in self.list() if item.name == name), None)
 
-    def add(self, *, name: str, description: str, tools: list[str]) -> ToolGroup:
+    def add(
+        self,
+        *,
+        name: str,
+        description: str,
+        tools: list[str],
+        confirm: list[str] | None = None,
+    ) -> ToolGroup:
         """新增一个工具组，id 由本方法生成并返回。
 
         Raises:
@@ -163,7 +170,13 @@ class ToolGroupStore:
         if self.find_by_name(name) is not None:
             raise ValueError(f"已有叫「{name}」的工具组，请换一个名字。")
 
-        item = ToolGroup(id=uuid4().hex, name=name, description=description, tools=list(tools))
+        item = ToolGroup(
+            id=uuid4().hex,
+            name=name,
+            description=description,
+            tools=list(tools),
+            confirm=list(confirm or []),
+        )
         items = self.list()
         items.append(item)
         self._save_all(items)

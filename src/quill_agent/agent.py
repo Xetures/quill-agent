@@ -26,13 +26,16 @@ build_memory_block / build_skill_catalog 那两段），不是拼进第一条里
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Iterator
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
 
 from openai import OpenAI
 
+from quill_agent import interaction
 from quill_agent.config import get_settings
 from quill_agent.memory import MemoryStore
 from quill_agent.models import Mode, ModelChoice, Protocol
@@ -44,12 +47,24 @@ from quill_agent.store import (
     ToolGroupStore,
 )
 from quill_agent.tools import registry
-from quill_agent.tools.files import current_work_dir, save_attachments
+from quill_agent.tools.files import (
+    SavedAttachment,
+    current_work_dir,
+    image_data_url,
+    save_attachments,
+)
 
 # 一轮对话里最多允许执行几「轮」工具调用，防止模型陷入死循环。
 # 注意它计的是工具轮次而不是请求次数：预算用尽后还会再发一次
 # **不带工具**的请求让模型收尾，所以最多请求 MAX_ITERATIONS + 1 次。
-MAX_ITERATIONS = 5
+#
+# 计「轮」而不是「次」：模型一轮里可以同时请求好几个工具调用，那一批只花一格预算。
+#
+# 从 5 提到 10，是被 plan 流程逼出来的：一轮「先调研 → 交计划 → 等批准 → 动手 →
+# 验证」真实要 5～6 格（调研那几轮常一次读好几个文件，所以还好），留 5 格时
+# 计划一批准就快到顶了，模型会被迫在半路上收尾。10 格既容得下，也仍然是个
+# 有意义的防死循环上限 —— 它的目的是兜住跑飞，不是省那几次请求。
+MAX_ITERATIONS = 10
 
 # 技能清单要求模型「用 read_skill 读取正文」，所以只要模式里给了技能，
 # 这个工具就必须在场 —— 否则模型会去调一个不存在的工具。
@@ -72,6 +87,30 @@ MAX_TOOL_RESULT_CHARS = 2000
 # 技能清单里每条描述的展示上限。清单一到就要常驻上下文，
 # 放任它变长就等于把「按需加载」又改回了「全量注入」。
 MAX_SKILL_DESCRIPTION_CHARS = 120
+
+# 模型偶尔不把工具调用放进 `tool_calls` 字段，而是当成正文吐出来（DeepSeek 系的
+# 原生标记漏进 content，另一些模型漏成 XML 风格的标签）。这时 `delta.tool_calls`
+# 是空的，循环会把这一轮误判成「模型给完了最终回答」—— 工具没执行、审批没弹出，
+# 用户只看到一段乱码，还以为是自己卡住了。
+#
+# 每个标记只取该格式里最独特的那一段，避免把正常回答误判成泄漏。
+TOOL_CALL_LEAK_MARKERS = (
+    "<\uff5c\uff5cDSML\uff5c\uff5c",  # DeepSeek 原生标记（竖线是全角）
+    "</invoke>",  # XML 风格的调用块
+    "<function_calls>",  # 另一种常见的调用块写法
+)
+
+# 正文要压住多少个字符才往外吐：标记可能被切在相邻两个分片之间
+# （「</inv」+「oke>」），不留这一小段尾巴就认不出来了。
+# 代价只是每个分片的末尾晚几毫秒显示。
+_HOLD_CHARS = max(len(marker) for marker in TOOL_CALL_LEAK_MARKERS)
+
+
+def _leak_index(text: str) -> int:
+    """正文里第一个工具调用泄漏标记的位置；没有就返回 -1。"""
+    hits = [text.find(marker) for marker in TOOL_CALL_LEAK_MARKERS]
+    positions = [hit for hit in hits if hit != -1]
+    return min(positions) if positions else -1
 
 
 @dataclass(frozen=True)
@@ -114,6 +153,17 @@ class RunStats:
         self.prompt_tokens += getattr(usage, "prompt_tokens", 0) or 0
         self.completion_tokens += getattr(usage, "completion_tokens", 0) or 0
         self.total_tokens += getattr(usage, "total_tokens", 0) or 0
+
+    def merge(self, other: RunStats) -> None:
+        """把另一轮的用量并进来（目前只有子代理会走这条）。
+
+        **只并用量，不并耗时。** 子代理的耗时本来就包含在父级的 `elapsed` 里
+        （父级那一次工具调用就是在等它跑完），再并一次就成了双倍。
+        用量则必须并 —— 不并的话那些 token 花了钱却不出现在用量页上。
+        """
+        self.prompt_tokens += other.prompt_tokens
+        self.completion_tokens += other.completion_tokens
+        self.total_tokens += other.total_tokens
 
 
 @dataclass(frozen=True)
@@ -171,6 +221,33 @@ class ModeContext:
     tools: list[str] = field(default_factory=list)
     skills: list[str] = field(default_factory=list)
     memory_enabled: bool = True
+    # 其中每次调用都要用户点头的工具名。是 tools 的子集（保存时校验过）。
+    confirm: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True)
+class RunEnvironment:
+    """一次运行的环境：解析后的模式、模型选择、账本。
+
+    给「运行内部还需要再跑一轮」的场景用 —— 目前只有子代理。它要照搬父级的
+    `context`（同一个身份、同一套工具，只是换一份干净的上下文），用同一个模型，
+    还要把用量记到父级账上。
+
+    为什么用 ContextVar：工具函数的签名里只有参数本身（`registry.execute(name, args)`），
+    拿不到「当前这一轮」的任何东西。和 `interaction` 是同一个理由、同一套做法。
+    """
+
+    context: ModeContext
+    choice: ModelChoice | None
+    stats: RunStats
+
+
+_environment: ContextVar[RunEnvironment | None] = ContextVar("quill_environment", default=None)
+
+
+def current_environment() -> RunEnvironment | None:
+    """当前这一轮的环境；不在运行里（测试、直接调工具）时返回 None。"""
+    return _environment.get()
 
 
 def resolve_mode(mode: Mode | None) -> ModeContext:
@@ -197,10 +274,14 @@ def resolve_mode(mode: Mode | None) -> ModeContext:
             prompts = dict(group.settings)
 
     tools: list[str] = []
+    confirm: frozenset[str] = frozenset()
     if mode.tool_group_id:
         group = ToolGroupStore(settings.tool_groups_path).get(mode.tool_group_id)
         if group is not None:
             tools = list(group.tools)
+            # 只认在组里的那些：即使存储层被手工改出「要求确认一个不在场的工具」，
+            # 这里也不过是多一条永不命中的判断，不该让它影响别的工具
+            confirm = frozenset(name for name in group.confirm if name in set(tools))
 
     skills: list[str] = []
     if mode.skill_group_id:
@@ -217,6 +298,7 @@ def resolve_mode(mode: Mode | None) -> ModeContext:
         tools=tools,
         skills=skills,
         memory_enabled=mode.memory_enabled,
+        confirm=confirm,
     )
 
 
@@ -312,12 +394,14 @@ def build_skill_catalog(names: list[str]) -> str:
     )
 
 
-def build_user_message(prompt: str, attachments: list[str]) -> str:
-    """把本轮问题与运行时上下文拼成一条 user 消息。
+def build_user_message(prompt: str, attachments: list[SavedAttachment]) -> str:
+    """把本轮问题与运行时上下文拼成一条 user 消息的**文本部分**。
+
+    图片不在这里 —— 它没法变成文本，由 `image_content()` 以内容块的形式补进去。
 
     Args:
         prompt: 本轮用户输入。
-        attachments: `save_attachments()` 返回的附件说明行（路径或失败原因）。
+        attachments: `save_attachments()` 的结果。
     """
     lines = [f"当前时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"]
 
@@ -327,12 +411,48 @@ def build_user_message(prompt: str, attachments: list[str]) -> str:
     lines.append(f"工作目录：{current_work_dir()}")
 
     if attachments:
-        # 必须点明「用 read_file 读」：附件已经落盘，模型手上就有现成的工具；
-        # 不说明的话，它可能以为内容早就随这条消息一起给它了
-        lines.append("本次附件（已存到工作目录，要内容就用 read_file 读）：")
-        lines.extend(f"- {item}" for item in attachments)
+        lines.append("本次附件（已存到工作目录）：")
+        lines.extend(f"- {item.describe()}" for item in attachments)
+        # 必须说清两条路：文本附件模型手上有现成的工具可以读，图片则已经给它了。
+        # 不说明的话，它可能以为文本附件的内容也早就随消息给它了
+        lines.append(
+            "图片已经以画面形式提供，不要再用 read_file 去读它；文本类附件要用 read_file 读。"
+        )
 
     return "\n".join([*lines, "", prompt])
+
+
+def image_content(text: str, attachments: list[SavedAttachment]) -> str | list[dict]:
+    """把 user 消息的正文与图片附件拼成请求体里的 `content`。
+
+    **图片只能以这个方式交给模型。** 工具的结果契约是「返回一段文本」
+    （见 tools/base.py 的 `execute`），所以没有任何一个工具能把图像递给视觉能力 ——
+    这也是附件不做成 `read_attachment` 工具的原因。
+
+    没有图片时**原样返回字符串**，请求体和以前一字不差：让所有调用方——以及模型侧的
+    前缀缓存——不必为一个偶尔才用到的能力买单。
+
+    只发**本轮**的图片，历史里的老图片不重发：一张截图一两千 token，而历史最多带
+    `MAX_HISTORY_RECORDS` 条记录，全带着等于把每一轮的固定成本永久抬高。这和
+    「附件是这一轮的输入」是同一个口径。
+    """
+    blocks: list[dict] = []
+    for item in attachments:
+        if item.path is None or not item.is_image:
+            continue
+
+        data_url = image_data_url(item.path)
+        if data_url is None:
+            continue  # 太大或读不了：退回「只有路径」的老行为，不因为一张图让整轮失败
+
+        blocks.append({"type": "image_url", "image_url": {"url": data_url}})
+
+    if not blocks:
+        return text
+
+    # 文字在前、图片在后：图片是「这段话在说什么」的补充，
+    # 放在后面更贴近「先读要求、再看材料」的顺序
+    return [{"type": "text", "text": text}, *blocks]
 
 
 def _clip(text: str, limit: int) -> str:
@@ -491,6 +611,74 @@ def _sorted_tool_calls(store: dict[int, dict]) -> list[dict]:
     return [store[index] for index in sorted(store)]
 
 
+# 确认题里「这次调用要做什么」的展示上限。用户要在几秒内看懂并做决定，
+# 一屏之外的内容只会让人不看清就点「拒绝」
+MAX_PREVIEW_CHARS = 600
+
+# 预览时优先展示的字段，按「最能说明这次调用要干什么」排序。
+# 整块参数 JSON 对用户是天书，而 command / path 一眼就懂
+PREVIEW_KEYS = ("command", "path", "name", "pattern", "query", "url")
+
+
+def _preview(name: str, arguments: str) -> str:
+    """把一次工具调用压成用户能看懂的说明，给确认题当补充材料。"""
+    try:
+        args = json.loads(arguments) if isinstance(arguments, str) else arguments
+    except json.JSONDecodeError:
+        args = None
+
+    if not isinstance(args, dict):
+        text = str(arguments)
+    else:
+        for key in PREVIEW_KEYS:
+            value = args.get(key)
+            if not isinstance(value, str) or not value.strip():
+                continue
+
+            rest = {k: v for k, v in args.items() if k != key}
+            text = f"{key}：{value}"
+            if rest:  # 其余参数照样给出来，别让用户以为就只有这一个
+                text += "\n" + json.dumps(rest, ensure_ascii=False)
+            break
+        else:
+            text = json.dumps(args, ensure_ascii=False)
+
+    if len(text) > MAX_PREVIEW_CHARS:
+        text = text[:MAX_PREVIEW_CHARS] + "…"
+
+    return f"{name}\n{text}"
+
+
+def _execute(slot: dict, confirm_names: frozenset[str]) -> str:
+    """执行一次工具调用，必要时先让用户点头。
+
+    **确认拦在 agent 这一层，而不是塞进工具里**：要不要确认是模式的配置
+    （工具组的 `confirm`），工具自己不知道这件事。工具**自己**的判断走另一条路 ——
+    例如 `run_command` 认出危险命令后主动调 `interaction.confirm()`，那是「这次调用
+    本身有问题」，跟「这个工具要不要盯着用」是两码事，两者可以叠加。
+    """
+    name = slot["name"]
+    if name not in confirm_names:
+        return registry.execute(name, slot["arguments"])
+
+    approved = interaction.confirm(
+        text=f"是否允许调用「{name}」？",
+        detail=_preview(name, slot["arguments"]),
+    )
+
+    if approved is True:
+        return registry.execute(name, slot["arguments"])
+
+    # 拒绝和「问不到」要分开说：前者是用户的决定，后者是这套配置在当前界面上
+    # 根本没法用 —— 提示语不同，用户才知道下一步该干什么
+    if approved is False:
+        reason = "用户拒绝了这次调用"
+    else:
+        reason = "没能问到用户（等待超时，或当前界面不支持确认），已按拒绝处理"
+
+    return f"{reason}。不要原样重试，请换一种做法，或告诉用户你需要什么。"
+
+
 def run_agent_stream(
     *,
     prompt: str,
@@ -499,6 +687,7 @@ def run_agent_stream(
     choice: ModelChoice | None,
     history: list[dict] | None = None,
     stats: RunStats | None = None,
+    context: ModeContext | None = None,
 ) -> Iterator[str | ReasoningDelta | ToolStep | Notice]:
     """以流式方式跑一轮 Agent 对话。
 
@@ -510,6 +699,11 @@ def run_agent_stream(
         history: 历史会话记录，元素形如 {"role": ..., "content": ...}；
             助手记录可带 "steps"（工具调用），会被还原成 tool 消息，
             并只保留最近 MAX_HISTORY_RECORDS 条，见 build_history_messages。
+        stats: 由调用方提供的账本，跑完就地填好（生成器没法「返回」值）。
+        context: **已经解析好的模式**；给了就不再解析 `mode`。子代理走这条路 ——
+            它要照搬父级的提示词和技能，但工具集要去掉几样（见 tools/subagent.py）。
+            没有这个参数的话，「给谁用哪些工具」就只能靠运行时的拒绝来兜，
+            而一个「看得见却永远调不通」的工具比不给它更让人困惑。
 
     Yields:
         文本增量（str）/ 思维链增量（ReasoningDelta）/ 工具调用记录（ToolStep）/
@@ -522,16 +716,25 @@ def run_agent_stream(
     tracker = stats if stats is not None else RunStats()
     started = time.monotonic()
 
+    resolved = context if context is not None else resolve_mode(mode)
+
+    # 把这一轮的环境挂到当前线程上，给「运行内部要再跑一轮」的场景用（子代理）。
+    # 子代理会自己再挂一层，退出时各自 reset —— 嵌套多少层都不会串
+    token = _environment.set(
+        RunEnvironment(context=resolved, choice=choice, stats=tracker),
+    )
+
     try:
         yield from _run_stream(
             prompt=prompt,
             files=files,
-            mode=mode,
             choice=choice,
             history=history,
+            context=resolved,
             tracker=tracker,
         )
     finally:
+        _environment.reset(token)
         # 答完了、出错了、撞上限了 —— 不管从哪条路出去，耗时都要补上
         tracker.elapsed = time.monotonic() - started
 
@@ -540,9 +743,9 @@ def _run_stream(
     *,
     prompt: str,
     files: list,
-    mode: Mode | None,
     choice: ModelChoice | None,
     history: list[dict] | None,
+    context: ModeContext,
     tracker: RunStats,
 ) -> Iterator[str | ReasoningDelta | ToolStep | Notice]:
     """run_agent_stream 的真实实现。
@@ -559,9 +762,7 @@ def _run_stream(
         return
 
     # ── ① 组装上下文 ──────────────────────────────────────────────
-    # 模式先解析成四类资源，再按固定顺序拼装 —— 解析只做一次
-    context = resolve_mode(mode)
-
+    # 模式已经由 run_agent_stream 解析好了（解析只做一次），这里只管按固定顺序拼装
     messages: list[dict] = []
 
     system_prompt = build_system_prompt(context.prompts)
@@ -588,7 +789,13 @@ def _run_stream(
     # 附件先落盘再组装消息：模型要的是「工作目录里的路径」，
     # 而不是一个它根本访问不到的内存对象
     attachments = save_attachments(files)
-    messages.append({"role": "user", "content": build_user_message(prompt, attachments)})
+    messages.append(
+        {
+            "role": "user",
+            # 文本附件的路径走正文；图片走内容块（见 image_content）
+            "content": image_content(build_user_message(prompt, attachments), attachments),
+        }
+    )
 
     # ── ② 工具菜单：只含模式里给的工具 ─────────────────────────────
     # 工具没有全局开关：给不给由模式的工具组决定（和技能一致）。
@@ -615,6 +822,12 @@ def _run_stream(
     # 循环一定终止：每次迭代要么直接 return（拿到回答 / 预算已耗尽），
     # 要么把 tool_budget 减一。所以最多请求 MAX_ITERATIONS + 1 次。
     while True:
+        # 用户按了停止。检查点放在循环顶部：这样「模型正在生成的这一次」也会被掐掉，
+        # 而不是等它把这一轮跑完。没有通道（Streamlit / 测试）时永远是 False
+        if interaction.cancelled():
+            yield Notice("已取消这一轮。")
+            return
+
         # 预算用尽就不再提供工具；空列表也不能传，部分服务不接受空的 tools
         available_tools = tools if tool_budget > 0 else None
 
@@ -632,6 +845,11 @@ def _run_stream(
 
         text_parts: list[str] = []
         tool_calls: dict[int, dict] = {}
+
+        # 收到但还没外吐的正文尾巴（末尾可能正卡着一个泄漏标记的开头）
+        pending = ""
+        # 这一轮里模型是不是把工具调用写成了正文
+        leaked = False
 
         # 双轨解析：文本立即外吐，工具调用只累积
         try:
@@ -654,9 +872,27 @@ def _run_stream(
                     yield ReasoningDelta(reasoning)
 
                 if delta.content:
-                    text_parts.append(delta.content)
                     emitted_text = True
-                    yield delta.content
+
+                    if not leaked:
+                        pending += delta.content
+
+                        cut = _leak_index(pending)
+                        if cut != -1:
+                            # 找到泄漏标记：它前面的人话照常留下，
+                            # 后面的调用块一律丢掉 —— 留着只会污染正文和历史
+                            leaked = True
+                            flush, pending = pending[:cut], ""
+                        elif len(pending) > _HOLD_CHARS:
+                            # 标记可能跨分片，尾巴先压住不外吐
+                            flush = pending[:-_HOLD_CHARS]
+                            pending = pending[-_HOLD_CHARS:]
+                        else:
+                            flush = ""
+
+                        if flush:
+                            text_parts.append(flush)
+                            yield flush
 
                 if delta.tool_calls:
                     _accumulate_tool_calls(tool_calls, delta.tool_calls)
@@ -664,9 +900,21 @@ def _run_stream(
             yield Notice(f"读取流式响应失败：{exc}")
             return
 
+        # 压着的那一小段尾巴：已经确认过不是泄漏标记的开头，补吐出去
+        if pending:
+            text_parts.append(pending)
+            yield pending
+
         # 没有工具调用 = 本轮就是最终回答，结束
         if not tool_calls:
-            if not emitted_text:
+            if leaked:
+                # 模型把工具调用写成了正文，这一轮其实一个工具都没执行。
+                # 不能当成最终回答静默结束 —— 那在界面上看起来就是「卡住了」
+                yield Notice(
+                    "模型把工具调用写成了普通文本，这一轮没有执行任何工具。"
+                    "可以重试，或换一个函数调用更稳定的模型。"
+                )
+            elif not emitted_text:
                 yield Notice(
                     "模型没有返回任何内容。可以重试，或换一个模型 —— "
                     "推理模型有时会把输出预算全用在思考上。"
@@ -697,8 +945,14 @@ def _run_stream(
 
         # 逐个执行，并把结果作为 tool 消息回填
         for slot in _sorted_tool_calls(tool_calls):
+            # 一批里可能有好几个调用（尤其是几个需要确认的），取消后剩下的就别做了 ——
+            # 它们的副作用已经没人要了
+            if interaction.cancelled():
+                yield Notice("已取消这一轮，剩下的工具调用没有执行。")
+                return
+
             call_started = time.monotonic()
-            result = registry.execute(slot["name"], slot["arguments"])
+            result = _execute(slot, context.confirm)
 
             yield ToolStep(
                 name=slot["name"],

@@ -30,6 +30,7 @@
 
 from __future__ import annotations
 
+import base64
 import fnmatch
 import os
 import re
@@ -37,6 +38,7 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 from quill_agent.config import get_settings
@@ -50,6 +52,14 @@ WORK_DIR_PREF_KEY = "work_dir"
 # 必须放在工作目录**里面** —— 文件工具的安全边界就是工作目录，
 # 放到外面去，模型反而读不到这些附件。
 ATTACHMENTS_DIR = ".attachments"
+
+# 能当图片发给模型的扩展名。只列两家接口都认的格式：
+# bmp / tiff 这些 OpenAI 和 Anthropic 都不收，放进来只会得到一个 400。
+IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp"})
+
+# 单张图片的体积上限。base64 之后还要再涨三分之一，而它每一轮都要随请求发出去 ——
+# 一张 4MB 的图能换掉几千 token 的额度，还未必看得更清楚
+MAX_IMAGE_BYTES = 4_000_000
 
 # 搜索时跳过的目录：依赖缓存、版本控制内部数据、构建产物、工具留下的临时文件。
 # 不跳过的话，搜一个函数名会被 .venv 里的几万行命中淹掉。
@@ -166,22 +176,57 @@ def clear_work_dir() -> None:
     PreferenceStore(get_settings().preferences_path).remove(WORK_DIR_PREF_KEY)
 
 
-def save_attachments(files: list) -> list[str]:
+@dataclass(frozen=True)
+class SavedAttachment:
+    """一个落盘后的附件。
+
+    原先 `save_attachments()` 直接返回「给模型看的那一行文本」，调用方要拿路径
+    只能去解析这行字符串 —— 而失败行长得完全不一样。图片要以内容块的形式随消息
+    发出去之后，调用方需要的是**结构化**的结果，展示文案由 `describe()` 生成。
+
+    Attributes:
+        name: 原始文件名（已取末级名，不含路径）。
+        path: 落盘后的绝对路径；保存失败时为 None。
+        error: 失败原因；成功时是空串。
+    """
+
+    name: str
+    path: Path | None = None
+    error: str = ""
+
+    @property
+    def relative(self) -> str:
+        """相对工作目录的路径 —— 这是给模型看的写法。"""
+        return f"{ATTACHMENTS_DIR}/{self.name}"
+
+    @property
+    def is_image(self) -> bool:
+        """是不是能直接发给模型的图片。"""
+        return self.path is not None and self.path.suffix.lower() in IMAGE_SUFFIXES
+
+    def describe(self) -> str:
+        """一行说明，直接拼进 user 消息。"""
+        return f"{self.name}（保存失败：{self.error}）" if self.path is None else self.relative
+
+
+def save_attachments(files: list) -> list[SavedAttachment]:
     """把界面上传的附件保存进工作目录。
 
     为什么落盘、而不是把内容直接拼进消息：
         文件工具只能访问工作目录内。落盘之后，模型用现成的 `read_file` /
-        `search_content` 就能处理附件，不必为「附件」另造一套工具语义；
-        二进制文件（PDF、图片）也能先存下来，将来接上解析工具就能直接读。
+        `search_content` 就能处理文本类附件，不必为「附件」另造一套工具语义；
+        **图片则另外走一条路**：它没法变成文本，只能以内容块的形式随消息发给
+        模型的视觉能力（见 agent.image_content），落盘是为了让它留个痕迹、
+        也让「本轮消息里那张图」有个可指向的路径。
 
     同名文件直接覆盖：附件是这一轮的输入，不需要保留历史版本。
 
     Args:
-        files: 上传的文件对象列表（Streamlit 的 UploadedFile）。
+        files: 上传的文件对象列表（Streamlit 的 UploadedFile / server 的适配壳）。
 
     Returns:
-        每个附件一行说明 —— 成功时是相对工作目录的路径，失败时是
-        「文件名（保存失败：原因）」。调用方把这些行原样列给模型即可。
+        每个附件一条记录。目录都建不出来时返回一条带 error 的记录 ——
+        不要返回空列表：那会让调用方以为「这一轮本来就没有附件」。
     """
     if not files:
         return []
@@ -190,9 +235,9 @@ def save_attachments(files: list) -> list[str]:
     try:
         target_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        return [f"附件目录创建失败：{exc}"]
+        return [SavedAttachment(name=ATTACHMENTS_DIR, error=f"附件目录创建失败：{exc}")]
 
-    results: list[str] = []
+    results: list[SavedAttachment] = []
     for item in files:
         # 只取末级文件名：这个名字来自浏览器，不能当作可信路径直接用
         name = Path(str(getattr(item, "name", "attachment"))).name or "attachment"
@@ -200,14 +245,36 @@ def save_attachments(files: list) -> list[str]:
         try:
             # Streamlit 的 UploadedFile 是 BytesIO 子类，getbuffer() 拿到原始字节
             raw = item.getbuffer() if hasattr(item, "getbuffer") else item.read()
-            (target_dir / name).write_bytes(bytes(raw))
+            path = target_dir / name
+            path.write_bytes(bytes(raw))
         except (OSError, AttributeError) as exc:
-            results.append(f"{name}（保存失败：{exc}）")
+            results.append(SavedAttachment(name=name, error=str(exc)))
             continue
 
-        results.append(f"{ATTACHMENTS_DIR}/{name}")
+        results.append(SavedAttachment(name=name, path=path))
 
     return results
+
+
+def image_data_url(path: Path) -> str | None:
+    """把一张图片读成 data: URL；读不了、太大、或不是图片时返回 None。
+
+    data: URL 而不是「先上传拿一个公网地址」：这是本地优先的应用，
+    没有地方托管文件，也不该为了发一张图把用户的文件传出去。
+    """
+    if path.suffix.lower() not in IMAGE_SUFFIXES:
+        return None
+
+    try:
+        if path.stat().st_size > MAX_IMAGE_BYTES:
+            return None
+        raw = path.read_bytes()
+    except OSError:
+        return None
+
+    suffix = path.suffix.lower().lstrip(".")
+    mime = "image/jpeg" if suffix in {"jpg", "jpeg"} else f"image/{suffix}"
+    return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
 
 
 def guard() -> PathGuard:
@@ -457,13 +524,27 @@ def read_file(path: str, offset: int = 1, limit: int = DEFAULT_READ_LINES) -> st
     except OSError as exc:
         return f"无法读取文件信息：{exc}"
 
+    # 二进制文件先给一句有用的回执，别等到解码失败才说「不是 UTF-8 文本文件」——
+    # 那句话等于什么都没说，模型读完还是不知道该干什么
+    if target.suffix.lower() in IMAGE_SUFFIXES:
+        return (
+            f"这是一张图片（{target.suffix.lower()}，{size} 字节），不能用 read_file 读。"
+            "图片在随附件发出去的时候就已经交给视觉能力了；"
+            "如果你看不到画面，说明当前模型不支持图片输入，请让用户改用文字描述。"
+        )
+
     if size > MAX_FILE_BYTES:
         return f"文件太大（{size} 字节，上限 {MAX_FILE_BYTES}），拒绝读取。"
 
     try:
         text = target.read_text(encoding="utf-8")
     except UnicodeDecodeError:
-        return f"不是 UTF-8 文本文件，无法按文本读取：{path}"
+        return (
+            f"这不是文本文件，读不出内容：{path}"
+            f"（{target.suffix or '无扩展名'}，{size} 字节）。"
+            "图片、PDF、压缩包、Office 文档这类二进制文件都不能用 read_file 读；"
+            "如果它是这一轮的附件，请让用户改用文字描述。"
+        )
     except OSError as exc:
         return f"读取失败：{exc}"
 

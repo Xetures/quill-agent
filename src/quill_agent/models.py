@@ -176,12 +176,21 @@ class ToolGroup(BaseModel):
         description: 功能简介，会出现在模式编辑界面，帮用户想起这组是干嘛的。
         tools: 组内工具名列表。**允许为空** —— 「纯对话」这种组就是要一个工具
             都不给，这是把工具从「全局开关」升级成「组」的核心动机。
+        confirm: 其中**每次调用都要用户点头**的工具名。是 `tools` 的子集。
+            这个字段的动机很实际：`run_command` 这类工具要么「加进组 = 把一台机器
+            交给它」，要么「不加 = 一点用没有」，中间没有档位。有了它就能表达
+            「给，但每次动手前问我」—— 于是「是否授予能力」和「是否信任这次使用」
+            变成两件事，后者由用户逐次决定。
+
+            `tools` 里的工具名对着代码注册表校验，`confirm` 只需是 `tools` 的子集：
+            一个不在场的工具要求确认是自相矛盾的配置，直接在保存时报错。
     """
 
     id: str = Field(description="唯一标识")
     name: str = Field(min_length=1, description="组名")
     description: str = Field(default="", description="功能简介")
     tools: list[str] = Field(default_factory=list, description="组内工具名")
+    confirm: list[str] = Field(default_factory=list, description="其中需要用户确认的工具名")
 
 
 class SkillGroup(BaseModel):

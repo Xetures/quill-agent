@@ -52,6 +52,20 @@ def _check_tool_names(names: list[str]) -> None:
         raise HTTPException(status_code=400, detail=f"未知的工具名：{'、'.join(unknown)}")
 
 
+def _check_confirm(names: list[str], tools: list[str]) -> None:
+    """要求确认的工具必须是组内已有工具的子集。
+
+    「不在场却要求确认」是自相矛盾的配置：那个工具压根不会发给模型，
+    这条确认规则永远不会被触发 —— 与其静默失效，不如保存时就报错。
+    """
+    stray = [name for name in names if name not in set(tools)]
+    if stray:
+        raise HTTPException(
+            status_code=400,
+            detail=f"这些工具不在组里，无法要求确认：{'、'.join(stray)}",
+        )
+
+
 @router.get("/tool-groups")
 def list_tool_groups() -> dict:
     """全部工具组。"""
@@ -62,12 +76,14 @@ def list_tool_groups() -> dict:
 def create_tool_group(payload: ToolGroupPayload) -> dict:
     """新建一个工具组。"""
     _check_tool_names(payload.tools)
+    _check_confirm(payload.confirm, payload.tools)
 
     try:
         item = stores.tool_groups().add(
             name=payload.name,
             description=payload.description,
             tools=payload.tools,
+            confirm=payload.confirm,
         )
     except ValueError as exc:
         # 组名重复。文案是给用户看的，转成 400 而不是让校验异常漏成 500
@@ -84,6 +100,7 @@ def update_tool_group(group_id: str, payload: ToolGroupPayload) -> dict:
         raise HTTPException(status_code=404, detail="工具组不存在。")
 
     _check_tool_names(payload.tools)
+    _check_confirm(payload.confirm, payload.tools)
 
     try:
         item = ToolGroup(
@@ -91,6 +108,7 @@ def update_tool_group(group_id: str, payload: ToolGroupPayload) -> dict:
             name=payload.name,
             description=payload.description,
             tools=payload.tools,
+            confirm=payload.confirm,
         )
         store.update(item)
     except ValueError as exc:

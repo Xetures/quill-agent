@@ -24,6 +24,28 @@ class ChatRequest(BaseModel):
     mode_id: str = Field(default="", description="模式 id；空表示不带模式")
 
 
+class AnswerPayload(BaseModel):
+    """回答运行中抛出的一个问题（确认题或模型提问）。
+
+    三个 id 缺一不可：`run_id` 找到是哪一轮在等，`question_id` 确认等的是哪一个问题。
+    后者不能省 —— 用户点「允许」的同时那一轮可能刚好超时结束，又开了新一轮提问，
+    只按 run 匹配的话，这个迟到的答案会落到**新问题**上。
+    """
+
+    run_id: str = Field(min_length=1, description="运行的 id")
+    question_id: str = Field(min_length=1, description="问题的 id")
+    answer: str = Field(default="", description="用户的回答")
+
+
+class CancelPayload(BaseModel):
+    """停止一次运行。
+
+    只需要运行 id —— 一个运行整体停掉，不存在「停哪一个工具」这种粒度。
+    """
+
+    run_id: str = Field(min_length=1, description="运行的 id")
+
+
 class ModelPayload(BaseModel):
     """新增 / 修改一条模型连接。
 
@@ -125,6 +147,7 @@ class ToolGroupPayload(BaseModel):
     name: str = Field(min_length=1, description="组名")
     description: str = Field(default="", description="功能简介")
     tools: list[str] = Field(default_factory=list, description="组内工具名")
+    confirm: list[str] = Field(default_factory=list, description="其中需要用户确认的工具名")
 
 
 class PromptGroupPayload(BaseModel):

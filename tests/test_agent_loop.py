@@ -5,9 +5,12 @@
 用户拿到的还只是一句「未完成」。
 """
 
+import asyncio
+from collections.abc import Iterator
+from contextlib import contextmanager
 from types import SimpleNamespace
 
-from quill_agent import agent
+from quill_agent import agent, interaction
 from quill_agent.models import ModelChoice, ModelConfig
 
 
@@ -148,6 +151,39 @@ def test_empty_reply_yields_a_notice(monkeypatch) -> None:
     assert _steps(events) == []
     assert len(requests) == 1
     assert any("没有返回任何内容" in text for text in _notices(events))
+
+
+def test_leaked_tool_call_is_reported_not_answered(monkeypatch) -> None:
+    """模型把工具调用写成了正文时，不能当成最终回答静默结束。
+
+    真事：deepseek 系的模型偶尔把原生标记漏进 content，`tool_calls` 因此是空的。
+    以前这一轮会被判成「模型答完了」，界面上只剩一段乱码 —— 看起来就像卡住了。
+    """
+    leak = '我再看两处配置。\n<\uff5c\uff5cDSML\uff5c\uff5c invoke name="read_file">\n</invoke>\n'
+
+    events, requests = _run(monkeypatch, [[_text_chunk(leak)]])
+
+    # 标记之前的人话留下，标记之后的内容一个字都不进正文（否则会污染历史）
+    assert _texts(events) == "我再看两处配置。\n"
+    assert _steps(events) == []
+    assert len(requests) == 1
+    assert any("写成了普通文本" in text for text in _notices(events))
+
+
+def test_leak_marker_split_across_chunks_is_caught(monkeypatch) -> None:
+    """标记被切在相邻两个分片之间时也要认得出来。"""
+    events, _ = _run(monkeypatch, [[_text_chunk("好的</inv"), _text_chunk("oke>")]])
+
+    assert _texts(events) == "好的"
+    assert any("写成了普通文本" in text for text in _notices(events))
+
+
+def test_normal_answer_is_not_mistaken_for_a_leak(monkeypatch) -> None:
+    """普通回答照常逐字吐出，压住的那一小段尾巴最后要补上。"""
+    events, _ = _run(monkeypatch, [[_text_chunk("答案是 "), _text_chunk("42。")]])
+
+    assert _texts(events) == "答案是 42。"
+    assert _notices(events) == []
 
 
 def test_reasoning_content_is_yielded_separately(monkeypatch) -> None:
@@ -316,3 +352,82 @@ def test_usage_probe_is_per_provider(monkeypatch) -> None:
     run_with("https://b.example")
 
     assert "stream_options" in requests[0]
+
+
+# ---------------------------------------------------------------------------
+# 取消
+# ---------------------------------------------------------------------------
+
+
+def _tool_chunk_at(index: int, call_id: str, name: str) -> SimpleNamespace:
+    """带 index 的工具调用分片 —— 一批里有多个调用时，index 是它们唯一的区分。"""
+    call = SimpleNamespace(
+        index=index,
+        id=call_id,
+        function=SimpleNamespace(name=name, arguments="{}"),
+    )
+    delta = SimpleNamespace(content=None, tool_calls=[call])
+    return SimpleNamespace(choices=[SimpleNamespace(delta=delta)])
+
+
+@contextmanager
+def _cancellable() -> Iterator[object]:
+    """绑一条真通道到当前线程，退出时解绑。"""
+    # cancel() 用不到事件循环，构造函数要一个只是为了让 publish 有地方去
+    loop = asyncio.new_event_loop()
+    channel = interaction.Interaction(loop, run_id="r1")
+    token = interaction.activate(channel)
+    try:
+        yield channel
+    finally:
+        interaction.deactivate(token)
+        loop.close()
+
+
+def test_cancel_stops_the_loop_before_the_next_request(monkeypatch) -> None:
+    """取消之后不再发下一次请求 —— 那正是「停止」的意义。
+
+    这里让工具在执行期间按下停止：循环必须在这一轮收尾后退出，
+    而不是揣着取消标记再问模型一遍。
+    """
+    with _cancellable():
+
+        def fake_execute(name, arguments):
+            interaction.current().cancel()
+            return "结果"
+
+        monkeypatch.setattr(agent.registry, "execute", fake_execute)
+        events, requests = _run(monkeypatch, [[_tool_chunk("c1", "read_file")]])
+
+    assert len(requests) == 1  # 第二次请求没有发生
+    assert any("已取消这一轮" in text for text in _notices(events))
+
+
+def test_cancel_between_tools_skips_the_rest_of_the_batch(monkeypatch) -> None:
+    """一批里有好几个工具调用时，取消后剩下那些就别做了 —— 副作用已经没人要了。"""
+    with _cancellable():
+        ran: list[str] = []
+
+        def fake_execute(name, arguments):
+            ran.append(name)
+            interaction.current().cancel()
+            return "结果"
+
+        monkeypatch.setattr(agent.registry, "execute", fake_execute)
+        events, _ = _run(
+            monkeypatch,
+            [[_tool_chunk_at(0, "c1", "read_file"), _tool_chunk_at(1, "c2", "write_file")]],
+        )
+
+    assert ran == ["read_file"]  # 第二个没有执行
+    assert len(_steps(events)) == 1
+    assert any("剩下的工具调用没有执行" in text for text in _notices(events))
+
+
+def test_no_channel_means_cancel_can_never_fire(monkeypatch) -> None:
+    """没有通道时循环不该被「取消」影响 —— Streamlit 版和单元测试走的就是这条路。"""
+    events, requests = _run(monkeypatch, [[_text_chunk("答完了")]])
+
+    assert len(requests) == 1
+    assert _texts(events) == "答完了"
+    assert not any("取消" in text for text in _notices(events))
