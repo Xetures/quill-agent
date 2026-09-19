@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -28,6 +29,9 @@ TITLE_MAX_CHARS = 20
 
 SUFFIX = ".jsonl"
 
+# 会话 id 的前半段就是创建时刻。解析它比读文件 mtime 可靠：归档会改 mtime。
+ID_TIME_FORMAT = "%Y%m%d-%H%M%S"
+
 
 @dataclass(frozen=True)
 class ConversationMeta:
@@ -36,11 +40,31 @@ class ConversationMeta:
     Attributes:
         updated_at: 时间戳。活跃会话里是「最后写入消息的时间」；
             归档会话里是「归档时间」（archive() 会显式打上）。
+        archived: 是否躺在归档目录里。用量统计要跨两个目录一起扫，
+            需要它来判断每一行的状态。
     """
 
     id: str
     title: str
     updated_at: float
+    archived: bool = False
+
+    @property
+    def created_at(self) -> float:
+        """创建时间（Unix 秒）。
+
+        id 里就编着创建时刻（见 `create()`），直接解出来即可 —— 比文件 mtime
+        可靠得多，归档会把 mtime 改成归档那一刻。id 被手工改过、解不出来时
+        退回 updated_at，宁可时间不准也不要抛异常。
+        """
+        parts = self.id.split("-")
+        if len(parts) >= 2:
+            try:
+                return datetime.strptime(f"{parts[0]}-{parts[1]}", ID_TIME_FORMAT).timestamp()
+            except ValueError:
+                pass
+
+        return self.updated_at
 
     @property
     def updated_text(self) -> str:
@@ -72,27 +96,46 @@ class ConversationStore:
 
     def list_active(self) -> list[ConversationMeta]:
         """活跃会话，按最近更新倒序。"""
-        return self._collect(self._active)
+        return self._collect(self._active, archived=False)
 
     def list_archived(self) -> list[ConversationMeta]:
         """已归档会话，按最近更新倒序。"""
-        return self._collect(self._archived)
+        return self._collect(self._archived, archived=True)
+
+    def iter_all(self) -> Iterator[tuple[ConversationMeta, list[dict]]]:
+        """遍历全部会话（活跃 + 归档）的元信息与消息。
+
+        给用量统计这类「全局扫描」用的：`load()` 只认 active/，归档会话读不到。
+        把「哪个目录对应哪种状态」这件事留在 store 里，调用方不必自己拼路径。
+        """
+        for meta in self.list_active() + self.list_archived():
+            directory = self._archived if meta.archived else self._active
+            yield meta, self._read(directory / f"{meta.id}{SUFFIX}")
 
     def create(self) -> str:
         """新建一个空会话，返回它的 id。"""
         self.ensure_dirs()
-        conv_id = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:4]}"
+        conv_id = f"{datetime.now().strftime(ID_TIME_FORMAT)}-{uuid4().hex[:4]}"
         (self._active / f"{conv_id}{SUFFIX}").touch()
         return conv_id
 
     def load(self, conv_id: str) -> list[dict]:
-        """读取某个会话的全部消息；文件不存在或坏行都会被安全跳过。"""
-        path = self._active / f"{conv_id}{SUFFIX}"
+        """读取某个活跃会话的全部消息；文件不存在或坏行都会被安全跳过。"""
+        return self._read(self._active / f"{conv_id}{SUFFIX}")
+
+    @staticmethod
+    def _read(path: Path) -> list[dict]:
+        """读一个会话文件；不存在、读不了、坏行都安全跳过。"""
         if not path.is_file():
             return []
 
         messages: list[dict] = []
-        for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError:
+            return []
+
+        for line in content.splitlines():
             line = line.strip()
             if not line:
                 continue
@@ -194,7 +237,7 @@ class ConversationStore:
 
         return True
 
-    def _collect(self, directory: Path) -> list[ConversationMeta]:
+    def _collect(self, directory: Path, archived: bool) -> list[ConversationMeta]:
         """扫描目录，组装会话元信息。"""
         if not directory.is_dir():
             return []
@@ -207,6 +250,7 @@ class ConversationStore:
                         id=path.stem,
                         title=self._read_title(path),
                         updated_at=path.stat().st_mtime,
+                        archived=archived,
                     )
                 )
             except OSError:

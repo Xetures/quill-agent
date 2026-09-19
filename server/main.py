@@ -15,7 +15,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from quill_agent import __version__
-from server.routes import chat, conversations, memory, models, tools
+from server.routes import chat, conversations, memory, models, tools, usage
 
 app = FastAPI(
     title="quill",
@@ -42,6 +42,7 @@ app.include_router(chat.router, prefix="/api")
 app.include_router(models.router, prefix="/api")
 app.include_router(tools.router, prefix="/api")
 app.include_router(memory.router, prefix="/api")
+app.include_router(usage.router, prefix="/api")
 
 
 @app.get("/api/health")

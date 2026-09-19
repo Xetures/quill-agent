@@ -190,12 +190,6 @@ onMounted(() => {
         <el-table :data="visible" size="small" stripe>
           <el-table-column type="index" label="#" width="44" align="center" />
 
-          <el-table-column prop="id" label="模式 ID" width="110" show-overflow-tooltip>
-            <template #default="{ row }">
-              <span class="mono">{{ row.id }}</span>
-            </template>
-          </el-table-column>
-
           <el-table-column prop="name" label="模式名" width="130">
             <template #default="{ row }">
               <span class="mode-name">{{ row.name }}</span>

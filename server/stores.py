@@ -10,6 +10,7 @@ from __future__ import annotations
 from quill_agent.config import get_settings
 from quill_agent.history import ConversationStore
 from quill_agent.memory import MemoryStore
+from quill_agent.model_catalog import ModelCatalog
 from quill_agent.preferences import PreferenceStore
 from quill_agent.prompts import PromptLibrary
 from quill_agent.skills import SkillLibrary
@@ -33,6 +34,11 @@ def conversations() -> ConversationStore:
 def models() -> ModelStore:
     """模型连接配置。"""
     return ModelStore(get_settings().models_path)
+
+
+def model_catalog() -> ModelCatalog:
+    """模型规格快照（模型名 -> 上下文窗口），本地 JSON，可由用户手工维护。"""
+    return ModelCatalog(get_settings().model_catalog_path)
 
 
 def prompt_groups() -> PromptGroupStore:

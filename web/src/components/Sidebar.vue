@@ -4,6 +4,7 @@ import {
   ChatDotRound,
   Collection,
   Cpu,
+  DataLine,
   Document,
   MagicStick,
   Plus,
@@ -37,6 +38,7 @@ const NAV = [
   { to: '/skills', label: '技能', icon: Stamp },
   { to: '/memory', label: '记忆', icon: Collection },
   { to: '/archived', label: '归档', icon: Box },
+  { to: '/usage', label: '用量', icon: DataLine },
   { to: '/models', label: 'API设置', icon: Cpu },
   { to: '/settings', label: '偏好设置', icon: Setting },
 ]
@@ -82,49 +84,56 @@ async function onArchive(id: string, title: string): Promise<void> {
       </div>
     </div>
 
-    <!-- 「任务」的入口。做成整块的主色按钮：它是这个应用最常用的动作，
-         不该和下面那排平级的导航项长得一样 -->
-    <div class="new-task">
-      <el-button type="primary" :icon="Plus" class="new-task-btn" @click="onNew">
-        新建任务
-      </el-button>
-    </div>
-
-    <el-menu :default-active="route.path" router class="nav">
-      <el-menu-item v-for="item in NAV" :key="item.to" :index="item.to">
-        <el-icon><component :is="item.icon" /></el-icon>
-        <span>{{ item.label }}</span>
-      </el-menu-item>
-    </el-menu>
-
-    <div class="section">
-      <!-- 新建会话的入口已经在上面的主按钮里了，这里只留分组标题 -->
-      <div class="section-head">
-        <span>会话</span>
+    <!-- 品牌区以下的整块内容放进滚动容器：导航项和「会话」标题高度固定、
+         不允许压缩，窗口一矮（或浏览器放大）它们的总高就超过可视区，
+         没有这层滚动的话底部会被 overflow: hidden 直接裁掉，什么也看不到 -->
+    <div class="scroll-body">
+      <!-- 「任务」的入口。做成整块的主色按钮：它是这个应用最常用的动作，
+           不该和下面那排平级的导航项长得一样 -->
+      <div class="new-task">
+        <el-button type="primary" :icon="Plus" class="new-task-btn" @click="onNew">
+          新建任务
+        </el-button>
       </div>
 
-      <el-scrollbar class="list">
-        <p v-if="!session.conversations.length" class="hint">还没有会话，点上面的「新建任务」开始</p>
+      <el-menu :default-active="route.path" router class="nav">
+        <el-menu-item v-for="item in NAV" :key="item.to" :index="item.to">
+          <el-icon><component :is="item.icon" /></el-icon>
+          <span>{{ item.label }}</span>
+        </el-menu-item>
+      </el-menu>
 
-        <div
-          v-for="item in session.conversations"
-          :key="item.id"
-          class="conv"
-          :class="{ active: item.id === session.currentId }"
-          :title="`最后更新：${formatTime(item.updated_at)}`"
-          @click="onOpen(item.id)"
-        >
-          <span class="conv-title">{{ item.title }}</span>
-          <el-button
-            size="small"
-            text
-            class="conv-action"
-            :icon="Box"
-            title="归档"
-            @click.stop="onArchive(item.id, item.title)"
-          />
+      <div class="section">
+        <!-- 新建会话的入口已经在上面的主按钮里了，这里只留分组标题 -->
+        <div class="section-head">
+          <span>会话</span>
         </div>
-      </el-scrollbar>
+
+        <el-scrollbar class="list">
+          <p v-if="!session.conversations.length" class="hint">
+            还没有会话，点上面的「新建任务」开始
+          </p>
+
+          <div
+            v-for="item in session.conversations"
+            :key="item.id"
+            class="conv"
+            :class="{ active: item.id === session.currentId }"
+            :title="`最后更新：${formatTime(item.updated_at)}`"
+            @click="onOpen(item.id)"
+          >
+            <span class="conv-title">{{ item.title }}</span>
+            <el-button
+              size="small"
+              text
+              class="conv-action"
+              :icon="Box"
+              title="归档"
+              @click.stop="onArchive(item.id, item.title)"
+            />
+          </div>
+        </el-scrollbar>
+      </div>
     </div>
   </aside>
 </template>
@@ -137,6 +146,20 @@ async function onArchive(id: string, title: string): Promise<void> {
   overflow: hidden;
   background: var(--bg-soft);
   border-right: 1px solid var(--border);
+}
+
+/* 品牌区以下的整块内容。导航和「会话」标题高度固定、不允许压缩，
+ * 窗口一矮它们的总高就超出可视区；没有这层滚动就会被 .sidebar 的
+ * overflow: hidden 裁掉（底部直接看不见）。
+ * overflow-x 显式写 hidden：纵向给了 auto 之后，横向会跟着变成 auto，
+ * 容易平白多出一条横向滚动条 */
+.scroll-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 /* ---------- 品牌区 ---------- */
@@ -223,7 +246,9 @@ async function onArchive(id: string, title: string): Promise<void> {
   display: flex;
   flex-direction: column;
   flex: 1;
-  min-height: 0;
+  /* 刻意不写 0：会话区被压成 0 高时，它的内容会直接溢到导航项上叠成一团。
+   * 给个下限（标题 + 三四行会话），窗口不够高就交给外层 .scroll-body 出滚动条 */
+  min-height: 132px;
   padding: 0 10px 10px;
   border-top: 1px solid var(--border);
 }
@@ -275,17 +300,51 @@ async function onArchive(id: string, title: string): Promise<void> {
   font-size: 13px;
 }
 
-/* 归档按钮平时藏起来，hover 当前项时才出现 —— 侧边栏一行放不下两个控件 */
+/* 归档按钮：平时就露出来一点（让人知道这一行有操作），hover 时再提亮。
+ *
+ * 颜色必须走 Element 的 CSS 变量，不能直接写 `color` —— 直接写的优先级输给
+ * `.el-button.is-text`，选中行（整块主色底）上的图标会保持深色，等于看不见。
+ * 改变量就是在同一个元素上换个取值，稳。 */
 .conv-action {
   flex-shrink: 0;
-  opacity: 0;
+  opacity: 0.8;
+  transition: opacity 0.15s ease;
+
+  --el-button-text-color: var(--text-soft);
+  --el-button-hover-text-color: var(--accent);
+  --el-button-hover-bg-color: var(--bg-hover);
+  --el-button-active-text-color: var(--accent);
 }
 
 .conv:hover .conv-action {
   opacity: 1;
 }
 
+/* 选中行整块是主色底，图标要换成压在主色上的那个颜色才看得见 */
 .conv.active .conv-action {
-  color: var(--on-accent);
+  opacity: 0.9;
+
+  --el-button-text-color: var(--on-accent);
+  --el-button-hover-text-color: var(--on-accent);
+  --el-button-active-text-color: var(--on-accent);
+}
+
+/* 选中行上，悬停底色必须单独指定。
+ *
+ * Element 的文本按钮 hover 用的是 `--el-fill-color-light`（我们把它映射成了
+ * --bg-soft，米白），**不是** `--el-button-hover-bg-color` —— 所以改那个变量没用。
+ * 而米白底 + 米白图标（--on-accent）几乎同色，一悬停图标就糊成一个色块。
+ *
+ * 换成比选中底色稍亮的 --accent-hover：看得出「亮了」，图标仍然是米白，不会盖掉自己。
+ *
+ * 选择器里的 `:not(.is-disabled)` 是为了压过 EP 的
+ * `.el-button.is-text:not(.is-disabled):hover` —— 两者同权重时谁在后面谁说了算，
+ * 而注入顺序不可靠，所以干脆多加一档权重。 */
+.conv.active .conv-action:not(.is-disabled):hover {
+  background-color: var(--accent-hover);
+}
+
+.conv.active .conv-action:not(.is-disabled):active {
+  background-color: var(--accent-hover);
 }
 </style>

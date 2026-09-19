@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from quill_agent.history import ConversationMeta
-from quill_agent.preferences import draft_key
+from quill_agent.preferences import draft_key, mode_key
 from server import stores
 
 router = APIRouter(tags=["conversations"])
@@ -67,10 +67,21 @@ def restore_conversation(conversation_id: str) -> dict[str, bool]:
 @router.delete("/conversations/{conversation_id}")
 def delete_conversation(conversation_id: str) -> dict[str, bool]:
     """永久删除一个归档会话。"""
-    return {"removed": stores.conversations().remove_archived(conversation_id)}
+    removed = stores.conversations().remove_archived(conversation_id)
+    # 会话真的没了，它记住的模式也一并清掉 —— 别在偏好文件里留孤儿键。
+    # 归档 / 恢复不清：会话还在，只是搬了个目录，恢复后模式应该原样回来
+    stores.preferences().remove(mode_key(conversation_id))
+    return {"removed": removed}
 
 
 @router.delete("/conversations")
 def clear_archived() -> dict[str, int]:
     """清空归档。"""
-    return {"removed": stores.conversations().remove_all_archived()}
+    store = stores.conversations()
+    preferences = stores.preferences()
+
+    # 先按名单清模式偏好，再删文件 —— 删完就不知道该清哪些键了
+    for meta in store.list_archived():
+        preferences.remove(mode_key(meta.id))
+
+    return {"removed": store.remove_all_archived()}

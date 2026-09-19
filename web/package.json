@@ -10,7 +10,10 @@
     "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {
+    "@codemirror/lang-markdown": "^6.5.2",
     "@element-plus/icons-vue": "^2.3.2",
+    "@lezer/highlight": "^1.2.3",
+    "codemirror": "^6.0.2",
     "element-plus": "^2.14.6",
     "markdown-it": "^14.1.0",
     "vue": "^3.5.0",

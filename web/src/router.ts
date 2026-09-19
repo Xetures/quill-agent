@@ -19,6 +19,8 @@ export const router = createRouter({
     { path: '/skills', name: 'skills', component: () => import('./views/SkillsView.vue') },
     { path: '/memory', name: 'memory', component: () => import('./views/MemoryView.vue') },
     { path: '/archived', name: 'archived', component: () => import('./views/ArchivedView.vue') },
+    // 用量是「回来的看」的页面，排在归档之后、设置之前
+    { path: '/usage', name: 'usage', component: () => import('./views/UsageView.vue') },
     { path: '/settings', name: 'settings', component: () => import('./views/SettingsView.vue') },
   ],
 })

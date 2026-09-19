@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from quill_agent.naming import safe_name
+
 # 六类提示词；元组的顺序就是界面上的展示顺序
 PROMPT_CATEGORIES: tuple[str, ...] = (
     "身份",
@@ -74,3 +76,34 @@ class PromptLibrary:
         if not path.is_file():
             return None
         return path.read_text(encoding="utf-8")
+
+    def save(
+        self,
+        category: str,
+        name: str,
+        content: str,
+        *,
+        create_only: bool = False,
+    ) -> str:
+        """写入一条提示词，返回最终使用的名字（已去掉首尾空白）。
+
+        Args:
+            create_only: 新建时置真。同名文件已存在就报错而不是覆盖 —— 提示词名是
+                提示词组里的引用标识，而「AI助手」这种名字很容易撞上，悄悄盖掉一份
+                别人写了很久的正文代价太大。
+
+        Raises:
+            ValueError: 类别不存在、名字不合法、或重名（文案可直接展示）。
+        """
+        if category not in PROMPT_CATEGORIES:
+            raise ValueError(f"未知的提示词类别：{category}")
+
+        clean = safe_name(name)
+        path = self.category_dir(category) / f"{clean}{MARKDOWN_SUFFIX}"
+
+        if create_only and path.exists():
+            raise ValueError(f"「{category} / {clean}」已经存在了，换个名字，或直接编辑它。")
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        return clean

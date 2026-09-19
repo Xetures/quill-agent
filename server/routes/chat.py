@@ -152,6 +152,9 @@ def stream_round(request: ChatRequest, files: list) -> Iterator[str]:
         "notices": notices,
         "reasoning": "".join(reasoning_parts),
         "stats": asdict(stats),
+        # 用量统计按模型分组靠它。`stats` 里只有 token 数，认不出是哪个模型花的，
+        # 事后也没法反推（会话里可以中途换模型），所以必须在落盘时就记下
+        "model": request.model,
     }
     _remember(store, conversation_id, answer)
 

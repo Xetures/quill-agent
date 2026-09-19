@@ -95,7 +95,7 @@ class ModelStore:
         base_url: str = "",
         api_key: str = "",
         protocol: Protocol = Protocol.OPENAI,
-        context_window: int = 128000,
+        context_windows: dict[str, int] | None = None,
     ) -> ModelConfig:
         """新增一条配置，id 由本方法生成并返回。"""
         item = ModelConfig(
@@ -105,7 +105,7 @@ class ModelStore:
             base_url=base_url,
             protocol=protocol,
             api_key=api_key,
-            context_window=context_window,
+            context_windows=dict(context_windows or {}),
         )
         items = self.list()
         items.append(item)

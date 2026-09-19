@@ -25,14 +25,21 @@ class ChatRequest(BaseModel):
 
 
 class ModelPayload(BaseModel):
-    """新增 / 修改一条模型连接。"""
+    """新增 / 修改一条模型连接。
+
+    `context_windows` 是**模型级**的：同一条连接下的多个模型窗口常常不一样，
+    一个连接级的值表达不了。没给某个模型就是不填（仪表盘显示「—」）。
+    """
 
     name: str = Field(min_length=1)
     base_url: str = ""
     protocol: Protocol = Protocol.OPENAI
     api_key: str = ""
     models: list[str] = Field(default_factory=list)
-    context_window: int = Field(default=128000, gt=0, description="上下文窗口大小（tokens）")
+    context_windows: dict[str, int] = Field(
+        default_factory=dict,
+        description="模型名 -> 上下文窗口大小（tokens）",
+    )
 
 
 class TestConnectionPayload(BaseModel):
@@ -41,6 +48,54 @@ class TestConnectionPayload(BaseModel):
     base_url: str = ""
     api_key: str = ""
     protocol: Protocol = Protocol.OPENAI
+
+
+class CatalogLookupPayload(BaseModel):
+    """按模型名批量查本地规格快照。"""
+
+    # 上限防呆：界面一次最多也就查几十个名字
+    names: list[str] = Field(default_factory=list, max_length=200)
+
+
+class PromptPayload(BaseModel):
+    """新建一条提示词。
+
+    名字合法性（不能是路径、不能含非法字符）由业务层的 `naming.safe_name` 校验 ——
+    schema 层不知道什么是合法的文件名，硬编码一套规则只会和那边对不上。
+    """
+
+    category: str = Field(min_length=1, description="六类提示词之一")
+    name: str = Field(min_length=1, description="提示词名，也就是文件名")
+    content: str = Field(default="", description="正文（.md 原文）")
+
+
+class PromptContentPayload(BaseModel):
+    """覆盖一条已有提示词的正文。
+
+    不带名字和类别：改名等于换了一个引用标识，会让提示词组里的引用静默失效，
+    所以这一版不支持改名（要改就是新建一个，再把引用改过去）。
+    """
+
+    content: str = Field(default="", description="正文（.md 原文）")
+
+
+class SkillPayload(BaseModel):
+    """新建一个技能。
+
+    使用场景与正文是**拆开的两个字段**：前端编的就是这个形状，拼回 SKILL.md
+    由业务层的 `skills.compose_skill` 负责（元信息块不能让用户直接编，见那个函数）。
+    """
+
+    name: str = Field(min_length=1, description="技能名，也就是目录名")
+    description: str = Field(default="", description="使用场景：什么时候该加载它")
+    content: str = Field(default="", description="正文（不含元信息块）")
+
+
+class SkillContentPayload(BaseModel):
+    """覆盖一个已有技能的使用场景与正文。名字同 `PromptContentPayload`，不可改。"""
+
+    description: str = Field(default="", description="使用场景")
+    content: str = Field(default="", description="正文（不含元信息块）")
 
 
 class TogglePayload(BaseModel):

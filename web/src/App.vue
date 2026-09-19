@@ -2,6 +2,7 @@
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import { onMounted, ref } from 'vue'
 
+import HelpButton from './components/HelpButton.vue'
 import Sidebar from './components/Sidebar.vue'
 import { bootstrap } from './stores/session'
 import { errorText } from './utils/error'
@@ -41,6 +42,10 @@ onMounted(async () => {
              别用 v-if 包住这一块：目标元素必须在页面挂载前就存在 -->
         <header class="topbar">
           <div id="page-head-slot" class="topbar-slot"></div>
+
+          <!-- 使用说明常驻在顶栏右侧：它和当前在哪个页面无关，
+               放这里任何页面都够得着，也不必每个页面各写一个入口 -->
+          <HelpButton />
         </header>
 
         <RouterView />

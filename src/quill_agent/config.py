@@ -32,6 +32,18 @@ class Settings(BaseSettings):
     # 模型配置的存储文件位置
     models_path: Path = Field(default=Path("data/models.json"), description="模型配置 JSON 路径")
 
+    # 模型规格快照：模型名 -> 上下文窗口。绝大多数官方端点的 /models 不返回窗口大小，
+    # 只能靠一份本地快照查表（见 quill_agent/model_catalog.py）。它不在仓库里，
+    # 由用户在「API 设置」页点「同步模型库」拉一次，也可以自己手写。
+    model_catalog_path: Path = Field(
+        default=Path("data/model_catalog.json"),
+        description="模型规格快照 JSON 路径",
+    )
+    model_catalog_url: str = Field(
+        default="https://models.dev/api.json",
+        description="模型规格快照的下载地址，默认取自 models.dev",
+    )
+
     # 提示词：正文文件放 prompt/ 目录（用户可直接维护），配置存 data/
     prompt_dir: Path = Field(default=Path("prompt"), description="提示词目录")
     # 提示词组原先就叫「模式」，存在 modes.json。模式现在是四类组的组合，

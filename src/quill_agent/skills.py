@@ -31,6 +31,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from quill_agent.naming import safe_name
+
 # 技能目录里约定的入口文件名
 SKILL_FILENAME = "SKILL.md"
 
@@ -83,6 +85,24 @@ def split_frontmatter(text: str) -> tuple[dict[str, str], str]:
         return meta, "\n".join(lines[index + 1 :]).strip()
 
     return {}, text
+
+
+def compose_skill(description: str, body: str) -> str:
+    """把「使用场景 + 正文」拼回一个 SKILL.md 的完整内容。
+
+    **元信息由代码拼，不让用户直接编。** `split_frontmatter` 只认单行 `键: 值`，
+    用户在编辑器里多写一行、缩进一下，解析就会**静默失败** —— description 丢掉，
+    而它正是模型判断「什么时候该用我」的唯一依据。界面上把 description 做成独立的
+    输入框，正文只编 body，这个函数负责合起来，用户就没有机会把结构弄坏。
+
+    `description` 为空时不写元信息块（保持「没有块」这种合法形态，见 split_frontmatter）。
+    """
+    text = body.strip()
+    if not description.strip():
+        return f"{text}\n" if text else ""
+
+    front = f"{FRONTMATTER_FENCE}\ndescription: {description.strip()}\n{FRONTMATTER_FENCE}"
+    return f"{front}\n\n{text}\n"
 
 
 class SkillLibrary:
@@ -139,6 +159,35 @@ class SkillLibrary:
 
         _, body = split_frontmatter(path.read_text(encoding="utf-8"))
         return body.strip()
+
+    def save(
+        self,
+        name: str,
+        description: str,
+        body: str,
+        *,
+        create_only: bool = False,
+    ) -> str:
+        """写入一个技能，返回最终使用的名字（已去掉首尾空白）。
+
+        调用方给的是**拆开的两部分**（使用场景 + 正文），拼装由 `compose_skill`
+        负责 —— 见那个函数的说明。
+
+        Args:
+            create_only: 新建时置真。同名技能已存在就报错，不覆盖。
+
+        Raises:
+            ValueError: 名字不合法，或重名（文案可直接展示）。
+        """
+        clean = safe_name(name)
+        path = self.skill_dir(clean) / SKILL_FILENAME
+
+        if create_only and path.exists():
+            raise ValueError(f"技能「{clean}」已经存在了，换个名字，或直接编辑它。")
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(compose_skill(description, body), encoding="utf-8")
+        return clean
 
     def meta(self, name: str) -> SkillMeta | None:
         """读取技能元信息；技能不存在时返回 None。

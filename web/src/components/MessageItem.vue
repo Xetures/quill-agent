@@ -142,6 +142,20 @@ const statsText = computed(() => {
   --el-collapse-header-height: 34px;
 }
 
+/* 折叠块的标题和内容一起右移一格，和正文气泡的内边距（14px）对齐。
+ *
+ * 不加这一条的话两者都贴着折叠框左边缘 —— 而正文气泡靠自己的 padding 缩进，
+ * 于是「思考过程」这个标题连同它的内容都比回答正文靠左 14px，看着像从版心里
+ * 掉出去了。**标题也要一起缩**：只缩内容的话，标题反而成了更靠左的那个，
+ * 一个块里出现两条不齐的左边线。
+ *
+ * 需要 :deep()：这两个都是 Element Plus 的内部节点 */
+.folds :deep(.el-collapse-item__header),
+.folds :deep(.el-collapse-item__content) {
+  padding-left: 14px;
+  padding-right: 14px;
+}
+
 .reasoning {
   color: var(--text-soft);
   /* 思考过程往往很长，且夹着 URL、路径这类不易断行的长串；不设上限会顶破

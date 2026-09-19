@@ -1,11 +1,15 @@
 <script setup lang="ts">
 import { Plus } from '@element-plus/icons-vue'
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, defineAsyncComponent, onMounted, reactive, ref } from 'vue'
 
 import { api } from '../api/client'
 import type { PromptGroup, PromptLib } from '../api/types'
 import { loadOptions } from '../stores/session'
 import { errorText } from '../utils/error'
+
+// 编辑器带着 CodeMirror（几百 KB），而只有真正打开弹窗时才需要它 ——
+// 异步加载能让这两个页面本身的包保持干净
+const MarkdownEditor = defineAsyncComponent(() => import('../components/MarkdownEditor.vue'))
 
 // ---------------------------------------------------------------------------
 // 数据
@@ -169,6 +173,82 @@ function contentKey(category: string, name: string): string {
   return `${category}/${name}`
 }
 
+// ---------------------------------------------------------------------------
+// 提示词正文：新建 / 编辑共用一个弹窗
+//
+// 名字和类别在编辑时**不可改**：它们是提示词组里的引用标识，改了会让引用静默失效
+// （组里显示「文件缺失」）。要「改名」就新建一个再把引用改过去。
+// ---------------------------------------------------------------------------
+
+/** 正在编辑的提示词名；空串表示新建。类别和名字本身放在 promptForm 里。 */
+const editingPrompt = ref('')
+const promptDialogOpen = ref(false)
+const promptSaving = ref(false)
+const promptForm = reactive({ category: '', name: '', content: '' })
+
+function openPromptCreate(): void {
+  editingPrompt.value = ''
+  promptForm.category = lib.value.categories[0] ?? ''
+  promptForm.name = ''
+  promptForm.content = ''
+  promptDialogOpen.value = true
+}
+
+async function openPromptEdit(category: string, name: string): Promise<void> {
+  editingPrompt.value = name
+  promptForm.category = category
+  promptForm.name = name
+  promptForm.content = ''
+  promptDialogOpen.value = true
+
+  try {
+    const data = await api.get<{ content: string }>(
+      `/prompts/${encodeURIComponent(category)}/${encodeURIComponent(name)}`,
+    )
+    promptForm.content = data.content
+    // 顺手把展开区里缓存的那份也对齐，免得两个地方显示不一样的正文
+    contents.value[contentKey(category, name)] = data.content
+  } catch (exc) {
+    ElMessage.error(errorText(exc))
+  }
+}
+
+const canSubmitPrompt = computed(
+  () => Boolean(promptForm.name.trim() && promptForm.content.trim()),
+)
+
+async function submitPrompt(): Promise<void> {
+  if (!canSubmitPrompt.value) return
+
+  promptSaving.value = true
+  try {
+    if (editingPrompt.value) {
+      await api.put(
+        `/prompts/${encodeURIComponent(promptForm.category)}/${encodeURIComponent(promptForm.name)}`,
+        { content: promptForm.content },
+      )
+      ElMessage.success('已保存')
+    } else {
+      await api.post('/prompts', {
+        category: promptForm.category,
+        name: promptForm.name.trim(),
+        content: promptForm.content,
+      })
+      ElMessage.success('已创建')
+    }
+
+    promptDialogOpen.value = false
+    await load()
+    // 提示词组的下拉读的是同一份名字列表，改完得让它看到最新的
+    await loadOptions()
+  } catch (exc) {
+    // 重名、名字不合法：后端文案比前端猜的准，原样显示
+    ElMessage.error(errorText(exc))
+  } finally {
+    promptSaving.value = false
+  }
+}
+
 /**
  * 展开某一行时按需取正文。
  *
@@ -204,8 +284,8 @@ onMounted(() => {
     <Teleport to="#page-head-slot">
       <h1>提示词</h1>
       <span class="hint">
-        提示词组是从六类提示词里各挑一个拼成的搭配方案，是模式的组成部分之一；正文在 prompt/
-        目录里维护，下面只读
+        提示词组是从六类提示词里各挑一个拼成的搭配方案，是模式的组成部分之一；正文是 prompt/
+        目录下的 .md 文件，也可以在这里直接编辑
       </span>
     </Teleport>
 
@@ -303,7 +383,15 @@ onMounted(() => {
         >
           <el-option v-for="item in lib.categories" :key="item" :label="item" :value="item" />
         </el-select>
-        <span class="readonly muted">正文只读：要改就去 prompt/ 目录编辑 .md 文件</span>
+        <el-button
+          size="small"
+          type="primary"
+          :icon="Plus"
+          class="add-btn"
+          @click="openPromptCreate"
+        >
+          添加提示词
+        </el-button>
       </div>
 
       <el-scrollbar class="half-body">
@@ -317,8 +405,25 @@ onMounted(() => {
           <el-table-column prop="category" label="类别" width="110" />
           <el-table-column prop="name" label="提示词名" min-width="200" />
 
+          <el-table-column label="操作" width="80" align="center">
+            <template #default="{ row }">
+              <!-- 只传两个字段：row 的类型是宽泛的 DefaultRow，整个对象传不进具体类型 -->
+              <el-button
+                size="small"
+                text
+                type="primary"
+                @click="openPromptEdit(row.category, row.name)"
+              >
+                编辑
+              </el-button>
+            </template>
+          </el-table-column>
+
           <template #empty>
-            <el-empty description="prompt/ 目录下还没有提示词" :image-size="60" />
+            <el-empty
+              description="prompt/ 目录下还没有提示词；点右上角「添加提示词」创建"
+              :image-size="60"
+            />
           </template>
         </el-table>
       </el-scrollbar>
@@ -370,6 +475,54 @@ onMounted(() => {
         </el-button>
       </template>
     </el-dialog>
+
+    <!-- 提示词正文：新建 / 编辑共用。名字和类别在编辑时锁住 —— 它们是引用标识 -->
+    <el-dialog
+      v-model="promptDialogOpen"
+      :title="editingPrompt ? '编辑提示词' : '添加提示词'"
+      width="760px"
+      top="6vh"
+    >
+      <el-form label-width="70px" size="default" @submit.prevent>
+        <el-form-item label="名称" required>
+          <el-input
+            v-model="promptForm.name"
+            :disabled="Boolean(editingPrompt)"
+            placeholder="例如：Agent助手"
+            maxlength="60"
+          />
+          <div v-if="editingPrompt" class="field-hint muted">
+            名字是提示词组里的引用标识，改掉它会让已有的引用失效 —— 要换名字就新建一个
+          </div>
+        </el-form-item>
+
+        <el-form-item label="分类" required>
+          <el-select v-model="promptForm.category" :disabled="Boolean(editingPrompt)" class="wide">
+            <el-option v-for="item in lib.categories" :key="item" :label="item" :value="item" />
+          </el-select>
+        </el-form-item>
+
+        <el-form-item label="正文" required>
+          <MarkdownEditor
+            v-model="promptForm.content"
+            placeholder="写这个提示词的正文，支持 Markdown"
+          />
+        </el-form-item>
+      </el-form>
+
+      <template #footer>
+        <el-button size="small" @click="promptDialogOpen = false">取消</el-button>
+        <el-button
+          size="small"
+          type="primary"
+          :loading="promptSaving"
+          :disabled="!canSubmitPrompt"
+          @click="submitPrompt"
+        >
+          确认
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -414,6 +567,11 @@ onMounted(() => {
   width: 150px;
 }
 
+/* 「添加提示词」贴到这一行最右侧 —— 和上半的「新建提示词组」同一个位置 */
+.add-btn {
+  margin-left: auto;
+}
+
 /* 表格区在 half 里滚动，而不是让整个页面滚 */
 .half-body {
   flex: 1;
@@ -426,10 +584,6 @@ onMounted(() => {
 
 .set-tag {
   margin: 0 4px 2px 0;
-}
-
-.readonly {
-  font-size: 12px;
 }
 
 .field-hint {

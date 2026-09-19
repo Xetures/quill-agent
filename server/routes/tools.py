@@ -8,7 +8,12 @@ from quill_agent.config import get_settings
 from quill_agent.models import SkillGroup, ToolGroup
 from quill_agent.tools import registry
 from server import stores
-from server.schemas import SkillGroupPayload, ToolGroupPayload
+from server.schemas import (
+    SkillContentPayload,
+    SkillGroupPayload,
+    SkillPayload,
+    ToolGroupPayload,
+)
 
 router = APIRouter(tags=["tools"])
 
@@ -191,8 +196,53 @@ def list_skills() -> dict:
 
 @router.get("/skills/{name}")
 def read_skill(name: str) -> dict:
-    """某个技能的正文（不含元信息块）。"""
-    content = stores.skills().read(name)
+    """某个技能的使用场景与正文（正文不含元信息块）。
+
+    两样一起给：编辑器打开的就是「使用场景 + 正文」两个框，分开取还得多一次请求，
+    也容易和列表里的那份对不上。
+    """
+    library = stores.skills()
+    content = library.read(name)
     if content is None:
         raise HTTPException(status_code=404, detail=f"技能不存在：{name}")
-    return {"name": name, "content": content}
+
+    meta = library.meta(name)
+    return {"name": name, "description": meta.description if meta else "", "content": content}
+
+
+@router.post("/skills")
+def create_skill(payload: SkillPayload) -> dict:
+    """新建一个技能（一个目录 + 一个 SKILL.md）。
+
+    同名技能已存在时报 400 而不是覆盖：技能名是技能组里的引用标识。
+    """
+    try:
+        name = stores.skills().save(
+            payload.name,
+            payload.description,
+            payload.content,
+            create_only=True,
+        )
+    except ValueError as exc:
+        # 名字不合法 / 重名，文案都是给用户看的
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {"name": name}
+
+
+@router.put("/skills/{name}")
+def update_skill(name: str, payload: SkillContentPayload) -> dict:
+    """覆盖一个技能的使用场景与正文。
+
+    只写 SKILL.md，名字是目录名、不可改 —— 它是技能组里的引用标识。
+    """
+    library = stores.skills()
+    if not library.exists(name):
+        raise HTTPException(status_code=404, detail=f"技能不存在：{name}")
+
+    try:
+        library.save(name, payload.description, payload.content)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {"name": name}

@@ -1,10 +1,14 @@
 <script setup lang="ts">
 import { Plus } from '@element-plus/icons-vue'
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, defineAsyncComponent, onMounted, reactive, ref } from 'vue'
 
 import { api } from '../api/client'
 import type { SkillGroup, SkillItem } from '../api/types'
 import { errorText } from '../utils/error'
+
+// 编辑器带着 CodeMirror（几百 KB），而只有真正打开弹窗时才需要它 ——
+// 异步加载能让这两个页面本身的包保持干净
+const MarkdownEditor = defineAsyncComponent(() => import('../components/MarkdownEditor.vue'))
 
 // ---------------------------------------------------------------------------
 // 数据
@@ -53,6 +57,85 @@ async function onExpand(row: { name: string }, expanded: unknown): Promise<void>
 
   const data = await api.get<{ content: string }>(`/skills/${encodeURIComponent(row.name)}`)
   contents.value[row.name] = data.content
+}
+
+// ---------------------------------------------------------------------------
+// 技能正文：新建 / 编辑共用一个弹窗
+//
+// 界面上给的是「使用场景 + 正文」两个框，对应 SKILL.md 拆开后的两部分。
+// **拼回文件由后端做**（`skills.compose_skill`）：元信息块只认单行 `键: 值`，
+// 让用户直接编它，多写一行或缩进一下就会静默解析失败、description 丢掉 ——
+// 而那正是模型判断「什么时候该用我」的唯一依据。
+// ---------------------------------------------------------------------------
+
+/** 正在编辑的技能名；空串表示新建。 */
+const editingSkill = ref('')
+const skillDialogOpen = ref(false)
+const skillSaving = ref(false)
+const skillForm = reactive({ name: '', description: '', content: '' })
+
+function openSkillCreate(): void {
+  editingSkill.value = ''
+  skillForm.name = ''
+  skillForm.description = ''
+  skillForm.content = ''
+  skillDialogOpen.value = true
+}
+
+async function openSkillEdit(name: string): Promise<void> {
+  editingSkill.value = name
+  skillForm.name = name
+  skillForm.description = ''
+  skillForm.content = ''
+  skillDialogOpen.value = true
+
+  try {
+    const data = await api.get<{ description: string; content: string }>(
+      `/skills/${encodeURIComponent(name)}`,
+    )
+    skillForm.description = data.description
+    skillForm.content = data.content
+    // 展开区里缓存的那份也对齐，免得两处显示不一样的正文
+    contents.value[name] = data.content
+  } catch (exc) {
+    ElMessage.error(errorText(exc))
+  }
+}
+
+// 三个字段全必填：名字是目录名；使用场景是模型判断「什么时候该加载我」的唯一依据；
+// 正文为空的话这个技能就没有意义
+const canSubmitSkill = computed(() =>
+  Boolean(skillForm.name.trim() && skillForm.description.trim() && skillForm.content.trim()),
+)
+
+async function submitSkill(): Promise<void> {
+  if (!canSubmitSkill.value) return
+
+  skillSaving.value = true
+  try {
+    if (editingSkill.value) {
+      await api.put(`/skills/${encodeURIComponent(editingSkill.value)}`, {
+        description: skillForm.description.trim(),
+        content: skillForm.content,
+      })
+      ElMessage.success('已保存')
+    } else {
+      await api.post('/skills', {
+        name: skillForm.name.trim(),
+        description: skillForm.description.trim(),
+        content: skillForm.content,
+      })
+      ElMessage.success('已创建')
+    }
+
+    skillDialogOpen.value = false
+    await load()
+  } catch (exc) {
+    // 重名、名字不合法：后端文案比前端猜的准，原样显示
+    ElMessage.error(errorText(exc))
+  } finally {
+    skillSaving.value = false
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -140,7 +223,7 @@ onMounted(() => {
     <Teleport to="#page-head-slot">
       <h1>技能</h1>
       <span class="hint">
-        正文放在 <code class="mono">{{ dir }}/&lt;技能名&gt;/SKILL.md</code>；技能组是技能的搭配方案，是模式的一部分，启用与否由模式决定
+        正文放在 <code class="mono">{{ dir }}/&lt;技能名&gt;/SKILL.md</code>，也可以在这里直接编辑；技能组是技能的搭配方案，是模式的一部分，启用与否由模式决定
       </span>
     </Teleport>
 
@@ -203,10 +286,19 @@ onMounted(() => {
       </el-scrollbar>
     </section>
 
-    <!-- 下半：单个技能（原有功能，含展开看正文） -->
+    <!-- 下半：单个技能（含展开看正文、编辑弹窗） -->
     <section class="half">
       <div class="half-head">
         <h2>全部技能</h2>
+        <el-button
+          size="small"
+          type="primary"
+          :icon="Plus"
+          class="add-btn"
+          @click="openSkillCreate"
+        >
+          添加技能
+        </el-button>
       </div>
 
       <el-scrollbar class="half-body">
@@ -228,9 +320,18 @@ onMounted(() => {
 
           <!-- 这里不再有「启用」开关：给不给技能由模式的技能组决定 -->
 
+          <el-table-column label="操作" width="80" align="center">
+            <template #default="{ row }">
+              <!-- 只传名字：row 的类型是宽泛的 DefaultRow -->
+              <el-button size="small" text type="primary" @click="openSkillEdit(row.name)">
+                编辑
+              </el-button>
+            </template>
+          </el-table-column>
+
           <template #empty>
             <el-empty
-              description="还没有技能：在 skills/ 下建个目录、放个 SKILL.md"
+              description="还没有技能；点右上角「添加技能」创建"
               :image-size="60"
             />
           </template>
@@ -287,6 +388,60 @@ onMounted(() => {
         </el-button>
       </template>
     </el-dialog>
+
+    <!-- 技能正文：新建 / 编辑共用。名字在编辑时锁住 —— 它是技能组里的引用标识 -->
+    <el-dialog
+      v-model="skillDialogOpen"
+      :title="editingSkill ? '编辑技能' : '添加技能'"
+      width="760px"
+      top="6vh"
+    >
+      <el-form label-width="80px" size="default" @submit.prevent>
+        <el-form-item label="名称" required>
+          <el-input
+            v-model="skillForm.name"
+            :disabled="Boolean(editingSkill)"
+            placeholder="例如：代码审查"
+            maxlength="60"
+          />
+          <div v-if="editingSkill" class="field-hint muted">
+            技能名就是目录名，也是技能组里的引用标识，改掉会让已有的引用失效
+          </div>
+        </el-form-item>
+
+        <el-form-item label="使用场景" required>
+          <el-input
+            v-model="skillForm.description"
+            placeholder="例如：当用户要求审查代码、评估实现好坏时使用"
+            maxlength="120"
+          />
+          <div class="field-hint muted">
+            这是模型判断「该不该加载它」的唯一依据 —— 写清「什么时候用我」，
+            别写成「处理代码」这种
+          </div>
+        </el-form-item>
+
+        <el-form-item label="内容" required>
+          <MarkdownEditor
+            v-model="skillForm.content"
+            placeholder="这类任务的完整做法，可以写得很长 —— 它平时不占上下文，模型需要时才读"
+          />
+        </el-form-item>
+      </el-form>
+
+      <template #footer>
+        <el-button size="small" @click="skillDialogOpen = false">取消</el-button>
+        <el-button
+          size="small"
+          type="primary"
+          :loading="skillSaving"
+          :disabled="!canSubmitSkill"
+          @click="submitSkill"
+        >
+          确认
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -324,6 +479,17 @@ onMounted(() => {
   flex: 1;
   max-width: 260px;
   margin-left: auto;
+}
+
+/* 「添加技能」贴到这一行最右侧 —— 和上半的「新建技能组」同一个位置 */
+.add-btn {
+  margin-left: auto;
+}
+
+.field-hint {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .half-body {

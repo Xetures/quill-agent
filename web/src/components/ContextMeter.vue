@@ -5,7 +5,8 @@
  * 两个数字的来源：
  *   - **占用**取最近一条真正发过请求的 assistant 消息的 `stats.prompt_tokens`。
  *     那正是「这一轮发出去的全部上下文」有多大，比数消息条数准确得多。
- *   - **窗口**取当前所选模型连接的 `context_window`（在「API 设置」里配置）。
+ *   - **窗口**取当前所选模型**这个模型**的窗口大小（在「API 设置」里配，按模型分开填）。
+ *     没填就是 0，显示「—」而不是拿一个默认值硬凑 —— 错的占比比没有占比更糟。
  *
  * 没有可用统计时显示 0 而不是藏起来 —— 面板位置固定，用户能一直看到它，
  * 只是暂时还没有数据。
@@ -33,9 +34,21 @@ const percent = computed(() => {
   return Math.min(100, Math.round((used.value / windowSize.value) * 100))
 })
 
-/** 128000 -> "128k"；不足一千的照原样。 */
+/**
+ * 128000 -> "128k"，1000000 -> "1M"，1224 -> "1.2k"。
+ *
+ * 满一千就折成 k 是不够的：百万级窗口会显示成「1000k」，而千位取整又会把
+ * 1224 显示成「1k」—— 分子本来就小，再把小数抹掉就看不出变化了。
+ */
 function humanize(tokens: number): string {
-  return tokens >= 1000 ? `${Math.round(tokens / 1000)}k` : String(tokens)
+  if (tokens >= 1_000_000) return `${trim(tokens / 1_000_000)}M`
+  if (tokens >= 1000) return `${trim(tokens / 1000)}k`
+  return String(tokens)
+}
+
+/** 去掉多余的小数位：整数不留 .0，小数最多保留一位。 */
+function trim(value: number): string {
+  return value >= 100 || Number.isInteger(value) ? String(Math.round(value)) : value.toFixed(1)
 }
 
 const caption = computed(

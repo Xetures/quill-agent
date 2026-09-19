@@ -60,7 +60,27 @@ export const session = reactive({
 
 /** 后端偏好文件里的键。 */
 const PREF_MODEL = 'model'
+/**
+ * 不带会话前缀的「模式」键。
+ *
+ * 模式现在按会话记（见 `modeKey`），这个键**不再参与读取** —— 只要还拿它当
+ * 回落值，「切到另一个任务却还是上一个任务的模式」就会原样复现。
+ * 保留写入是为了 Streamlit 版：那一版读的仍是这个全局键。
+ */
 const PREF_MODE = 'mode'
+
+/** 某个会话记住的模式 id 的键，与后端 `preferences.mode_key` 是同一口径。 */
+function modeKey(conversationId: string): string {
+  return `mode::${conversationId}`
+}
+
+/**
+ * 后端偏好文件的全量快照。
+ *
+ * 必须留着：切换会话时要就地查出「这个任务记住的是哪个模式」，只在启动时
+ * 解出一次的话，切任务时就无从查起了。
+ */
+let prefs: Record<string, string> = {}
 
 // ---------------------------------------------------------------------------
 // 加载
@@ -77,6 +97,10 @@ export async function loadMessages(conversationId: string): Promise<void> {
   const data = await api.get<{ messages: Message[] }>(`/conversations/${conversationId}`)
   session.currentId = conversationId
   session.messages = data.messages
+
+  // 模式跟着会话走：换任务就把这个任务自己的模式取回来，
+  // 而不是把上一个任务的选择带过去（见 restoreMode）
+  restoreMode()
 }
 
 export async function loadOptions(): Promise<void> {
@@ -104,9 +128,10 @@ export async function loadOptions(): Promise<void> {
 }
 
 export async function loadPreferences(): Promise<void> {
-  const values = await api.get<Record<string, string>>('/preferences')
-  session.modelKey = values[PREF_MODEL] ?? ''
-  session.modeId = values[PREF_MODE] ?? ''
+  prefs = await api.get<Record<string, string>>('/preferences')
+  session.modelKey = prefs[PREF_MODEL] ?? ''
+  // 这里不解析模式：它是按会话记的，而此刻还不知道会落到哪个会话。
+  // `loadMessages` 会负责把它取回来
 }
 
 /** 启动时把该拿的一次拿齐。 */
@@ -128,11 +153,47 @@ export function persistModel(): void {
   void api.put('/preferences', { values: { [PREF_MODEL]: session.modelKey } })
 }
 
-export function persistMode(): void {
-  void api.put('/preferences', { values: { [PREF_MODE]: session.modeId } })
+/** 把模式记在某个会话名下；不碰模型选择。 */
+function rememberMode(conversationId: string, modeId: string): void {
+  const key = modeKey(conversationId)
 
-  // 模式可以绑定一个偏好模型：切过去时跟着换，没配就保持当前选择不动。
-  // 偏好模型若已被删掉就跳过 —— 别让选择器指向一个不存在的值
+  // 内存里的快照也要跟着改，否则切回来读到的还是旧值。
+  // 全局那份是同写给 Streamlit 版的，Vue 版自己不读它（见 PREF_MODE）
+  prefs[key] = modeId
+  prefs[PREF_MODE] = modeId
+  void api.put('/preferences', { values: { [key]: modeId, [PREF_MODE]: modeId } })
+}
+
+/** 用户主动切模式：记下来，并把模式绑定的偏好模型一并套上。 */
+export function persistMode(): void {
+  rememberMode(session.currentId, session.modeId)
+  applyPreferredModel()
+}
+
+/**
+ * 取回当前会话记住的模式。
+ *
+ * 模式是「任务级」的：任务 A 用模式 A 聊，切到任务 B 就该是 B 自己的模式，
+ * 而不是把 A 的选择带过去。所以这里**只认这个会话自己的记录**，没记过就落到
+ * 默认模式（第一个）—— 绝不拿全局的「上次用过什么」来兜底，那正是这个 bug 本身。
+ *
+ * 存下来的模式可能已被删掉（模式页删得掉），所以要对着现有模式校验一遍。
+ *
+ * 这里刻意**不套用模式的偏好模型**：那会让「切个任务」顺带把用户手选的模型换掉，
+ * 而用户要的只是模式跟着任务走。偏好模型只在主动切模式时才生效。
+ */
+function restoreMode(): void {
+  const remembered = prefs[modeKey(session.currentId)] ?? ''
+  const valid = session.modes.some((item) => item.id === remembered)
+
+  session.modeId = valid ? remembered : (session.modes[0]?.id ?? '')
+}
+
+/**
+ * 模式可以绑定一个偏好模型：切过去时跟着换，没配就保持当前选择不动。
+ * 偏好模型若已被删掉就跳过 —— 别让选择器指向一个不存在的值。
+ */
+function applyPreferredModel(): void {
   const mode = session.modes.find((item) => item.id === session.modeId)
   if (mode?.preferred_model && session.models.some((item) => item.key === mode.preferred_model)) {
     session.modelKey = mode.preferred_model
@@ -262,8 +323,18 @@ export async function sendMessage(options: {
 // 会话操作
 // ---------------------------------------------------------------------------
 export async function startNewConversation(): Promise<void> {
+  // 新任务沿用当前模式：刚在别处选好的模式，多半还想接着用。
+  // 但要把它写进新会话自己的键 —— 之后改这个任务的模式，不该回头影响别的任务
+  const inherited = session.modeId
+
   const { id } = await api.post<{ id: string }>('/conversations')
-  await loadMessages(id)
+  await loadMessages(id) // 这里会先把模式置成默认值
+
+  if (session.modes.some((item) => item.id === inherited)) {
+    session.modeId = inherited
+    rememberMode(id, inherited)
+  }
+
   await loadConversations()
 }
 

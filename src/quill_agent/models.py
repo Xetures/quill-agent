@@ -80,8 +80,10 @@ class ModelConfig(BaseModel):
         protocol: 接口协议，决定 API Key 的格式要求。
         api_key: 接口鉴权 Key；注意会以明文写入 JSON 文件。
         models: 该连接下可用的模型名，例如 ["deepseek-chat", "deepseek-reasoner"]。
-        context_window: 上下文窗口大小（tokens）。任务页的用量仪表盘靠它算占比；
-            各家不一，也没法从模型名可靠推断，所以做成可配项。
+        context_windows: 模型名 -> 上下文窗口大小（tokens）。任务页的用量仪表盘靠它
+            算占比。**它是模型的属性，不是连接的属性** —— 同一条连接下的多个模型窗口
+            常常不一样（一条中转站同时挂着 64k 和 200k 的模型），一个连接级的值表达
+            不了这件事。缺失某个模型就是「不知道」，仪表盘显示「—」而不是拿默认值硬凑。
     """
 
     id: str = Field(description="唯一标识")
@@ -91,19 +93,42 @@ class ModelConfig(BaseModel):
     protocol: Protocol = Field(default=Protocol.OPENAI, description="接口协议")
     api_key: str = Field(default="", description="接口鉴权 Key")
     models: list[str] = Field(default_factory=list, description="该连接下可用的模型名")
-    # 旧数据没有这个字段，给一个常见默认值（128k）保证向下兼容；用户按实际模型改
-    context_window: int = Field(default=128000, gt=0, description="上下文窗口大小（tokens）")
+    context_windows: dict[str, int] = Field(
+        default_factory=dict,
+        description="模型名 -> 上下文窗口大小（tokens）；没有条目表示未知",
+    )
 
     @model_validator(mode="before")
     @classmethod
-    def _migrate_single_model(cls, data: Any) -> Any:
-        """兼容早期格式：那时一条记录只能存一个模型，字段名叫 model。"""
-        if isinstance(data, dict) and "model" in data and "models" not in data:
-            migrated = dict(data)
+    def _migrate_old_fields(cls, data: Any) -> Any:
+        """兼容两种更早的写法。"""
+        if not isinstance(data, dict):
+            return data
+
+        migrated = dict(data)
+
+        # 早期格式：一条记录只能存一个模型，字段名叫 model
+        if "model" in migrated and "models" not in migrated:
             single = migrated.pop("model")
             migrated["models"] = [single] if single else []
-            return migrated
-        return data
+
+        # 旧格式：上下文窗口挂在连接上（一个连接只有一个值）。现在它是模型级属性，
+        # 把那个值摊给当时配的所有模型 —— 这正是旧数据想表达的意思，不必让用户重填
+        legacy = migrated.pop("context_window", None)
+        if "context_windows" not in migrated and isinstance(legacy, int) and legacy > 0:
+            names = migrated.get("models") or []
+            migrated["context_windows"] = {name: legacy for name in names if name}
+
+        return migrated
+
+    @model_validator(mode="after")
+    def _validate_windows(self) -> ModelConfig:
+        """窗口大小必须是正数：0 或负数会让仪表盘的占比算成 0% 或负值。"""
+        for model, tokens in self.context_windows.items():
+            if tokens <= 0:
+                raise ValueError(f"上下文窗口必须大于 0：{model}")
+
+        return self
 
     @model_validator(mode="after")
     def _validate_api_key(self) -> ModelConfig:

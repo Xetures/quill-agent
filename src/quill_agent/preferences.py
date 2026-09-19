@@ -19,6 +19,10 @@ from quill_agent.store import read_json
 # 草稿类偏好的键前缀：一个会话一份，避免互相覆盖
 DRAFT_KEY_PREFIX = "prompt_draft"
 
+# 模式偏好的键前缀。模式同样按会话记：任务是「用这个模式在聊」，
+# 切到另一个任务就该回到那个任务自己的模式，而不是把上一个任务的模式带过去
+MODE_KEY_PREFIX = "mode"
+
 
 def draft_key(conversation_id: str) -> str:
     """草稿的存储键。
@@ -26,6 +30,15 @@ def draft_key(conversation_id: str) -> str:
     按会话隔离：在会话 A 里写了一半切到 B，两边草稿互不干扰。
     """
     return f"{DRAFT_KEY_PREFIX}::{conversation_id}"
+
+
+def mode_key(conversation_id: str) -> str:
+    """会话记住的模式 id 的存储键。
+
+    和 `draft_key` 同一个思路：按会话隔离。不带前缀的 `mode` 键仍然保留，
+    作为「这个会话还没记过模式」时的回落值（老版本存的就是它）。
+    """
+    return f"{MODE_KEY_PREFIX}::{conversation_id}"
 
 
 class PreferenceStore:

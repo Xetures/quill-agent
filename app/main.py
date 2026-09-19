@@ -741,6 +741,8 @@ def handle_submit(
             "notices": result.notices,
             "reasoning": result.reasoning,
             "stats": asdict(result.stats),
+            # 用量统计按模型分组靠它；没选模型时留空（这类记录本来也没有用量）
+            "model": model.model if model else "",
         },
     )
 

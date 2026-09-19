@@ -76,11 +76,14 @@ onMounted(() => {
     </Teleport>
 
     <div class="composer">
+      <!-- 三行高：记忆是一条完整的陈述句，单行输入框改起来要来回左右看。
+           既然是多行，Enter 就留给换行，提交走按钮 -->
       <el-input
         v-model="draft"
-        size="small"
+        type="textarea"
+        :rows="3"
+        resize="none"
         placeholder="手动加一条，例如：偏好简洁回答，不要啰嗦的总结"
-        @keydown.enter="add"
       />
       <el-button size="small" type="primary" :disabled="!draft.trim()" @click="add">
         添加
@@ -119,6 +122,8 @@ onMounted(() => {
 <style scoped>
 .composer {
   display: flex;
+  /* 多行输入框比按钮高得多，按钮要靠上对齐才不会浮在中间 */
+  align-items: flex-start;
   gap: 8px;
   margin-bottom: 12px;
 }
