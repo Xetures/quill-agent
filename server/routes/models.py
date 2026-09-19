@@ -1,14 +1,26 @@
-"""模型连接、提示词模式、提示词库接口。"""
+"""模型连接、模式、提示词组、提示词库接口。"""
 
 from __future__ import annotations
+
+from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
 
 from quill_agent.core import test_connection
-from quill_agent.models import ModelConfig, PromptMode, check_api_key, model_choice_key
+from quill_agent.models import (
+    Mode,
+    ModelConfig,
+    check_api_key,
+    model_choice_key,
+)
 from quill_agent.prompts import PROMPT_CATEGORIES
 from server import stores
-from server.schemas import ModelPayload, ModePayload, TestConnectionPayload
+from server.schemas import (
+    ModelPayload,
+    ModePayload,
+    PromptGroupPayload,
+    TestConnectionPayload,
+)
 
 router = APIRouter(tags=["models"])
 
@@ -28,6 +40,8 @@ def list_models() -> dict:
             "config_name": config.name,
             "model": name,
             "label": f"{config.name} / {name}",
+            # 任务页的上下文用量仪表盘要拿它当分母，所以随选项一起给出去
+            "context_window": config.context_window,
         }
         for config in configs
         for name in config.models
@@ -53,6 +67,7 @@ def add_model(payload: ModelPayload) -> dict:
             base_url=payload.base_url,
             api_key=payload.api_key,
             protocol=payload.protocol,
+            context_window=payload.context_window,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -72,6 +87,7 @@ def update_model(config_id: str, payload: ModelPayload) -> dict:
             protocol=payload.protocol,
             api_key=payload.api_key,
             models=payload.models,
+            context_window=payload.context_window,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -107,31 +123,35 @@ def test_model_connection(payload: TestConnectionPayload) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 提示词模式
+# 模式：四类组的组合 + 记忆开关 + 偏好模型
 # ---------------------------------------------------------------------------
 @router.get("/modes")
 def list_modes() -> dict:
-    return {"modes": stores.modes().list()}
+    """全部模式。
+
+    顺带把三类组的 id -> 名字一起给出去：模式表里要显示「用了哪个组」，
+    让前端自己再去拉三份组列表既慢又容易对不上。
+    """
+    return {
+        "modes": stores.modes().list(),
+        "groups": {
+            "prompt": {item.id: item.name for item in stores.prompt_groups().list()},
+            "tool": {item.id: item.name for item in stores.tool_groups().list()},
+            "skill": {item.id: item.name for item in stores.skill_groups().list()},
+        },
+    }
 
 
 @router.post("/modes")
 def add_mode(payload: ModePayload) -> dict:
-    item = stores.modes().add(
-        name=payload.name,
-        settings=payload.settings,
-        preferred_model=payload.preferred_model,
-    )
+    item = Mode(id=uuid4().hex, **payload.model_dump())
+    stores.modes().add(item)
     return item.model_dump()
 
 
 @router.put("/modes/{mode_id}")
 def update_mode(mode_id: str, payload: ModePayload) -> dict:
-    item = PromptMode(
-        id=mode_id,
-        name=payload.name,
-        settings=payload.settings,
-        preferred_model=payload.preferred_model,
-    )
+    item = Mode(id=mode_id, **payload.model_dump())
     stores.modes().update(item)
     return item.model_dump()
 
@@ -139,6 +159,41 @@ def update_mode(mode_id: str, payload: ModePayload) -> dict:
 @router.delete("/modes/{mode_id}")
 def delete_mode(mode_id: str) -> dict[str, bool]:
     stores.modes().remove(mode_id)
+    return {"removed": True}
+
+
+# ---------------------------------------------------------------------------
+# 提示词组（原先的「模式」；模式现在是四类组的组合，这里只管提示词那一类）
+# ---------------------------------------------------------------------------
+@router.get("/prompt-groups")
+def list_prompt_groups() -> dict:
+    return {"groups": stores.prompt_groups().list()}
+
+
+@router.post("/prompt-groups")
+def add_prompt_group(payload: PromptGroupPayload) -> dict:
+    item = stores.prompt_groups().add(
+        name=payload.name,
+        description=payload.description,
+        settings=payload.settings,
+    )
+    return item.model_dump()
+
+
+@router.put("/prompt-groups/{group_id}")
+def update_prompt_group(group_id: str, payload: PromptGroupPayload) -> dict:
+    item = stores.prompt_groups().get(group_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="提示词组不存在")
+
+    item = item.model_copy(update={**payload.model_dump(), "id": group_id})
+    stores.prompt_groups().update(item)
+    return item.model_dump()
+
+
+@router.delete("/prompt-groups/{group_id}")
+def delete_prompt_group(group_id: str) -> dict[str, bool]:
+    stores.prompt_groups().remove(group_id)
     return {"removed": True}
 
 

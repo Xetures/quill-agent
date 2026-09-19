@@ -57,8 +57,11 @@ def _run(monkeypatch, responses: list[list], stats=None) -> tuple[list, list[dic
     """跑一轮对话，返回（事件流, 每次请求的参数）。"""
     requests: list[dict] = []
     monkeypatch.setattr(agent, "OpenAI", lambda **kwargs: _FakeClient(responses, requests))
-    # 工具菜单固定为非空，免得测试结果受本机 data/tools.json 的开关状态影响
-    monkeypatch.setattr(agent.registry, "schemas", lambda: [{"type": "function"}])
+    # 工具菜单固定为非空，免得测试结果受本机工具注册表的影响
+    # （mode=None 时本来一个工具都不给，这里要的就是「有工具」这个前提）
+    monkeypatch.setattr(
+        agent.registry, "schemas", lambda *args, **kwargs: [{"type": "function"}]
+    )
 
     events = list(
         agent.run_agent_stream(
@@ -186,7 +189,7 @@ def test_empty_tool_menu_is_sent_as_none(monkeypatch) -> None:
     monkeypatch.setattr(
         agent, "OpenAI", lambda **kwargs: _FakeClient([[_text_chunk("好")]], requests)
     )
-    monkeypatch.setattr(agent.registry, "schemas", lambda: [])
+    monkeypatch.setattr(agent.registry, "schemas", lambda *args, **kwargs: [])
 
     list(
         agent.run_agent_stream(
@@ -241,7 +244,7 @@ def test_open_stream_falls_back_when_options_unsupported(monkeypatch) -> None:
     responses = [[_text_chunk("好")]]
     monkeypatch.setattr(agent, "_stream_usage_cache", {})
     monkeypatch.setattr(agent, "OpenAI", lambda **kwargs: _StrictClient(responses, requests))
-    monkeypatch.setattr(agent.registry, "schemas", lambda: [{"type": "function"}])
+    monkeypatch.setattr(agent.registry, "schemas", lambda *args, **kwargs: [{"type": "function"}])
 
     events = list(
         agent.run_agent_stream(
@@ -261,7 +264,7 @@ def test_stream_usage_probe_is_cached(monkeypatch) -> None:
     responses = [[_text_chunk("一")], [_text_chunk("二")]]
     monkeypatch.setattr(agent, "_stream_usage_cache", {})
     monkeypatch.setattr(agent, "OpenAI", lambda **kwargs: _StrictClient(responses, requests))
-    monkeypatch.setattr(agent.registry, "schemas", lambda: [{"type": "function"}])
+    monkeypatch.setattr(agent.registry, "schemas", lambda *args, **kwargs: [{"type": "function"}])
 
     def run_once() -> None:
         list(
@@ -291,7 +294,7 @@ def test_usage_probe_is_per_provider(monkeypatch) -> None:
     responses = [[_text_chunk("一")], [_text_chunk("二")]]
     monkeypatch.setattr(agent, "_stream_usage_cache", {})
     monkeypatch.setattr(agent, "OpenAI", lambda **kwargs: _StrictClient(responses, requests))
-    monkeypatch.setattr(agent.registry, "schemas", lambda: [{"type": "function"}])
+    monkeypatch.setattr(agent.registry, "schemas", lambda *args, **kwargs: [{"type": "function"}])
 
     def run_with(base_url: str) -> None:
         list(

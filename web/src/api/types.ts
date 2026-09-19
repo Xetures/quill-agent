@@ -62,6 +62,8 @@ export interface ModelConfig {
   protocol: 'openai' | 'anthropic'
   api_key: string
   models: string[]
+  /** 上下文窗口大小（tokens），任务页用量仪表盘的分母。 */
+  context_window: number
 }
 
 /** 「连接 + 模型名」摊平后的下拉选项，`key` 就是后端的稳定标识。 */
@@ -71,14 +73,62 @@ export interface ModelOption {
   config_name: string
   model: string
   label: string
+  /** 上下文窗口大小（tokens），跟着连接配置走。 */
+  context_window: number
 }
 
-export interface PromptMode {
+/**
+ * 提示词组：从六类提示词里各挑一个（可以不挑）拼成的一套提示词。
+ *
+ * 原先这个东西就叫「模式」，现在模式指四类组的组合，它只是其中提示词那一类。
+ * 偏好模型不在这里 —— 搬到模式上了（见 `Mode`）。
+ */
+export interface PromptGroup {
   id: string
   name: string
-  /** 类别 -> 提示词名。 */
+  /** 功能简介：和工具组、技能组一致，给模式编辑界面用。 */
+  description: string
+  /** 类别 -> 提示词名。允许为空 —— 那就是不带任何系统提示词的纯问答。 */
   settings: Record<string, string>
+}
+
+/**
+ * 模式：Agent 的一套完整配置 = 三类组 + 记忆开关 + 偏好模型。
+ *
+ * 组按 **id** 引用（不是名字）：组改名后模式不会跟着失效。
+ * 空串表示这一类什么都不给 —— 三个都空就是纯问答模式。
+ */
+export interface Mode {
+  id: string
+  name: string
+  description: string
+  prompt_group_id: string
+  tool_group_id: string
+  skill_group_id: string
+  memory_enabled: boolean
+  /** 偏好模型的稳定标识（"连接id::模型名"）；空表示沿用任务页当前模型。 */
   preferred_model: string
+}
+
+/**
+ * `GET /modes` 的返回：模式列表，外加三类组 id -> 名字的对照表。
+ *
+ * 模式表里要显示「用了哪个组」，让前端自己再拉三份组列表既慢又容易对不上，
+ * 所以后端一并给出来。
+ */
+export interface ModeList {
+  modes: Mode[]
+  groups: {
+    prompt: Record<string, string>
+    tool: Record<string, string>
+    skill: Record<string, string>
+  }
+}
+
+/** 提示词库：六类，以及每类下可选哪些提示词（只有名字，正文要单独取）。 */
+export interface PromptLib {
+  categories: string[]
+  names: Record<string, string[]>
 }
 
 export interface ToolSpec {
@@ -87,13 +137,37 @@ export interface ToolSpec {
   category: string
   parameters: Record<string, unknown>
   kind: string
-  enabled: boolean
+}
+
+/**
+ * 工具组：给模型的工具搭配方案。
+ *
+ * 模式将变成四类组（提示词 / 工具 / 技能 / 记忆）的组合，这是其中工具这一环。
+ * `tools` 允许为空 —— 「纯对话」组要的就是一个工具都不给。
+ */
+export interface ToolGroup {
+  id: string
+  name: string
+  description: string
+  tools: string[]
 }
 
 export interface SkillItem {
   name: string
   description: string
-  enabled: boolean
+}
+
+/**
+ * 技能组：给模型的技能搭配方案。
+ *
+ * 与工具组同构（模式将变成四类组的组合）；`skills` 允许为空 ——
+ * 有些模式一个技能都不该给。
+ */
+export interface SkillGroup {
+  id: string
+  name: string
+  description: string
+  skills: string[]
 }
 
 export interface MemoryItem {

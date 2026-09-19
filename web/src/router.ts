@@ -10,6 +10,10 @@ export const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/', name: 'chat', component: () => import('./views/ChatView.vue') },
+    // 模式排在最前：它是「这个 Agent 是什么样子」的总配置，其余页面都是给它备料
+    { path: '/modes', name: 'modes', component: () => import('./views/ModesView.vue') },
+    { path: '/prompts', name: 'prompts', component: () => import('./views/PromptsView.vue') },
+    // 模型连接页在导航里叫「API 设置」：那一页管的就是各家 API 的地址与 Key
     { path: '/models', name: 'models', component: () => import('./views/ModelsView.vue') },
     { path: '/tools', name: 'tools', component: () => import('./views/ToolsView.vue') },
     { path: '/skills', name: 'skills', component: () => import('./views/SkillsView.vue') },

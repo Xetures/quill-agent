@@ -18,15 +18,14 @@ from quill_agent import __version__
 from quill_agent.config import get_settings
 from quill_agent.memory import MemoryStore
 from quill_agent.skills import SkillLibrary
-from quill_agent.store import SkillStateStore, skill_enabled
 from quill_agent.tools import registry
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="quill", description="quill 命令行入口")
     parser.add_argument("-v", "--version", action="store_true", help="输出版本号")
-    parser.add_argument("-t", "--tools", action="store_true", help="列出工具及开关状态")
-    parser.add_argument("-s", "--skills", action="store_true", help="列出技能及开关状态")
+    parser.add_argument("-t", "--tools", action="store_true", help="列出全部工具")
+    parser.add_argument("-s", "--skills", action="store_true", help="列出全部技能")
     parser.add_argument("-m", "--memory", action="store_true", help="列出长期记忆")
     return parser
 
@@ -34,14 +33,12 @@ def build_parser() -> argparse.ArgumentParser:
 def show_tools() -> None:
     """列出全部工具。"""
     for spec in registry.all():
-        mark = "✓" if spec.enabled else "✗"
-        print(f"{mark} {spec.name:<14} [{spec.category}] {spec.description}")
+        print(f"{spec.name:<14} [{spec.category}] {spec.description}")
 
 
 def show_skills() -> None:
     """列出全部技能。"""
     settings = get_settings()
-    states = SkillStateStore(settings.skills_state_path).load()
     library = SkillLibrary(settings.skills_dir)
 
     names = library.list_names()
@@ -50,10 +47,9 @@ def show_skills() -> None:
         return
 
     for name in names:
-        mark = "✓" if skill_enabled(states, name) else "✗"
         meta = library.meta(name)
         description = (meta.description if meta else "") or "（未填写适用场景）"
-        print(f"{mark} {name}：{description}")
+        print(f"{name}：{description}")
 
 
 def show_memory() -> None:

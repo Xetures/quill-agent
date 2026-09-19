@@ -12,7 +12,7 @@
     └── 约束/
 
 每个类别一个子目录，用户直接在文件系统里新建 / 修改 / 删除 .md 文件。
-文件名（不含扩展名）就是引用标识，会被写进模式配置里。
+文件名（不含扩展名）就是引用标识，会被写进提示词组里。
 """
 
 from __future__ import annotations
@@ -65,7 +65,7 @@ class PromptLibrary:
         return self.category_dir(category) / f"{name}{MARKDOWN_SUFFIX}"
 
     def exists(self, category: str, name: str) -> bool:
-        """判断某个提示词文件是否还存在（模式配置里的引用可能已失效）。"""
+        """判断某个提示词文件是否还存在（提示词组里的引用可能已失效）。"""
         return self.path_of(category, name).is_file()
 
     def read(self, category: str, name: str) -> str | None:

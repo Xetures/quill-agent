@@ -13,7 +13,14 @@ from quill_agent.memory import MemoryStore
 from quill_agent.preferences import PreferenceStore
 from quill_agent.prompts import PromptLibrary
 from quill_agent.skills import SkillLibrary
-from quill_agent.store import ModelStore, PromptModeStore, SkillStateStore, ToolStateStore
+from quill_agent.store import (
+    ModelStore,
+    ModeStore,
+    PromptGroupStore,
+    SkillGroupStore,
+    ToolGroupStore,
+    migrate_prompt_groups,
+)
 
 
 def conversations() -> ConversationStore:
@@ -28,9 +35,20 @@ def models() -> ModelStore:
     return ModelStore(get_settings().models_path)
 
 
-def modes() -> PromptModeStore:
-    """提示词模式。"""
-    return PromptModeStore(get_settings().modes_path)
+def prompt_groups() -> PromptGroupStore:
+    """提示词组。
+
+    原先叫「模式」、存在 modes.json；模式现在是四类组的组合，那个名字归了新模式。
+    旧数据在这里搬一次（见 `migrate_prompt_groups`），用户建好的组不会丢。
+    """
+    settings = get_settings()
+    migrate_prompt_groups(settings.modes_path, settings.prompt_groups_path)
+    return PromptGroupStore(settings.prompt_groups_path)
+
+
+def modes() -> ModeStore:
+    """模式：四类组的组合 + 记忆开关 + 偏好模型。"""
+    return ModeStore(get_settings().modes_path)
 
 
 def prompts() -> PromptLibrary:
@@ -40,9 +58,9 @@ def prompts() -> PromptLibrary:
     return library
 
 
-def tool_states() -> ToolStateStore:
-    """工具开关状态。"""
-    return ToolStateStore(get_settings().tools_path)
+def tool_groups() -> ToolGroupStore:
+    """工具组（工具的搭配方案，模式的组成部分之一）。"""
+    return ToolGroupStore(get_settings().tool_groups_path)
 
 
 def skills() -> SkillLibrary:
@@ -52,9 +70,9 @@ def skills() -> SkillLibrary:
     return library
 
 
-def skill_states() -> SkillStateStore:
-    """技能开关状态。"""
-    return SkillStateStore(get_settings().skills_state_path)
+def skill_groups() -> SkillGroupStore:
+    """技能组（技能的搭配方案，模式的组成部分之一）。"""
+    return SkillGroupStore(get_settings().skill_groups_path)
 
 
 def memory() -> MemoryStore:

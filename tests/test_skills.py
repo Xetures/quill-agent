@@ -99,48 +99,40 @@ def test_missing_skill_returns_none(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # 清单生成（agent 层）
 # ---------------------------------------------------------------------------
-def test_catalog_lists_enabled_skills(monkeypatch, tmp_path: Path) -> None:
+def test_catalog_lists_selected_skills(monkeypatch, tmp_path: Path) -> None:
+    """清单只在模式（技能组）点名的技能 —— 技能不再有全局开关。"""
     skills_dir = tmp_path / "skills"
     make_skill(skills_dir, "甲技能", "---\ndescription: 用来做甲\n---\n正文")
     make_skill(skills_dir, "乙技能", "---\ndescription: 用来做乙\n---\n正文")
 
     monkeypatch.setattr(agent, "get_settings", lambda: _settings(tmp_path, skills_dir))
 
-    catalog = agent.build_skill_catalog()
+    catalog = agent.build_skill_catalog(["甲技能"])
 
     assert "甲技能：用来做甲" in catalog
-    assert "乙技能：用来做乙" in catalog
-
-
-def test_catalog_skips_disabled_skills(monkeypatch, tmp_path: Path) -> None:
-    """停用的技能不该出现在清单里 —— 它连名字都不该被模型看到。"""
-    skills_dir = tmp_path / "skills"
-    make_skill(skills_dir, "甲技能", "---\ndescription: 用来做甲\n---\n正文")
-    make_skill(skills_dir, "乙技能", "---\ndescription: 用来做乙\n---\n正文")
-
-    state_path = tmp_path / "skills.json"
-    state_path.write_text('{"乙技能": false}', encoding="utf-8")
-    monkeypatch.setattr(agent, "get_settings", lambda: _settings(tmp_path, skills_dir, state_path))
-
-    catalog = agent.build_skill_catalog()
-
-    assert "甲技能" in catalog
     assert "乙技能" not in catalog
 
 
+def test_catalog_is_empty_without_selection(monkeypatch, tmp_path: Path) -> None:
+    """技能组为空 → 一个技能都不给，哪怕 skills/ 里有一堆。"""
+    skills_dir = tmp_path / "skills"
+    make_skill(skills_dir, "甲技能", "---\ndescription: 用来做甲\n---\n正文")
+
+    monkeypatch.setattr(agent, "get_settings", lambda: _settings(tmp_path, skills_dir))
+
+    assert agent.build_skill_catalog([]) == ""
+
+
 def test_catalog_is_empty_without_skills(monkeypatch, tmp_path: Path) -> None:
-    """一个技能都没有时返回空串，调用方据此不加那条 system 消息。"""
+    """组里点名的技能在磁盘上已经没了 → 返回空串，调用方据此不加那条消息。"""
     monkeypatch.setattr(agent, "get_settings", lambda: _settings(tmp_path, tmp_path / "skills"))
 
-    assert agent.build_skill_catalog() == ""
+    assert agent.build_skill_catalog(["早已删除的技能"]) == ""
 
 
-def _settings(tmp_path: Path, skills_dir: Path, state_path: Path | None = None) -> SimpleNamespace:
+def _settings(tmp_path: Path, skills_dir: Path) -> SimpleNamespace:
     """构造一个只带技能相关字段的假配置。
 
-    只替换用到的那两个字段，避免测试依赖真实的 .env / data 目录。
+    只替换用到的那个字段，避免测试依赖真实的 .env / data 目录。
     """
-    return SimpleNamespace(
-        skills_dir=skills_dir,
-        skills_state_path=state_path or (tmp_path / "skills.json"),
-    )
+    return SimpleNamespace(skills_dir=skills_dir)

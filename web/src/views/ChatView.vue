@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { Plus } from '@element-plus/icons-vue'
+import { Plus, Promotion } from '@element-plus/icons-vue'
 import { computed, nextTick, ref, watch } from 'vue'
 
+import ContextMeter from '../components/ContextMeter.vue'
 import MessageItem from '../components/MessageItem.vue'
 import WorkDirPicker from '../components/WorkDirPicker.vue'
 import {
@@ -22,7 +23,11 @@ const draft = ref(loadDraft(session.currentId))
 const pending = ref<File[]>([])
 const fileInput = ref<HTMLInputElement | null>(null)
 
-const canSend = computed(() => Boolean(draft.value.trim()) && !session.busy)
+// 模式是必选项：没有模式就没有系统提示词 / 工具 / 技能，那已经不是这个 Agent 了。
+// 所以「还没建任何模式」时这里直接禁用发送，而不是悄悄退化成「不用模式」
+const canSend = computed(
+  () => Boolean(draft.value.trim()) && !session.busy && Boolean(session.modeId),
+)
 
 /**
  * 顶栏显示的会话标题。
@@ -112,16 +117,16 @@ function onKeydown(event: Event | KeyboardEvent): void {
 
     <div class="composer">
       <!-- 功能选择区：模式 / 模型 / 工作目录 / 附件。
-           贴在输入框正上方，和「组成这一轮请求的东西」在同一处 -->
+           贴在输入框正上方，和「组成这一轮请求的东西」在同一处。
+           模式决定这一轮用哪些提示词、工具、技能和记忆，所以排在第一位 -->
       <div class="tools">
         <el-select
           v-model="session.modeId"
           size="small"
-          placeholder="提示词模式"
+          :placeholder="session.modes.length ? '选择模式' : '还没有模式'"
           class="mode-select"
           @change="persistMode"
         >
-          <el-option label="（不用模式）" value="" />
           <el-option
             v-for="mode in session.modes"
             :key="mode.id"
@@ -152,6 +157,10 @@ function onKeydown(event: Event | KeyboardEvent): void {
         <!-- 原生 file input 藏起来，由上面的按钮代为触发：
              el-upload 会自己维护一套文件列表，而这里的列表已经由 pending 管着 -->
         <input ref="fileInput" type="file" multiple hidden @change="onFilesPicked" />
+
+        <!-- 上下文用量仪表盘：贴在这一行最右侧。它读的是这排里的模型选择（窗口大小），
+             放在同一行，改完模型抬头就能看到占比 -->
+        <ContextMeter class="meter-slot" />
       </div>
 
       <div v-if="pending.length" class="pending">
@@ -173,19 +182,24 @@ function onKeydown(event: Event | KeyboardEvent): void {
           resize="none"
           :rows="3"
           :disabled="session.busy"
-          placeholder="输入内容，Enter 发送，Shift + Enter 换行"
+          :placeholder="
+            session.modes.length
+              ? '输入内容，Enter 发送，Shift + Enter 换行'
+              : '请先在「模式」页创建一个模式 —— 没有模式就没有提示词、工具和技能'
+          "
           @keydown="onKeydown"
         />
+        <!-- 图标按钮融进输入框右下角，比一整块「发送」按钮克制 -->
         <el-button
           class="send"
           type="primary"
-          size="small"
+          circle
+          :icon="Promotion"
           :loading="session.busy"
           :disabled="!canSend"
+          title="发送"
           @click="send"
-        >
-          {{ session.busy ? '生成中' : '发送' }}
-        </el-button>
+        />
       </div>
     </div>
   </div>
@@ -236,6 +250,13 @@ function onKeydown(event: Event | KeyboardEvent): void {
 .model-select {
   flex-shrink: 0;
   width: 220px;
+}
+
+/* 仪表盘推到这一行的最右侧：它读的窗口大小就来自左边的模型选择，
+ * 两者放同一排，换模型后一眼能看到占比跟着变 */
+.meter-slot {
+  flex-shrink: 0;
+  margin-left: auto;
 }
 
 .pending {

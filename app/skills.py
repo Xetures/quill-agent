@@ -3,10 +3,13 @@
 布局（按行）：
     1. 标题
     2. 说明：技能是什么、正文放在哪
-    3. 技能列表：序号 / 技能名称 / 适用场景 / 是否启用
+    3. 技能列表：序号 / 技能名称 / 适用场景
 
 技能正文由用户在 skills/ 目录里维护（一个技能一个子目录，入口是 SKILL.md），
-页面只负责展示元信息和开关 —— 和「提示词」页的思路一致。
+页面只负责展示元信息 —— 和「提示词」页的思路一致。
+
+这里**没有**「启用」开关：给不给技能由模式的技能组决定（见 README 3.6 / 3.8）。
+`build_skill_catalog` 只按模式选中的技能名拼清单，没有全局开关可看。
 """
 
 from __future__ import annotations
@@ -15,10 +18,9 @@ import streamlit as st
 
 from quill_agent.config import get_settings
 from quill_agent.skills import SkillLibrary, SkillMeta
-from quill_agent.store import SkillStateStore
 
-# 列表列宽：序号 / 名称 / 适用场景 / 开关
-COLUMN_WEIGHTS = [1, 3, 8, 2]
+# 列表列宽：序号 / 名称 / 适用场景
+COLUMN_WEIGHTS = [1, 3, 8]
 
 # 新建技能的示例目录名，用于空态提示
 EXAMPLE_SKILL = "代码审查"
@@ -29,11 +31,6 @@ def build_library() -> SkillLibrary:
     library = SkillLibrary(get_settings().skills_dir)
     library.ensure_dir()
     return library
-
-
-def build_state_store() -> SkillStateStore:
-    """技能开关的持久化。"""
-    return SkillStateStore(get_settings().skills_state_path)
 
 
 def render_hint() -> None:
@@ -59,10 +56,10 @@ def render_empty_hint() -> None:
     )
 
 
-def render_table(metas: list[SkillMeta], store: SkillStateStore) -> None:
-    """第 3 行：四列技能列表，最后一列是开关。"""
+def render_table(metas: list[SkillMeta]) -> None:
+    """第 3 行：三列技能列表。"""
     header = st.columns(COLUMN_WEIGHTS)
-    for col, text in zip(header, ["序号", "技能名称", "适用场景", "是否启用"], strict=True):
+    for col, text in zip(header, ["序号", "技能名称", "适用场景"], strict=True):
         col.caption(text)
 
     st.divider()
@@ -71,27 +68,11 @@ def render_table(metas: list[SkillMeta], store: SkillStateStore) -> None:
         render_empty_hint()
         return
 
-    states = store.load()
-
     for index, meta in enumerate(metas, start=1):
-        number_col, name_col, desc_col, switch_col = st.columns(COLUMN_WEIGHTS)
+        number_col, name_col, desc_col = st.columns(COLUMN_WEIGHTS)
         number_col.write(index)
         name_col.write(meta.name)
         desc_col.write(meta.description or "（未填写，模型看不出什么时候该用它）")
-
-        enabled = states.get(meta.name, True)
-        with switch_col:
-            toggled = st.toggle(
-                "启用",
-                value=enabled,
-                key=f"skill_toggle_{meta.name}",
-                label_visibility="collapsed",
-            )
-
-        # 和持久化状态不一致，说明用户刚切换过 -> 落盘。
-        # 本轮已经渲染完，下一次重跑会读到新值。
-        if toggled != enabled:
-            store.set(meta.name, toggled)
 
 
 def main() -> None:
@@ -101,7 +82,7 @@ def main() -> None:
     library = build_library()
 
     render_hint()
-    render_table(library.list_meta(), build_state_store())
+    render_table(library.list_meta())
 
 
 main()

@@ -59,7 +59,7 @@
  * 深色模式：靛蓝夜色
  *
  * 只覆盖语义色，品牌色不动。两处刻意的调整：
- *   - 主色换成亮蓝：深蓝在深底上对比度不够，按钮会「糊」进背景
+ *   - 主色换成暖金：深蓝在深底上对比度不够，而亮蓝又偏冷、面积一大就发刺
  *   - 金色提亮一档：它在这套底色上反而更出彩，适合做强调
  * ------------------------------------------------------------------------- */
 html.dark {
@@ -75,11 +75,13 @@ html.dark {
   /* 比 accent-soft 再亮一点：深色下表格分隔线、输入框描边都要靠它才看得清 */
   --border: #2d4a61;
 
-  --accent: #5b9bd5;
-  --accent-hover: #78b0e0;
-  --accent-soft: #1e3a52;
-  /* 深色下的主色是亮蓝，压在上面的字反而要用深色 —— 继续用米白会糊在一起 */
-  --on-accent: #0f1e2b;
+  /* 高亮用暖金，不用亮蓝：亮蓝在深底上偏冷、面积一大就发刺（用户反馈）。
+     金色本是品牌强调色，铺在深靛蓝上既暖又稳。 */
+  --accent: #c79a4e;
+  --accent-hover: #d9ac63;
+  --accent-soft: #362c1c;
+  /* 主色是暖金（明度高），压在上面的字要用深色才不糊 —— 与浅色模式相反 */
+  --on-accent: #101d2a;
   --gold: #d9a04a;
 
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
@@ -125,6 +127,14 @@ html.dark {
 
   --el-mask-color: rgba(15, 30, 43, 0.6);
   --el-font-family: inherit;
+}
+
+/* 深色下主色是暖金，明度比原来的亮蓝高；Element 主按钮默认的白字压上去
+ * 对比度不够，换成深色的 --on-accent（浅色模式不受影响，那边主色是深蓝） */
+html.dark .el-button--primary {
+  --el-button-text-color: var(--on-accent);
+  --el-button-hover-text-color: var(--on-accent);
+  --el-button-active-text-color: var(--on-accent);
 }
 
 * {
@@ -185,6 +195,12 @@ body {
 
 /* ---------- 消息里的 Markdown ---------- */
 
+/* 长串（URL、路径、代码片段）在没有空格时会顶破气泡的宽度。只在放不下时才断，
+ * 正常段落不受影响 */
+.md {
+  overflow-wrap: anywhere;
+}
+
 .md > *:first-child {
   margin-top: 0;
 }
@@ -232,4 +248,32 @@ body {
 
 .md a {
   color: var(--accent);
+}
+
+/* ---------- 工具组弹窗里的工具下拉 ---------- */
+
+/* 选项里同时显示名称、分类和简介：光看工具名不容易判断它是干嘛的。
+ * 下拉被 teleport 到 body，scoped 样式够不到，所以写在全局。 */
+.tool-opt-popper .el-select-dropdown__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tool-opt-popper .opt-name {
+  flex-shrink: 0;
+  min-width: 112px;
+}
+
+.tool-opt-popper .opt-desc {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.tool-opt-popper .el-tag {
+  flex-shrink: 0;
 }

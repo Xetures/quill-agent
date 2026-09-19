@@ -5,7 +5,7 @@
 
 from pathlib import Path
 
-from quill_agent.store import ToolStateStore, read_json
+from quill_agent.store import read_json
 
 
 def test_missing_file_returns_default(tmp_path: Path) -> None:
@@ -42,11 +42,3 @@ def test_default_is_deep_copied(tmp_path: Path) -> None:
 
     assert shared == []
     assert read_json(tmp_path / "nope.json", shared) == []
-
-
-def test_tool_state_store_survives_corrupt_file(tmp_path: Path) -> None:
-    """坏掉的 tools.json 退回「全默认」，页面照常能打开。"""
-    path = tmp_path / "tools.json"
-    path.write_text("坏得没法看", encoding="utf-8")
-
-    assert ToolStateStore(path).load() == {}

@@ -4,9 +4,11 @@ import {
   ChatDotRound,
   Collection,
   Cpu,
+  Document,
   MagicStick,
   Plus,
   Setting,
+  Stamp,
   Tools,
 } from '@element-plus/icons-vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -29,12 +31,14 @@ const router = useRouter()
  * 想继续聊就点会话，想开新的就点按钮，都不需要「切到任务页」这个动作。
  */
 const NAV = [
-  { to: '/models', label: '模型', icon: Cpu },
+  { to: '/modes', label: '模式', icon: MagicStick },
+  { to: '/prompts', label: '提示词', icon: Document },
   { to: '/tools', label: '工具', icon: Tools },
-  { to: '/skills', label: '技能', icon: MagicStick },
+  { to: '/skills', label: '技能', icon: Stamp },
   { to: '/memory', label: '记忆', icon: Collection },
   { to: '/archived', label: '归档', icon: Box },
-  { to: '/settings', label: '设置', icon: Setting },
+  { to: '/models', label: 'API设置', icon: Cpu },
+  { to: '/settings', label: '偏好设置', icon: Setting },
 ]
 
 async function onNew(): Promise<void> {

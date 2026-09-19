@@ -144,6 +144,11 @@ const statsText = computed(() => {
 
 .reasoning {
   color: var(--text-soft);
+  /* 思考过程往往很长，且夹着 URL、路径这类不易断行的长串；不设上限会顶破
+     折叠框、横向溢出。给个高度上限，超出在块内滚动 */
+  max-height: 360px;
+  overflow: auto;
+  overflow-wrap: anywhere;
 }
 
 .code {

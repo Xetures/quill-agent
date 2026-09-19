@@ -15,9 +15,10 @@ import { api } from '../api/client'
 import type {
   ConversationBrief,
   Message,
+  Mode,
+  ModeList,
   ModelOption,
   PickResult,
-  PromptMode,
   WorkDirInfo,
 } from '../api/types'
 import { errorText } from '../utils/error'
@@ -31,7 +32,9 @@ export const session = reactive({
 
   // 可选项：模型 / 模式 / 工作目录
   models: [] as ModelOption[],
-  modes: [] as PromptMode[],
+  modes: [] as Mode[],
+  /** 三类组 id -> 名字，供模式页显示（后端随 /modes 一起给）。 */
+  groupNames: {} as ModeList['groups'],
   workdir: '',
 
   /**
@@ -79,12 +82,13 @@ export async function loadMessages(conversationId: string): Promise<void> {
 export async function loadOptions(): Promise<void> {
   const [models, modes, workdir] = await Promise.all([
     api.get<{ options: ModelOption[] }>('/models'),
-    api.get<{ modes: PromptMode[] }>('/modes'),
+    api.get<ModeList>('/modes'),
     api.get<WorkDirInfo>('/workdir'),
   ])
 
   session.models = models.options
   session.modes = modes.modes
+  session.groupNames = modes.groups
   session.workdir = workdir.path
   session.nativePicker = workdir.native_picker
 
@@ -92,6 +96,8 @@ export async function loadOptions(): Promise<void> {
   if (!session.models.some((item) => item.key === session.modelKey)) {
     session.modelKey = session.models[0]?.key ?? ''
   }
+  // 模式是必选的（不像模型还有「没配模型」这种合理状态）：一个都没配时留空，
+  // 由任务页提示去模式页创建，而不是悄悄退化成「不用模式」
   if (!session.modes.some((item) => item.id === session.modeId)) {
     session.modeId = session.modes[0]?.id ?? ''
   }

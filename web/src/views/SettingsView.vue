@@ -27,8 +27,8 @@ onMounted(async () => {
 <template>
   <div class="page">
     <Teleport to="#page-head-slot">
-      <h1>设置</h1>
-      <span class="hint">界面外观</span>
+      <h1>偏好设置</h1>
+      <span class="hint">界面外观等只影响本地界面的选项</span>
     </Teleport>
 
     <section class="group">

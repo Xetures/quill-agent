@@ -74,11 +74,14 @@ make run        # 浏览器打开 http://localhost:8501
 
 1. 打开左侧「**模型**」页 → 添加模型
    - 填接口地址（如 `https://api.deepseek.com`）、协议、API Key
-   - 模型名可点「连通测试」自动拉取（走 `GET /models`），也可手动填
+   - 点「**获取模型列表**」把该端点的模型拉回来（走 `GET /models`），从下拉里勾选；
+     也可直接手敲模型名（下拉支持输入后回车新建）
+   - 「上下文窗口」填该模型的窗口大小（tokens），任务页右侧的用量仪表盘按它算占比
 2. 回到「**任务**」页 → 在功能区选择模型 → 开始对话
 
 > 配置示例（DeepSeek 官方）
-> 地址 `https://api.deepseek.com`，协议 `OpenAI 协议`，模型名 `deepseek-chat` / `deepseek-reasoner`
+> 地址 `https://api.deepseek.com`，协议 `OpenAI Chat Completions`，
+> 模型名 `deepseek-chat` / `deepseek-reasoner`
 
 ---
 
@@ -86,15 +89,17 @@ make run        # 浏览器打开 http://localhost:8501
 
 ```
 quill-agent/
-├── app/                          # UI 层（Streamlit）—— 只做渲染与交互
+├── app/                          # UI 层（Streamlit，旧版）—— 只做渲染与交互
 │   ├── app.py                    # 唯一入口：st.set_page_config + 声明页面列表
-│   ├── main.py                   # 页面：任务（对话主界面）
+│   ├── main.py                   # 页面：任务（对话主界面 + 模式 / 模型选择）
 │   ├── models.py                 # 页面：模型（连接与模型名管理）
-│   ├── prompt.py                 # 页面：提示词（提示词库浏览 + 模式配置）
-│   ├── tools.py                  # 页面：工具（筛选 + 开关）
-│   ├── skills.py                 # 页面：技能（列表 + 开关）
+│   ├── prompt.py                 # 页面：提示词（提示词组配置 + 提示词库浏览）
+│   ├── tools.py                  # 页面：工具（筛选 + 展示）
+│   ├── skills.py                 # 页面：技能（元信息列表）
 │   ├── memory.py                 # 页面：记忆（查看 / 开关 / 删除）
 │   └── archived.py               # 页面：归档（归档会话的搜索 / 恢复 / 删除）
+│
+│   （工具组 / 技能组 / 模式的管理只在 Vue 版提供；Streamlit 版保留为旧界面）
 │
 ├── server/                       # 后端：把业务层暴露成 HTTP + SSE
 │   ├── main.py                   # FastAPI 应用装配（CORS、路由挂载）
@@ -113,7 +118,7 @@ quill-agent/
 ├── src/quill_agent/                 # 业务层 —— 纯 Python，禁止 import streamlit
 │   ├── __init__.py               # 版本号
 │   ├── config.py                 # 集中式配置（环境变量 / .env）
-│   ├── models.py                 # 数据模型（Pydantic）：连接、模式、选择
+│   ├── models.py                 # 数据模型（Pydantic）：连接、提示词组、工具组、技能组、模式
 │   ├── store.py                  # 配置类数据持久化（JSON）
 │   ├── preferences.py            # 界面偏好（上次选的模型 / 模式 / 工作目录 / 会话草稿）
 │   ├── history.py                # 会话历史（JSONL + 归档）
@@ -125,7 +130,7 @@ quill-agent/
 │   ├── cli.py                    # 命令行入口
 │   └── tools/                    # 工具层
 │       ├── __init__.py           # 导出 registry（import 即触发工具注册）
-│       ├── base.py               # ToolSpec / ToolRegistry：声明、路由、开关
+│       ├── base.py               # ToolSpec / ToolRegistry：声明、路由、执行
 │       ├── builtin.py            # 通用内置工具（read_skill / remember）
 │       └── files.py              # 文件工具 + 路径边界校验
 │
@@ -138,9 +143,10 @@ quill-agent/
 │
 ├── data/                         # 运行时数据（已 gitignore，不会提交）
 │   ├── models.json               # 模型连接配置
-│   ├── modes.json                # 提示词模式
-│   ├── tools.json                # 工具开关状态
-│   ├── skills.json               # 技能开关状态
+│   ├── prompt_groups.json        # 提示词组（各类选了哪个提示词）
+│   ├── tool_groups.json          # 工具组（工具的搭配方案）
+│   ├── skill_groups.json         # 技能组（技能的搭配方案）
+│   ├── modes.json                # 模式（引用三类组 + 记忆开关 + 偏好模型）
 │   ├── memory.json               # 长期记忆条目
 │   ├── preferences.json          # 界面偏好
 │   └── conversations/            # 会话历史
@@ -178,7 +184,7 @@ app/  ──依赖──>  src/quill_agent/
 
 ```
 提示词正文  →  prompt/<类别>/<名称>.md      ← 用户直接新建 / 编辑 / 删除文件
-模式（组合）→  data/modes.json              ← 界面上配置：每类挑一个
+提示词组（组合）→  data/prompt_groups.json      ← 界面上配置：每类挑一个
 ```
 
 六类提示词（顺序即拼装顺序）：
@@ -192,25 +198,29 @@ app/  ──依赖──>  src/quill_agent/
 | 输出规范 | 回答的格式与风格要求 |
 | 约束 | 安全与合规红线 |
 
-一个「**模式**」= 从六类里各挑一个（**都可以不挑**）拼成的一套系统提示词。
+一个「**提示词组**」= 从六类里各挑一个（**都可以不挑**）拼成的一套系统提示词。
 六类全不挑也是合法配置，等价于「不带任何系统提示词」的纯问答。
+
+> 这套东西原先就叫「模式」。现在模式指三类组 + 记忆的组合（见 3.6 / 3.7），所以它改名叫
+> **提示词组**，数据也从 `data/modes.json` 挪到 `data/prompt_groups.json` —— 那个文件名
+> 归了新模式，两边共用一个文件的话新模式一写入就会把提示词组整份覆盖掉。
+> 偏好模型一并搬到模式上（见 3.7）。
 
 **几个设计决定：**
 
 - **正文放文件而不是数据库**。提示词是用户要反复迭代的东西，用编辑器改 `.md` 比在网页表单里改舒服得多，
   也方便纳入版本控制。
-- **拼装顺序固定按 `PROMPT_CATEGORIES`**，与用户在弹窗里的勾选顺序无关。顺序稳定 → 同一模式每次拼出的
+- **拼装顺序固定按 `PROMPT_CATEGORIES`**，与用户在弹窗里的勾选顺序无关。顺序稳定 → 同一组每次拼出的
   system prompt 完全一致 → 命中模型侧的前缀缓存（省钱、降延迟）。
 - **引用的文件被删除不会报错**，只是该类别不参与拼装；界面上会标注「（文件缺失）」。
-- **偏好模型**：模式可以绑定一个模型。在任务页切换到该模式时，模型选择会自动跟着换
-  （未指定则保持当前模型不变）。实现见 `app/main.py` 的 `apply_preferred_model`。
 
 **运行时上下文不放 system prompt**。当前时间、工作目录、附件路径这些每轮都在变的信息，
 放在 user 消息开头。如果塞进 system prompt，前缀缓存会永远失效。见 `agent.build_user_message()`。
 
 ### 3.2 工具
 
-**定义在代码里，开关在配置里。** 两者分开，避免出现两份互相打架的真相。
+**定义只在代码里，没有第二份开关。** 给不给某个工具由模式的工具组决定（见 3.8）——
+同一个工具模式 A 要、模式 B 不要，一个全局布尔值表达不了这件事。
 
 ```python
 @registry.tool(
@@ -223,7 +233,7 @@ def your_tool(...) -> str:
 ```
 
 - **`description` 是模型判断要不要调用的唯一依据**，写得越贴合真实场景，调用越准。
-- 未启用的工具**不会被发给模型**（`registry.schemas()` 只返回已启用的），模型自然不会请求调用它。
+- 不在模式的工具组里的工具**不会被发给模型**（`registry.schemas(only=...)`），模型自然不会请求调用它。
 - **执行契约**：工具内部任何异常都转成可读文本返回，不向上抛。模型看到错误说明后通常能自行修正，
   而抛异常会直接打断整个 Agent 循环。
 
@@ -277,7 +287,7 @@ if not resolved.is_relative_to(root):
 
 | 阶段 | 花多少 | 谁决定 |
 | --- | --- | --- |
-| 平时 | 一行「名字 + 适用场景」（约 30 字） | 用户（技能开关） |
+| 平时 | 一行「名字 + 适用场景」（约 30 字） | 用户（模式的技能组） |
 | 用到时 | 全文（可能上千字） | **模型**（判断任务匹配后调 `read_skill`） |
 
 **目录约定**（和 `prompt/` 一个思路：正文是文件，用户在编辑器里维护）：
@@ -305,11 +315,11 @@ description: 当用户要求审查代码、评估一段实现时使用。
 - **目录里有 SKILL.md 才算技能**，在 `skills/` 下放别的东西（草稿、附件）不会被误认。
 
 **清单单独占一条 system 消息**，不拼进身份提示词。原因和「运行时上下文不放 system
-prompt」是同一个：清单会随启用 / 停用技能变化，跟身份提示词拼在一起的话，停用一个技能
+prompt」是同一个：清单会随模式（技能组）变化，跟身份提示词拼在一起的话，换个技能组
 就把整段 system prompt 打乱，前面那段的缓存前缀跟着作废。
 
-**开关在 `data/skills.json`**，和工具一样。停用的技能不出现在清单里；即使模型从别处
-知道了名字，`read_skill` 也会拒绝 —— 否则开关形同虚设。
+**技能没有全局开关**，给不给由模式的技能组决定（见 3.8）。`read_skill` 也不再自行
+拦截：它本来就随技能组一起下发，模型手上只有组里那几个，想读也读不到别的。
 
 ### 3.4 记忆
 
@@ -337,7 +347,7 @@ prompt」是同一个：清单会随启用 / 停用技能变化，跟身份提�
 记忆：常驻清单「关于用户的事实」 →  事实
 ```
 
-都存成数据、都有开关、都作为独立的一条 system 消息进上下文。两个取舍值得说明：
+都存成数据、都由模式决定给不给、都作为独立的一条 system 消息进上下文。两个取舍值得说明：
 
 - **写入是显式的**：模型必须主动调 `remember` 工具，而不是系统自动抽取。自动抽要额外调
   一次模型，而且用户看不见它到底记了什么、错在哪 —— 记忆一旦成了黑盒，错了就没法纠正，
@@ -361,9 +371,10 @@ prompt」是同一个：清单会随启用 / 停用技能变化，跟身份提�
 | `prompt/<类别>/*.md` | **用户** | 提示词正文。新建文件即新增一个可选提示词，文件名就是引用标识 |
 | `skills/<技能名>/SKILL.md` | **用户** | 技能正文。新建目录即新增一个技能，目录名就是技能名 |
 | `data/models.json` | 界面 | 模型连接配置（地址、Key、模型名） |
-| `data/modes.json` | 界面 | 提示词模式（各类选了哪个提示词 + 偏好模型） |
-| `data/tools.json` | 界面 | 工具开关状态 |
-| `data/skills.json` | 界面 | 技能开关状态 |
+| `data/prompt_groups.json` | 界面 | 提示词组（各类选了哪个提示词 + 功能简介） |
+| `data/modes.json` | 界面 | 模式（引用三类组 + 记忆开关 + 偏好模型） |
+| `data/tool_groups.json` | 界面 | 工具组（工具的搭配方案） |
+| `data/skill_groups.json` | 界面 | 技能组（技能的搭配方案） |
 | `data/memory.json` | 界面 / 模型 | 长期记忆条目（模型用 `remember` 写入，界面可管） |
 | `<工作目录>/.attachments/` | 程序 | 上传附件的落脚处；同名覆盖，内容就是原文件 |
 | `data/preferences.json` | 界面 | 上次选的模型 / 模式 / 工作目录、各会话的输入草稿 |
@@ -372,6 +383,101 @@ prompt」是同一个：清单会随启用 / 停用技能变化，跟身份提�
 
 > ⚠️ **`api_key` 以明文存储在 `data/models.json` 中。** `data/` 已在 `.gitignore` 里，不会被提交，
 > 但文件本身在你的磁盘上是明文。生产环境请改用环境变量或密钥管理服务。
+
+### 3.6 资源分组与模式
+
+早期「模式」只等于「提示词的组合」。这有个明显漏洞：**选了纯问答模式，工具、技能、
+记忆照样全量拼进上下文** —— 模式只管住了提示词，管不住另外三类资源。
+
+所以每类资源都需要一层「组」作为搭配单位，再用一个**模式**把四类搭配固定下来：
+
+| 资源 | 搭配单位 | 状态 |
+| --- | --- | --- |
+| 提示词 | **提示词组**（`data/prompt_groups.json`） | **已实现** |
+| 工具 | **工具组**（`data/tool_groups.json`） | **已实现** |
+| 技能 | **技能组**（`data/skill_groups.json`） | **已实现** |
+| 记忆 | **一个开关**（不做分组） | **已实现** |
+
+记忆这一格和另外三类不同：记忆条目本身就是「一句话一条」，再套一层组只会让界面多两跳
+才能关掉它。所以模式里它就是一个布尔值：**开了就带上，关了这个模式就不记得用户**
+（`data/memory.json` 里每条自己的开关仍然管着单条记忆）。
+
+一个组 = 组名 + 功能简介 + 成员名列表（工具组装工具名，技能组装技能名）。三个设计点：
+
+- **成员列表允许为空**。这是把资源从「全局开关」升级成「组」的核心动机 ——
+  「纯对话」组要的就是一个都不给；靠全局开关只能挨个关，换模式还得再挨个开回来。
+- **组名唯一**。模式编辑界面里同名会让用户分不清两个组各自是什么，所以保存时就拦下。
+- **成员名必须真实存在**。拼错的工具名会让模型端的工具菜单静默少一项，用户还以为它在。
+  工具名对着注册表查，技能名对着 `skills/` 目录查。
+
+> 两类组的实现是同构的（`ToolGroupStore` / `SkillGroupStore`），差别只有校验依据。
+> 之所以没有抽成泛型基类：两者的领域含义不同，而且在只差一个校验函数的阶段，
+> 直白的两份比一层抽象更好读。
+
+**提示词组是这四类里唯一「成员不是平铺列表」的**：它的成员是「类别 → 提示词名」的映射，
+从六类里各挑一个（可以都不挑）。因为六类提示词是分工不同的角色（身份 / 能力 / 工具策略 /
+工作流程 / 输出规范 / 约束），而不是一堆可以随意混搭的同类项 —— 用平铺列表就表达不了
+「这一类挑谁」。
+
+### 3.7 模式：Agent 的一套完整配置
+
+模式 = 三类组（提示词 / 工具 / 技能）+ 记忆开关 + 偏好模型，存在 `data/modes.json`。
+
+```python
+Mode(
+    id="c61121ecffb7...",         # 界面上作为「模式 ID」展示，便于对照日志
+    name="标准 Agent",
+    description="全套配置",
+    prompt_group_id="...",        # 三类组都按 id 引用（不是组名）
+    tool_group_id="...",
+    skill_group_id="",
+    memory_enabled=True,
+    preferred_model="5382674b...::deepseek-flash",
+)
+```
+
+**为什么存 id 而不是组名**：组改名是常事（「文件操作」改成「文件读写」），
+存名字的话每次改名都要回头修所有模式。存 id 则改多少次都不影响引用。
+
+**为什么模式是必选项**（任务页没有「不用模式」这个选项）：没有模式就意味着没有提示词、
+没有工具、没有技能、没有记忆 —— 那已经不是这个 Agent 了。让这种状态可选中，用户
+只会以为「工具坏了」。真想要纯问答，就建一个四项全空的模式（示例里的「纯问答」）：
+**它是配置出来的，不是「没配置」**。
+
+**四个字段都可以空**，空 = 这一类什么都不给。解析逻辑见 `agent.resolve_mode()`。
+
+> 引用被删掉的组（`tool_group_id` 指向一个已经不存在的组）不会报错，只当这一类没选。
+> 用户看到的是「这个模式的工具没了」，而不是一轮跑不起来的对话。
+
+**偏好模型从提示词组搬到了模式上**：提示词组只决定「用哪些提示词」，不该顺带决定
+用哪个模型；而「这个 Agent 配哪个模型」正是模式该管的事。
+
+### 3.8 模式如何影响一次对话
+
+模式**在每一轮请求时解析**（不是在保存时固化），解析结果是一个 `ModeContext`：
+
+```
+Mode(prompt_group_id, tool_group_id, skill_group_id, memory_enabled)
+        │  agent.resolve_mode()
+        ▼
+ModeContext(prompts={类别: 提示词名}, tools=[工具名], skills=[技能名], memory_enabled=bool)
+        │
+        ▼
+组装上下文（顺序策略不变，见 3.1 与 agent.py 顶部注释）
+    system: 身份 → 能力 → 工具策略 → 工作流程 → 输出规范 → 约束
+    system: 记忆清单        ← 只在 memory_enabled 时
+    system: 技能清单        ← 只含技能组里的技能
+    tools:  工具组的工具    ← 不给就是空（模型连工具菜单都看不到）
+    user:   运行时上下文 + 本轮问题
+```
+
+**工具和技能不再有全局开关**（整套机制连同 `tools.json` / `skills.json` 已从代码里移除）。原因很直接：
+同一个工具，模式 A 需要、模式 B 不需要 —— 一个全局布尔值表达不了这件事，而且会让
+「组里明明选了却用不了」变成无从排查的静默失败。
+
+> 一个例外：**技能组里给了技能，就一定会附上 `read_skill` 工具**（`SKILL_READER_TOOL`），
+> 哪怕工具组里没有它。技能清单要求模型「用 read_skill 读取正文」，工具却不在场的话，
+> 模型会去调一个不存在的工具。这里选择让技能可用，而不是严格执行工具组。
 
 ---
 
@@ -392,10 +498,11 @@ settings = get_settings()   # 全局唯一实例（带缓存，避免重复解�
 | `app_name` | `quill` | 应用名 |
 | `work_dir` | 启动时的当前目录 | **文件工具的工作目录，同时是安全边界** |
 | `models_path` | `data/models.json` | 模型配置 |
-| `modes_path` | `data/modes.json` | 提示词模式 |
-| `tools_path` | `data/tools.json` | 工具开关 |
+| `prompt_groups_path` | `data/prompt_groups.json` | 提示词组 |
+| `modes_path` | `data/modes.json` | 模式 |
+| `tool_groups_path` | `data/tool_groups.json` | 工具组 |
+| `skill_groups_path` | `data/skill_groups.json` | 技能组 |
 | `skills_dir` | `skills` | 技能目录（一个子目录一个技能） |
-| `skills_state_path` | `data/skills.json` | 技能开关 |
 | `memory_path` | `data/memory.json` | 长期记忆 |
 | `preferences_path` | `data/preferences.json` | 界面偏好 |
 | `conversations_dir` | `data/conversations` | 会话目录 |
@@ -412,20 +519,21 @@ settings = get_settings()   # 全局唯一实例（带缓存，避免重复解�
 
 | 对象 | 说明 |
 | --- | --- |
-| `ModelConfig` | 一条连接配置：`id / name / base_url / protocol / api_key / models[]` |
+| `ModelConfig` | 一条连接配置：`id / name / base_url / protocol / api_key / models[] / context_window` |
 | `ModelChoice` | 一次具体选择：`config`（连接）+ `model`（模型名） |
-| `PromptMode` | 提示词模式：`id / name / settings{} / preferred_model` |
-| `Protocol` | 协议枚举（`OPENAI` / `ANTHROPIC`），`.label` 给界面用 |
+| `PromptGroup` | 提示词组（原「模式」）：`id / name / description / settings{}` |
+| `Mode` | 模式：`id / name / description / prompt_group_id / tool_group_id / skill_group_id / memory_enabled / preferred_model` |
+| `Protocol` | 协议枚举（`OPENAI` / `ANTHROPIC`）。`.label` 给出正式名：OpenAI 侧是 **Chat Completions**（`/v1/chat/completions`），Anthropic 侧是 **Messages**（`/v1/messages`）—— 「OpenAI 协议」并不是标准叫法 |
 | `model_choice_key(config_id, model)` | 生成模型选择的**稳定标识** `"{连接id}::{模型名}"` |
 | `check_api_key(protocol, api_key)` | 按协议校验 Key 格式，通过返回 `None` |
 
 > `model_choice_key` 这个「连接 id + 模型名」的标识很重要：它解决了**列表下标会漂移**的问题
 > （删掉一个连接，原本的「第 3 个」可能变成「第 2 个」，用户的选择就悄悄换了对象）。
-> 任务页的模型选择、模式的偏好模型都用这个口径，两边可以直接互相赋值。
+> 任务页的模型选择、提示词组的偏好模型都用这个口径，两边可以直接互相赋值。
 
 ### 4.3 持久化 `quill_agent.store`
 
-四个结构相似的存储类，接口统一：
+几个结构相似的存储类，接口统一：
 
 ```python
 store.list()                  # 读全部
@@ -438,9 +546,10 @@ store.remove(id)              # 按 id 删除
 | 类 | 存什么 | 文件 |
 | --- | --- | --- |
 | `ModelStore` | `list[ModelConfig]` | `data/models.json` |
-| `PromptModeStore` | `list[PromptMode]` | `data/modes.json` |
-| `ToolStateStore` | `dict[工具名, bool]`（接口是 `load()` / `set()`） | `data/tools.json` |
-| `SkillStateStore` | `dict[技能名, bool]`（同上） | `data/skills.json` |
+| `PromptGroupStore` | `list[PromptGroup]`（提示词组） | `data/prompt_groups.json` |
+| `ModeStore` | `list[Mode]`（模式） | `data/modes.json` |
+| `ToolGroupStore` | `list[ToolGroup]` | `data/tool_groups.json` |
+| `SkillGroupStore` | `list[SkillGroup]` | `data/skill_groups.json` |
 
 另外两个存储类不在这个文件里（它们各有自己的领域逻辑），但共用同一套读取方式：
 `MemoryStore`（`memory.py`）、`PreferenceStore`（`preferences.py`）。
@@ -451,9 +560,6 @@ store.remove(id)              # 按 id 删除
 
 > 损坏的文件会被改名成 `xxx.corrupt` 留档。不能只是忽略：否则下一次保存就把用户
 > 原来的数据永久盖掉了。
-
-技能开关没记录过时算「启用」，这条规则由 `skill_enabled()` 统一给出 —— 不要在调用点
-自己写 `True`，否则改默认值时必然漏掉某一处。
 
 ### 4.4 会话历史 `quill_agent.history`
 
@@ -524,7 +630,7 @@ library.meta("代码审查")               # SkillMeta，不存在返回 None
 `键: 值`；没有元信息块（或有开头没结尾）时返回 `({}, 原文)` —— 宁可少解析，
 也不要把正文误当成元信息吃掉。
 
-拼清单的 `build_skill_catalog()` 不在这里，而在 `agent` 层 —— 它要读技能开关，
+拼清单的 `build_skill_catalog()` 不在这里，而在 `agent` 层 —— 它按模式选中的技能名拼，
 属于「组装上下文」的职责，和 `build_system_prompt()` 并列。
 
 ### 4.8 记忆 `quill_agent.memory`
@@ -563,7 +669,8 @@ result.detail      # 原始错误信息（排查用，界面不展示）
 ```
 
 实现走 `GET /models`，**不消耗 token**。并非所有服务都实现了这个端点（部分中转站只有
-`/chat/completions`）——失败时改用界面上的手动录入即可。当前仅支持 OpenAI 协议。
+`/chat/completions`）——失败时改用界面上的手动录入即可。当前仅支持 OpenAI（Chat
+Completions）这一侧；Anthropic Messages 没有等价的列表端点。
 
 ### 4.10 Agent 循环 `quill_agent.agent`
 
@@ -575,7 +682,7 @@ from quill_agent.agent import Notice, ReasoningDelta, ToolStep, run_agent_stream
 for event in run_agent_stream(
     prompt="帮我看看当前目录有什么",   # 本轮用户输入
     files=[],                          # 上传的文件列表
-    mode=mode,                          # PromptMode | None
+    mode=mode,                          # Mode | None（决定提示词/工具/技能/记忆）
     choice=model_choice,                # ModelChoice | None
     history=[{"role": "user", "content": "..."}],
 ):
@@ -614,7 +721,8 @@ SDK 未必保留，取不到就静默跳过，不影响正文。思考过程按�
 
 | 函数 | 说明 |
 | --- | --- |
-| `build_system_prompt(mode)` | 按固定顺序把模式选中的提示词拼成 system prompt |
+| `resolve_mode(mode)` | 把模式解析成 `ModeContext`（提示词 / 工具 / 技能 / 记忆开关） |
+| `build_system_prompt(prompts)` | 按固定顺序把选中的提示词片段拼成 system prompt |
 | `build_user_message(prompt, attachments)` | 拼装运行时上下文（时间 / 工作目录 / 附件路径）+ 本轮问题 |
 | `build_history_messages(history)` | 把会话记录还原成 API 消息（含 `tool` 消息），并截断到最近 20 条记录 |
 
@@ -651,11 +759,10 @@ user 消息里给出的是路径 —— 模型用现成的 `read_file` 就能读
 ```python
 from quill_agent.tools import registry, ToolSpec
 
-registry.all()                          # list[ToolSpec]，已合并持久化的开关状态
+registry.all()                          # list[ToolSpec]，全部工具
+registry.schemas(only=[...])            # 转成 API 的 tools 参数（只含名单里的工具）
 registry.search(keyword="", category="") # 名称模糊 + 分类精确
 registry.categories()                    # 现有分类
-registry.set_enabled("list_dir", False)  # 持久化开关
-registry.schemas()                       # 转成 API 的 tools 参数（只含已启用的）
 registry.execute("read_file", '{"path": "README.md"}')   # 执行，异常转文本
 ```
 
@@ -683,11 +790,12 @@ def to_upper(text: str) -> str:
 
 **② 给数据模型加字段**
 
-以「模式加偏好模型」为例，改动链条是固定的三步：
+以「模式加记忆开关」为例，改动链条是固定的三步：
 
 1. `src/quill_agent/models.py` —— 加字段，**给默认值**（保证旧数据能读进来）
 2. `src/quill_agent/store.py` —— 如果 `add()` 是显式参数，补上它
-3. `app/prompt.py` —— 弹窗里加控件，保存时写进去
+3. `server/schemas.py` + `server/routes/models.py` —— 让接口收得进来、发得出去
+4. `web/src/views/ModesView.vue` —— 弹窗里加控件，保存时写进去
 
 **③ 换持久化方案**
 
@@ -704,9 +812,10 @@ def to_upper(text: str) -> str:
 ```
 data/
 ├── models.json           # 模型连接配置
-├── modes.json            # 提示词模式
-├── tools.json            # 工具开关
-├── skills.json           # 技能开关
+├── prompt_groups.json    # 提示词组（原「模式」，启动时自动迁移过来）
+├── tool_groups.json      # 工具组（工具的搭配方案，模式的一部分）
+├── skill_groups.json     # 技能组（技能的搭配方案，模式的一部分）
+├── modes.json            # 模式（引用三类组 + 记忆开关 + 偏好模型）
 ├── memory.json           # 长期记忆条目
 ├── preferences.json      # 界面偏好
 └── conversations/
@@ -728,42 +837,82 @@ data/
     "base_url": "https://api.deepseek.com",
     "protocol": "openai",
     "api_key": "sk-...",
-    "models": ["deepseek-v4-pro", "deepseek-flash"]
+    "models": ["deepseek-v4-pro", "deepseek-flash"],
+    "context_window": 128000
   }
 ]
 ```
+
+**`prompt_groups.json`** — 数组，每个元素是一个提示词组
+
+```json
+[
+  {
+    "id": "286d7e6ed0d2450d9fade2f43e356b19",
+    "name": "严谨分析",
+    "description": "偏保守、重推理的回答风格",
+    "settings": { "身份": "Agent助手", "能力": "通用能力", "约束": "安全边界" }
+  }
+]
+```
+
+`settings` 只包含用户实际选了的类别（一个都不选也合法 = 纯问答）；
+`description` 是功能简介（后加的字段，老数据默认空串）。
+**这里没有 `preferred_model`** —— 它搬到了模式上（见 3.7）。
 
 **`modes.json`** — 数组，每个元素是一个模式
 
 ```json
 [
   {
-    "id": "286d7e6ed0d2450d9fade2f43e356b19",
-    "name": "Agent 模式",
-    "settings": { "身份": "Agent助手", "能力": "通用能力", "约束": "安全边界" },
+    "id": "c61121ecffb7...",
+    "name": "标准 Agent",
+    "description": "全套配置",
+    "prompt_group_id": "286d7e6ed0d2450d9fade2f43e356b19",
+    "tool_group_id": "8f2c1a...",
+    "skill_group_id": "",
+    "memory_enabled": true,
     "preferred_model": "5382674b...::deepseek-flash"
   }
 ]
 ```
 
-`settings` 只包含用户实际选了的类别；`preferred_model` 为空串表示不指定。
+三类组都按 **id** 引用（不是组名），空串表示这一类什么都不给；`memory_enabled`
+关掉时这个模式就不带记忆清单；`preferred_model` 为空串表示不指定（此时沿用任务页
+当前选的模型）。解析逻辑见 `agent.resolve_mode()`，设计理由见 3.7。
 
-**`tools.json`** — 对象，键是工具名
-
-```json
-{ "list_dir": true, "search_content": true, "delete_file": false }
-```
-
-只存开关，不存工具定义 —— 定义由代码负责（避免两份真相互相打架）。
-
-**`skills.json`** — 对象，键是技能名
+**`tool_groups.json`** — 数组，每个元素是一个工具组
 
 ```json
-{ "代码审查": true, "提交信息": false }
+[
+  {
+    "id": "8f2c1a...",
+    "name": "文件操作",
+    "description": "读写和搜索工作目录里的文件",
+    "tools": ["list_dir", "read_file", "write_file"]
+  }
+]
 ```
 
-同样只存开关。技能的「定义」（元信息 + 正文）全在 `skills/` 目录里，这里只记用户有没有
-启用它。技能目录被删掉后这里会留下孤儿键 —— 无害，将来重建同名技能时开关还能接上。
+`tools` **允许为空** —— 「纯对话」这种组要的就是一个工具都不给，这正是把工具从
+「全局开关」升级成「组」的核心动机（见 3.6）。组名不允许重复：模式编辑里同名会让
+用户分不清两个组各自是什么。
+
+**`skill_groups.json`** — 结构同上，把 `tools` 换成 `skills`（存技能名）
+
+```json
+[
+  {
+    "id": "3a91f0...",
+    "name": "写作相关",
+    "description": "生成各类文本",
+    "skills": ["代码审查", "提交信息"]
+  }
+]
+```
+
+约束也一致：`skills` 可为空、组名唯一。技能名必须真实存在 —— 校验依据是 `skills/`
+目录（技能由用户建目录维护，删掉目录后组里会留下失效引用）。
 
 **`memory.json`** — 数组，每个元素是一条记忆
 
@@ -778,9 +927,8 @@ data/
 ]
 ```
 
-这里**没有**单独的开关文件：记忆条目本来就是程序（`remember` 工具）写进来的，不是用户
-手写的文件，所以 `enabled` 直接内联在条目里，改一条就是改一处。这一点和技能不同 ——
-技能的定义在文件系统里，程序不该去改用户写的文件，开关才单独放一份。
+记忆的开关**内联在条目里**：条目本来就是程序（`remember` 工具）写进来的，不是用户
+手写的文件，所以 `enabled` 直接放在每条上，改一条就是改一处，不需要另开一个开关文件。
 
 `created_at` 用来判断记忆是否过时；界面按它显示记录时间。单条数据坏掉只跳过那一条，
 其余照常读出。
@@ -850,7 +998,15 @@ data/
 
 - `ModelConfig.models` 早期叫 `model`（单个字符串），现在会自动迁移成列表
 - `ModelConfig.protocol` 缺失时默认按 OpenAI 处理
-- `PromptMode.preferred_model` 缺失时默认空串
+- `ModelConfig.context_window` 缺失时默认 128000（旧数据不必手动补）
+- `Mode.preferred_model` 缺失时默认空串；`PromptGroup` 去掉了这个字段，老数据里
+  残留的 `preferred_model` 键会被 Pydantic 忽略（不会报错）
+
+> 文件改名/搬家的那一次是**启动时迁移**（`store.migrate_prompt_groups`），不属于
+> 「字段级兼容」：旧版 `modes.json` 里装的其实是一批提示词组，会被搬到
+> `prompt_groups.json`，把 `modes.json` 这个文件名让给新模式。只有确认旧文件
+> 装的是提示词组（元素带 `settings` 而不是 `prompt_group_id`）且目标文件还不存在
+> 时才搬，所以重复调用是安全的。
 
 **读旧数据不会报错，也不会自动改写文件** —— 直到用户下次编辑该条记录才会写入新字段。
 
@@ -972,11 +1128,12 @@ make web    # 前端 5173（Vite 把 /api 代理到 8000，所以浏览器看到
 
 ### 7.6 输入区：两个设计点
 
-**功能选择区贴在输入框上方**，而不是页面顶部。模式、模型、工作目录、附件是「组成这一轮
+**功能选择区贴在输入框上方**，而不是页面顶部。提示词组、模型、工作目录、附件是「组成这一轮
 请求的东西」，和输入框放在一起，改完就发，不必在两个地方之间来回看。
 
-**发送按钮内嵌在输入框右下角**。`el-input` 没有放按钮的插槽，所以是绝对定位 + 给
-`textarea` 留一块底部 padding：
+**发送按钮内嵌在输入框右下角，而且是个圆形图标按钮**（纸飞机图标）—— 一整块带字的主色
+按钮搁在输入框里太抢眼。`el-input` 没有放按钮的插槽，所以是绝对定位 + 给 `textarea` 留一块
+底部 padding：
 
 ```css
 .box :deep(.el-textarea__inner) {
@@ -990,6 +1147,7 @@ make web    # 前端 5173（Vite 把 /api 代理到 8000，所以浏览器看到
 ```
 
 只写绝对定位会压住第三行文字 —— **多出来的那段 padding 才是关键**。
+换成图标后文字没了，要补一个 `title="发送"`，否则鼠标悬停没有任何提示。
 
 ### 7.7 附件与工作目录
 
@@ -1112,9 +1270,12 @@ Teleport 正是为这种「逻辑上属于 A、DOM 上要放进 B」的场景准
 三个值得留意的点：
 
 - **`--on-accent`**：压在主色上的文字色。浅色模式主色是深蓝、配米白字；深色模式
-  主色换成亮蓝，文字反而要用深色 —— 两个值必须分开定义，写死 `#fff` 会在其中一套里糊掉。
-- **深色模式要换主色**：深海军蓝在深底上对比度不足，按钮会「糊」进背景，所以深色下
-  主色改用亮蓝 `#5B9BD5`，金色也提亮一档。
+  主色换成暖金，文字反而要用深色 —— 两个值必须分开定义，写死 `#fff` 会在其中一套里糊掉。
+  深色下主按钮的字色也据此覆盖了（`html.dark .el-button--primary`），否则 Element 默认的
+  白字压在金底上对比度不够。
+- **深色模式要换主色**：深海军蓝在深底上对比度不足，按钮会「糊」进背景。深色下主色**不再
+  用亮蓝** —— 亮蓝偏冷，铺开（用户消息气泡就是整块主色）会发刺；改用暖金 `#c79a4e`，与品牌
+  的金色同源，深靛蓝底上既暖又稳。金色另提亮一档 `#d9a04a`。
 - **防白闪**：主题必须在样式表生效**之前**就挂到 `<html>` 上，这段逻辑内联在
   `index.html` 里 —— 外链模块要等下载解析完才执行，那时深色用户已经看过一闪的白屏了。
 
@@ -1125,6 +1286,102 @@ Teleport 正是为这种「逻辑上属于 A、DOM 上要放进 B」的场景准
 
 主题选择存在 `localStorage` 的 `quill:theme`，三档：浅色 / 深色 / 跟随系统（默认）。
 选「跟随系统」时会监听 `prefers-color-scheme` 的变化实时切换。
+
+### 7.12 提示词页：为什么是一次改名，不是一次新建
+
+页面分上下两半：**上「提示词组」**（组名 / 功能简介 / 提示词设置 / 编辑·删除），
+**下「提示词库」**（六类及其下的 `.md`，展开行按需取正文）。和工具页、技能页同一套骨架 ——
+组是搭配单位，下面的列表是素材，上面的组从里面挑。
+
+关键决定是**复用**：提示词组没有另起一套数据，用的就是原先「模式」的记录
+（`PromptGroupStore` / `data/prompt_groups.json` / `/prompt-groups` 接口）。那套记录本来
+做的就是这件事 —— 从六类里各挑一个 —— 只是当时叫「模式」。**加一套新存储只会让同一件事
+在两个地方存两份，以后必然对不上。** 所以这次动的只有措辞、存储/接口名，和一个新加的
+`description` 字段。
+
+> 换名对老数据是安全的：启动时 `store.migrate_prompt_groups()` 会把旧版 `modes.json`
+> （元素带 `settings`、不带 `prompt_group_id`）搬到 `prompt_groups.json`，只有目标文件
+> 不存在时才搬，重复调用无副作用（见 5.5）。`description` 给了默认空串，老数据反序列化
+> 不会报错。**唯一语义变化**是 `preferred_model` 搬到了模式上，不再属于提示词组（见 3.7）。
+
+它和另外两类组有一处**结构差异**：提示词组的成员是「类别 → 提示词名」的映射，不是平铺列表
+（原因见 3.6）。这让组表格渲染多一步 —— 直接
+`v-for="(name, category) in row.settings"` 遍历对象时，键会被 TS 推断成 `number`，
+传给 `isMissing(category, name)` 要一路 cast。摊平成 `{category, name}[]` 再渲染就干净了。
+
+两处 `el-table` 的老坑也在这个页面上复现了（`DefaultRow` 与新加的字段）：
+
+- 插槽里的 `row` 是 `Record<string, any>`，**整个对象**传给要求具体类型的函数过不了类型检查
+  （`DefaultRow` 不能赋给 `PromptGroup`）→ handler 按字段拆开收，反正本来也只用到那几个。
+- 模板表达式里**不能用 TS 类型注解**（`@expand-change="(row: X, e: Y) => ..."` 会报
+  `TS1005: ',' expected`）→ 直接绑函数名，让它自己从事件签名里推断。
+
+### 7.13 模式页：把三组拼成一个「模式」
+
+模式是任务页的必选项，页面就是围绕「怎么把资源拼起来」做的（设计理由见 3.7 / 3.6）。
+一个模式 = 提示词组 + 工具组 + 技能组 + 记忆开关 + 偏好模型，后四项都可以留空，
+所以「纯问答」模式就是三个组都不选、记忆关掉。
+
+页面仍是「搜索 + 添加 → 表格」那套骨架，表格列是：
+模式 ID / 模式名 / 模式简介 / 提示词组 / 工具组 / 技能组 / 记忆 / 偏好模型 / 操作。
+弹窗（新建、编辑共用一张表单）里：模式名、模式简介**必填**，三类组各一个下拉（可清空），
+一个「启用记忆」开关，一个「偏好模型」下拉。
+
+几个值得留意的实现点：
+
+- **组按 id 引用，表格却要显示名字** → 需要一张「组 id → 组名」对照表。后端在
+  `GET /modes` 里连着 `modes` 一起把 `groups` 返回来，省掉前端再拉三份列表；
+  组名查不到就显示「（组已删除）」，空 id 显示「—」。这样删组不会让模式串味。
+- **偏好模型的口径**：模式和会话里选的模型都用 `"连接id::模型名"`，同一口径才能直接
+  互相赋值（理由见后端的 `model_choice_key`）。切模式时若带偏好模型就跟着换，没带就
+  保持当前选择不动（`session.persistMode`）。
+- **改完要刷新全局选项**：任务页的模式选择器读的是同一份 `/modes` 数据，模式页增删改后
+  会 `loadOptions()`，否则选中项可能指向刚被删掉的模式。
+- **重名交给后端判**：模式名唯一性由后端校验，报错文案前端原样弹出，不在前端猜。
+- 这里也踩了 `DefaultRow` 不能赋给具体类型、模板里不能写 TS 注解这两个坑 —— 处理方式和
+  提示词页一样（见 7.12）。
+
+### 7.14 任务页：上下文用量仪表盘
+
+顶栏是全局的、页面自己的信息只能挤进去，所以「这一轮上下文用了多少」这类**随会话变化**的读数
+就近放在任务页里（`ContextMeter.vue`）：一个 `<el-progress type="dashboard">` 占比圆环 +
+`xxk/xxk` 文字，**贴在功能区那一行的最右侧**（`.meter-slot { margin-left: auto }`）。
+
+放这一行而不是单独起一条侧栏，是因为它读的窗口大小就来自同一排的**模型选择** —— 换个模型，
+抬头就能看到占比跟着变；单独一条侧栏反而把它和「因」隔开了。也因此它做得很紧凑：40px 的圆环
++ 右侧两行小字。圆环里不放百分比（40px 的圈塞不下，只会糊成一团），占比看环、读数看右边，
+百分比放到 `title` 里悬停可见。窄窗口（< 720px）只留圆环、舍掉文字。
+
+两个数字的来源是关键：
+
+- **分子（占用）取最近一条带 `stats` 的 assistant 消息的 `stats.prompt_tokens`**，而不是
+  「数消息条数」或「前端估长度」。`prompt_tokens` 正是这一轮**实际发出去的全部上下文**的大小
+  （system + 历史 + 这一轮用户消息），是唯一准确的现成数据。
+- **分母（窗口）取当前所选模型连接的 `context_window`**（在「API 设置」里配置）。各家模型
+  的窗口大小不同，而模型名是任意字符串、没法可靠推断，所以做成显式可配项，默认 128k。
+
+颜色随占用率变化：< 70% 用主色，70~90% 用 `--el-color-warning`，> 90% 用 `--el-color-danger`。
+
+### 7.15 API 设置页：模型从列表里选
+
+**手敲模型名太容易出错** —— 差一个字符就连不上，而报错通常指不到「名字拼错了」这一点上。
+所以模型名做成可筛选的多选下拉：
+
+- 「**获取模型列表**」按钮调 `POST /models/test`（就是连通测试那个端点），把返回的模型名灌进
+  下拉当选项；
+- 下拉同时开了 `allow-create`，**仍可手动输入后回车新建** —— 有些中转站没有 `/models` 端点，
+  或列表里就是没有目标模型。
+
+协议下拉的选项文案用两家官方对自家接口的正式叫法：**OpenAI Chat Completions**
+（`/v1/chat/completions`）与 **Anthropic Messages**（`/v1/messages`）；后端 `Protocol.label`
+是同一份口径，前端的 `PROTOCOL_LABELS` 与它对齐。
+
+### 7.16 组的成员多选：全选
+
+工具组、技能组弹窗里挑成员时，下拉上方给一行「已选 x / y」+ **全选 / 清空**。工具组的下拉
+选项里还平铺了**分类标签和简介** —— 光看工具名（如 `read_file`）不容易判断它做什么，尤其是
+给不熟悉这套工具的人配组时。下拉被 teleport 到 `body`，选项样式够不到组件的 scoped 作用域，
+所以 `.tool-opt-popper` 那几条写在全局 `style.css` 里。
 
 ---
 

@@ -18,7 +18,7 @@ from fastapi.responses import StreamingResponse
 
 from quill_agent.agent import Notice, ReasoningDelta, RunStats, ToolStep, run_agent_stream
 from quill_agent.history import ConversationStore
-from quill_agent.models import ModelChoice, PromptMode
+from quill_agent.models import Mode, ModelChoice
 from server import stores
 from server.schemas import ChatRequest
 
@@ -69,7 +69,7 @@ def _resolve_choice(request: ChatRequest) -> ModelChoice | None:
     return ModelChoice(config=config, model=request.model)
 
 
-def _resolve_mode(request: ChatRequest) -> PromptMode | None:
+def _resolve_mode(request: ChatRequest) -> Mode | None:
     """取出这一轮要用的提示词模式；没选就是 None（纯问答）。"""
     if not request.mode_id:
         return None

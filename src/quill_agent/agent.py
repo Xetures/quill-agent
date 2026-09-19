@@ -35,10 +35,14 @@ from openai import OpenAI
 
 from quill_agent.config import get_settings
 from quill_agent.memory import MemoryStore
-from quill_agent.models import ModelChoice, PromptMode, Protocol
+from quill_agent.models import Mode, ModelChoice, Protocol
 from quill_agent.prompts import PROMPT_CATEGORIES, PromptLibrary
 from quill_agent.skills import SkillLibrary
-from quill_agent.store import SkillStateStore, skill_enabled
+from quill_agent.store import (
+    PromptGroupStore,
+    SkillGroupStore,
+    ToolGroupStore,
+)
 from quill_agent.tools import registry
 from quill_agent.tools.files import current_work_dir, save_attachments
 
@@ -46,6 +50,11 @@ from quill_agent.tools.files import current_work_dir, save_attachments
 # 注意它计的是工具轮次而不是请求次数：预算用尽后还会再发一次
 # **不带工具**的请求让模型收尾，所以最多请求 MAX_ITERATIONS + 1 次。
 MAX_ITERATIONS = 5
+
+# 技能清单要求模型「用 read_skill 读取正文」，所以只要模式里给了技能，
+# 这个工具就必须在场 —— 否则模型会去调一个不存在的工具。
+# 用户在工具组里漏选它也不算错：技能能用比「严格执行工具组」更重要。
+SKILL_READER_TOOL = "read_skill"
 
 # 单次请求模型的超时（秒）
 REQUEST_TIMEOUT = 120.0
@@ -150,27 +159,88 @@ class AgentResult:
     stats: RunStats = field(default_factory=RunStats)
 
 
-def build_system_prompt(mode: PromptMode | None) -> str:
-    """把模式里选中的提示词片段拼成 system prompt。
+@dataclass(frozen=True)
+class ModeContext:
+    """模式解析后的结果：这一轮到底用哪些提示词 / 工具 / 技能 / 记忆。
+
+    模式存的是「引用哪个组」，真正组装上下文时要用的是组里的**成员**，
+    中间这层解析单独拎出来：解析只需要读一次存储，而组装要用到的地方有四处。
+    """
+
+    prompts: dict[str, str] = field(default_factory=dict)  # 类别 -> 提示词名
+    tools: list[str] = field(default_factory=list)
+    skills: list[str] = field(default_factory=list)
+    memory_enabled: bool = True
+
+
+def resolve_mode(mode: Mode | None) -> ModeContext:
+    """把模式解析成这一轮实际要用的资源。
+
+    模式里的每一类都是**可选的**：没选（空 id）就是这一类什么都不给 ——
+    所以「纯问答模式」是四个都空，而不是一种特殊取值。
+
+    三类组按 id 查不到（组被删了）时按空处理，不报错：用户看到的是
+    「这个模式的技能没了」，而不是一轮跑不起来的对话。
+
+    Args:
+        mode: 选中的模式；None 表示没有模式（什么都不给）。
+    """
+    if mode is None:
+        return ModeContext(prompts={}, tools=[], skills=[], memory_enabled=False)
+
+    settings = get_settings()
+
+    prompts: dict[str, str] = {}
+    if mode.prompt_group_id:
+        group = PromptGroupStore(settings.prompt_groups_path).get(mode.prompt_group_id)
+        if group is not None:
+            prompts = dict(group.settings)
+
+    tools: list[str] = []
+    if mode.tool_group_id:
+        group = ToolGroupStore(settings.tool_groups_path).get(mode.tool_group_id)
+        if group is not None:
+            tools = list(group.tools)
+
+    skills: list[str] = []
+    if mode.skill_group_id:
+        group = SkillGroupStore(settings.skill_groups_path).get(mode.skill_group_id)
+        if group is not None:
+            skills = list(group.skills)
+
+    # 给了技能就一定给出读技能的工具，理由见 SKILL_READER_TOOL 的注释
+    if skills and SKILL_READER_TOOL not in tools:
+        tools = [*tools, SKILL_READER_TOOL]
+
+    return ModeContext(
+        prompts=prompts,
+        tools=tools,
+        skills=skills,
+        memory_enabled=mode.memory_enabled,
+    )
+
+
+def build_system_prompt(prompts: dict[str, str]) -> str:
+    """把选中的提示词片段拼成 system prompt。
 
     顺序固定按 PROMPT_CATEGORIES（身份 → 能力 → 工具策略 → 工作流程 →
     输出规范 → 约束），与用户在弹窗里的勾选顺序无关 ——
     顺序稳定，同一模式下拼出来的内容才完全一致，前缀缓存才有意义。
 
     Args:
-        mode: 选中的提示词模式；None 表示不带任何系统提示词（纯问答）。
+        prompts: {类别: 提示词名}；空字典表示不带系统提示词（纯问答）。
 
     Returns:
         拼好的 system prompt；一个片段都没有时返回空字符串。
     """
-    if mode is None:
+    if not prompts:
         return ""
 
     library = PromptLibrary(get_settings().prompt_dir)
 
     parts: list[str] = []
     for category in PROMPT_CATEGORIES:
-        name = mode.settings.get(category)
+        name = prompts.get(category)
         if not name:
             continue
         content = library.read(category, name)
@@ -201,22 +271,29 @@ def build_memory_block() -> str:
     )
 
 
-def build_skill_catalog() -> str:
+def build_skill_catalog(names: list[str]) -> str:
     """拼「可用技能」清单：只有名字和适用场景，正文让模型按需去取。
 
     这是整个技能机制的关键：常驻上下文的只有这一小段清单。技能正文动辄上千字，
     但只有模型判断用得上的那一个，才会通过 read_skill 工具被取回来 ——
     用不到的技能一个 token 都不花。
 
+    Args:
+        names: 模式（技能组）选中的技能名。技能不再有全局开关 ——
+            **有没有技能由模式说了算**，和工具一样（见 `resolve_mode`）。
+
     Returns:
         清单文本；没有可用技能时返回空串，调用方据此决定要不要加这条消息。
     """
+    if not names:
+        return ""
+
     settings = get_settings()
-    states = SkillStateStore(settings.skills_state_path).load()
+    wanted = set(names)
 
     lines: list[str] = []
     for meta in SkillLibrary(settings.skills_dir).list_meta():
-        if not skill_enabled(states, meta.name):
+        if meta.name not in wanted:
             continue
 
         description = meta.description or "（作者未填写适用场景）"
@@ -418,7 +495,7 @@ def run_agent_stream(
     *,
     prompt: str,
     files: list,
-    mode: PromptMode | None,
+    mode: Mode | None,
     choice: ModelChoice | None,
     history: list[dict] | None = None,
     stats: RunStats | None = None,
@@ -428,7 +505,7 @@ def run_agent_stream(
     Args:
         prompt: 本轮用户输入。
         files: 上传的附件对象；会先落盘到工作目录，再把路径告诉模型。
-        mode: 提示词模式；None 表示不使用系统提示词。
+        mode: 选中的模式（决定提示词 / 工具 / 技能 / 记忆）；None 表示什么都不给。
         choice: 选中的模型（连接配置 + 模型名）。
         history: 历史会话记录，元素形如 {"role": ..., "content": ...}；
             助手记录可带 "steps"（工具调用），会被还原成 tool 消息，
@@ -463,7 +540,7 @@ def _run_stream(
     *,
     prompt: str,
     files: list,
-    mode: PromptMode | None,
+    mode: Mode | None,
     choice: ModelChoice | None,
     history: list[dict] | None,
     tracker: RunStats,
@@ -482,22 +559,26 @@ def _run_stream(
         return
 
     # ── ① 组装上下文 ──────────────────────────────────────────────
+    # 模式先解析成四类资源，再按固定顺序拼装 —— 解析只做一次
+    context = resolve_mode(mode)
+
     messages: list[dict] = []
 
-    system_prompt = build_system_prompt(mode)
+    system_prompt = build_system_prompt(context.prompts)
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
 
     # 记忆与技能清单各自单独占一条 system 消息，都不拼进上面那段。
     # 原因和「运行时上下文不放 system prompt」是同一个：这两段都会变
-    # （改一条记忆、停用一个技能），跟身份提示词拼在一起的话，动一下就整段重来，
+    # （改一条记忆、换一个技能组），跟身份提示词拼在一起的话，动一下就整段重来，
     # 前面那段的缓存前缀跟着作废。
     # 顺序是先「用户是谁」，再「这类活怎么干」。
-    memory = build_memory_block()
-    if memory:
-        messages.append({"role": "system", "content": memory})
+    if context.memory_enabled:
+        memory = build_memory_block()
+        if memory:
+            messages.append({"role": "system", "content": memory})
 
-    catalog = build_skill_catalog()
+    catalog = build_skill_catalog(context.skills)
     if catalog:
         messages.append({"role": "system", "content": catalog})
 
@@ -509,8 +590,10 @@ def _run_stream(
     attachments = save_attachments(files)
     messages.append({"role": "user", "content": build_user_message(prompt, attachments)})
 
-    # ── ② 工具菜单：只含已启用的工具 ───────────────────────────────
-    tools = registry.schemas()
+    # ── ② 工具菜单：只含模式里给的工具 ─────────────────────────────
+    # 工具没有全局开关：给不给由模式的工具组决定（和技能一致）。
+    # 空列表是合法结果 —— 纯问答模式就是一个工具都不给。
+    tools = registry.schemas(only=context.tools)
 
     client = OpenAI(
         base_url=choice.config.base_url or None,

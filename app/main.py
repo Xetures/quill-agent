@@ -31,9 +31,9 @@ from quill_agent.agent import (
 )
 from quill_agent.config import get_settings
 from quill_agent.history import ConversationStore
-from quill_agent.models import ModelChoice, ModelConfig, PromptMode, model_choice_key
+from quill_agent.models import Mode, ModelChoice, ModelConfig, model_choice_key
 from quill_agent.preferences import PreferenceStore, draft_key
-from quill_agent.store import ModelStore, PromptModeStore
+from quill_agent.store import ModelStore, ModeStore
 from quill_agent.tools.files import (
     clear_work_dir,
     current_work_dir,
@@ -222,9 +222,12 @@ def build_model_store() -> ModelStore:
     return ModelStore(get_settings().models_path)
 
 
-def build_mode_store() -> PromptModeStore:
-    """读取提示词模式，供「模式选择」使用（在「提示词」页维护）。"""
-    return PromptModeStore(get_settings().modes_path)
+def build_mode_store() -> ModeStore:
+    """读取模式，供「模式选择」使用。
+
+    模式 = 提示词组 + 工具组 + 技能组 + 记忆开关 + 偏好模型，在「模式」页维护。
+    """
+    return ModeStore(get_settings().modes_path)
 
 
 def build_history_store() -> ConversationStore:
@@ -403,7 +406,7 @@ def render_model_picker(configs: list[ModelConfig]) -> ModelChoice | None:
     return choices[st.session_state[MODEL_STATE_KEY]]
 
 
-def apply_preferred_model(by_id: dict[str, PromptMode]) -> None:
+def apply_preferred_model(by_id: dict[str, Mode]) -> None:
     """模式切换后，把模型换成该模式配置的偏好模型；没配就保持原样。
 
     为什么用 on_change 回调而不是「渲染后比较上次的值」：
@@ -420,10 +423,10 @@ def apply_preferred_model(by_id: dict[str, PromptMode]) -> None:
     st.session_state[MODEL_STATE_KEY] = mode.preferred_model
 
 
-def render_mode_picker(modes: list[PromptMode]) -> PromptMode | None:
+def render_mode_picker(modes: list[Mode]) -> Mode | None:
     """模式选择控件。
 
-    选项来自「提示词」页配置的模式（一个模式 = 若干提示词片段的组合）。
+    选项来自「模式」页配置的模式（提示词组 + 工具组 + 技能组 + 记忆开关）。
     同样按 id 记录选择，模式被删除时会自动回退到第一个。
 
     切换模式时若该模式配了「偏好模型」，模型会跟着一起换 —— 见
@@ -578,8 +581,8 @@ def render_workdir_picker() -> str:
 
 def render_toolbar(
     model_store: ModelStore,
-    mode_store: PromptModeStore,
-) -> tuple[list, PromptMode | None, ModelChoice | None]:
+    mode_store: ModeStore,
+) -> tuple[list, Mode | None, ModelChoice | None]:
     """第 4 块：文件上传 / 模式选择 / 模型选择。
 
     三个控件都收成「图标 + 当前值」的形态：
@@ -589,7 +592,7 @@ def render_toolbar(
         (上传的文件列表, 选中的模式, 选中的模型)；未配置时对应项为 None。
     """
     files: list = []
-    mode: PromptMode | None = None
+    mode: Mode | None = None
     selected: ModelChoice | None = None
 
     # horizontal=True 让子元素按内容宽度横向排列，不会撑满整行
@@ -697,7 +700,7 @@ def handle_submit(
     *,
     prompt: str,
     files: list,
-    mode: PromptMode | None,
+    mode: Mode | None,
     model: ModelChoice | None,
     reasoning_slot,
     text_slot,
@@ -789,7 +792,7 @@ def run_agent(
     *,
     prompt: str,
     files: list,
-    mode: PromptMode | None,
+    mode: Mode | None,
     model: ModelChoice | None,
     reasoning_slot,
     text_slot,

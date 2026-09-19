@@ -20,10 +20,17 @@ class Protocol(str, Enum):
 
     @property
     def label(self) -> str:
-        """界面展示用的名称。"""
+        """界面展示用的名称：用两家官方对自家接口的正式叫法。
+
+        笼统的「OpenAI 协议」并不标准：OpenAI 的对话接口正式名叫
+        **Chat Completions API**（`POST /v1/chat/completions`），
+        Anthropic 的叫 **Messages API**（`POST /v1/messages`）。
+        第三方中转站/本地服务凡是兼容这套请求体，业界统称「OpenAI 兼容」，
+        但做枚举项时还是写全称更清楚。
+        """
         return {
-            Protocol.OPENAI: "OpenAI 协议",
-            Protocol.ANTHROPIC: "Anthropic 协议",
+            Protocol.OPENAI: "OpenAI Chat Completions",
+            Protocol.ANTHROPIC: "Anthropic Messages",
         }[self]
 
 
@@ -73,6 +80,8 @@ class ModelConfig(BaseModel):
         protocol: 接口协议，决定 API Key 的格式要求。
         api_key: 接口鉴权 Key；注意会以明文写入 JSON 文件。
         models: 该连接下可用的模型名，例如 ["deepseek-chat", "deepseek-reasoner"]。
+        context_window: 上下文窗口大小（tokens）。任务页的用量仪表盘靠它算占比；
+            各家不一，也没法从模型名可靠推断，所以做成可配项。
     """
 
     id: str = Field(description="唯一标识")
@@ -82,6 +91,8 @@ class ModelConfig(BaseModel):
     protocol: Protocol = Field(default=Protocol.OPENAI, description="接口协议")
     api_key: str = Field(default="", description="接口鉴权 Key")
     models: list[str] = Field(default_factory=list, description="该连接下可用的模型名")
+    # 旧数据没有这个字段，给一个常见默认值（128k）保证向下兼容；用户按实际模型改
+    context_window: int = Field(default=128000, gt=0, description="上下文窗口大小（tokens）")
 
     @model_validator(mode="before")
     @classmethod
@@ -126,21 +137,94 @@ def model_choice_key(config_id: str, model: str) -> str:
     return f"{config_id}::{model}"
 
 
-class PromptMode(BaseModel):
-    """一个提示词模式：从六类提示词里各挑一个（可以不挑）拼成一套提示词。
+class ToolGroup(BaseModel):
+    """一个工具组：给模型的一套工具搭配方案。
+
+    背景：模式原先只管提示词 —— 选了「纯问答」，工具、技能、记忆照样全量
+    拼进上下文。资源需要一层「组」作为搭配单位，模式最终是四类资源的组合；
+    工具组是其中之一（提示词组见 `PromptGroup`，技能组见 `SkillGroup`，
+    记忆不做组、只是一个开关）。
 
     Attributes:
-        id: 唯一标识，用于删除时定位记录（对用户不可见）。
-        name: 模式名称，例如「严谨分析」。
-        settings: {类别: 提示词名}，只包含用户实际选择的那几类；
-            例如 {"身份": "AI助手", "约束": "合规红线"}。
+        id: 唯一标识，用于编辑 / 删除时定位记录（对用户不可见）。
+        name: 组名，例如「文件操作」「纯对话」。
+        description: 功能简介，会出现在模式编辑界面，帮用户想起这组是干嘛的。
+        tools: 组内工具名列表。**允许为空** —— 「纯对话」这种组就是要一个工具
+            都不给，这是把工具从「全局开关」升级成「组」的核心动机。
     """
 
     id: str = Field(description="唯一标识")
-    name: str = Field(min_length=1, description="模式名称")
+    name: str = Field(min_length=1, description="组名")
+    description: str = Field(default="", description="功能简介")
+    tools: list[str] = Field(default_factory=list, description="组内工具名")
+
+
+class SkillGroup(BaseModel):
+    """一个技能组：给模型的一套技能搭配方案。
+
+    与 ToolGroup 同一套思路（见 3.6）：模式最终是四类组的组合，这是技能这一环。
+
+    Attributes:
+        id: 唯一标识，用于编辑 / 删除时定位记录（对用户不可见）。
+        name: 组名，例如「写作相关」。
+        description: 功能简介，模式编辑界面用它帮用户想起这组是什么。
+        skills: 组内技能名。允许为空 —— 有些模式一个技能都不该给。
+    """
+
+    id: str = Field(description="唯一标识")
+    name: str = Field(min_length=1, description="组名")
+    description: str = Field(default="", description="功能简介")
+    skills: list[str] = Field(default_factory=list, description="组内技能名")
+
+
+class PromptGroup(BaseModel):
+    """一个提示词组：从六类提示词里各挑一个（可以不挑）拼成一套提示词。
+
+    与 ToolGroup / SkillGroup 同一套思路（见 README 3.6）。原先这个东西就叫
+    「模式」，现在模式指四类组的组合（见 `Mode`），它只是其中提示词那一类。
+
+    Attributes:
+        id: 唯一标识，用于删除时定位记录（对用户不可见）。
+        name: 组名，例如「严谨分析」。
+        description: 功能简介，模式编辑界面用它帮用户想起这组是什么。
+        settings: {类别: 提示词名}，只包含用户实际选择的那几类；
+            例如 {"身份": "AI助手", "约束": "合规红线"}。
+            **允许为空** —— 那就退化成「不带任何系统提示词」的纯问答，
+            不是每个任务都需要一整套提示词。
+    """
+
+    id: str = Field(description="唯一标识")
+    name: str = Field(min_length=1, description="组名")
+    description: str = Field(default="", description="功能简介")
     settings: dict[str, str] = Field(default_factory=dict, description="类别 -> 提示词名")
-    # 旧数据没有这个字段，默认空串，保证向下兼容
-    preferred_model: str = Field(
-        default="",
-        description="偏好模型的稳定标识；空表示不指定",
-    )
+
+
+class Mode(BaseModel):
+    """一个模式：Agent 的一套完整配置。
+
+    模式 = 四类资源的搭配 + 记忆开关 + 偏好模型。它回答的是「这个 Agent 是什么
+    样子」，而组回答的是「某一类资源给哪些」—— 前者引用后者，两层分开之后，
+    同一个提示词组可以被多个模式复用。
+
+    任务页**必须选中一个模式**（不能「不用模式」）：没有模式就没有系统提示词、
+    工具、技能，那已经不是这个 Agent 了。
+
+    Attributes:
+        id: 唯一标识（界面上作为「模式 ID」展示，便于对照日志与配置）。
+        name: 模式名。
+        description: 模式简介。
+        prompt_group_id / tool_group_id / skill_group_id: 引用的组 id。
+            **空串表示这一类什么都不给**（纯问答就是三个都空）。
+            存 id 而不是组名：组改名后模式不用跟着改。
+        memory_enabled: 是否把记忆拼进上下文。关掉就是「这个模式不记得用户」。
+        preferred_model: 偏好模型的稳定标识；空表示沿用任务页当前的模型。
+    """
+
+    id: str = Field(description="唯一标识")
+    name: str = Field(min_length=1, description="模式名")
+    description: str = Field(default="", description="模式简介")
+    prompt_group_id: str = Field(default="", description="引用的提示词组 id")
+    tool_group_id: str = Field(default="", description="引用的工具组 id")
+    skill_group_id: str = Field(default="", description="引用的技能组 id")
+    memory_enabled: bool = Field(default=True, description="是否启用记忆")
+    preferred_model: str = Field(default="", description="偏好模型的稳定标识；空表示沿用当前")

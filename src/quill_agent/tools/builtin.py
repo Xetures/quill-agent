@@ -12,7 +12,6 @@ from __future__ import annotations
 from quill_agent.config import get_settings
 from quill_agent.memory import MemoryStore
 from quill_agent.skills import SkillLibrary
-from quill_agent.store import SkillStateStore, skill_enabled
 from quill_agent.tools.base import registry
 
 
@@ -35,14 +34,14 @@ from quill_agent.tools.base import registry
     },
 )
 def read_skill(name: str) -> str:
-    """读取技能正文。"""
-    settings = get_settings()
+    """读取技能正文。
 
-    # 已停用的技能不给读。开关的语义就是「用户不想让它被用上」——
-    # 被停用的技能不会出现在清单里，但模型可能从别处知道了名字，
-    # 这里必须再拦一道，否则开关形同虚设。
-    if not skill_enabled(SkillStateStore(settings.skills_state_path).load(), name):
-        return f"技能「{name}」已被停用，不能使用。"
+    这里**不再**校验「技能是否启用」：技能没有全局开关了，给不给由模式的技能组
+    决定（见 agent.resolve_mode）。而且这个工具本来就是随技能组一起下发的 ——
+    模型手上的清单里只有组里那几个，它想读也读不到别的。留一道全局开关在这儿，
+    只会变成「组里选了却读不出来」这种查不出原因的静默失败。
+    """
+    settings = get_settings()
 
     content = SkillLibrary(settings.skills_dir).read(name)
 

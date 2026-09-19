@@ -42,7 +42,7 @@ def fetch_models(
 ) -> ConnectionResult:
     """拉取接口提供的模型列表（GET /models）。
 
-    目前只实现 OpenAI 协议。注意并不是所有服务都实现了这个端点：
+    目前只实现 OpenAI（Chat Completions）这一侧。注意并不是所有服务都实现了这个端点：
     Azure OpenAI、部分网关、只支持 /chat/completions 的中转站会失败，
     那种情况下改用界面上的「手动添加」录入模型名即可。
 

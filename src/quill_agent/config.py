@@ -32,18 +32,31 @@ class Settings(BaseSettings):
     # 模型配置的存储文件位置
     models_path: Path = Field(default=Path("data/models.json"), description="模型配置 JSON 路径")
 
-    # 提示词：正文文件放 prompt/ 目录（用户可直接维护），模式配置存 data/
+    # 提示词：正文文件放 prompt/ 目录（用户可直接维护），配置存 data/
     prompt_dir: Path = Field(default=Path("prompt"), description="提示词目录")
-    modes_path: Path = Field(default=Path("data/modes.json"), description="提示词模式 JSON 路径")
+    # 提示词组原先就叫「模式」，存在 modes.json。模式现在是四类组的组合，
+    # 那个文件名归了新模式；提示词组挪到 prompt_groups.json（启动时自动搬一次，
+    # 见 store.migrate_prompt_groups，用户已有的组不会丢）
+    prompt_groups_path: Path = Field(
+        default=Path("data/prompt_groups.json"), description="提示词组 JSON 路径"
+    )
+    modes_path: Path = Field(default=Path("data/modes.json"), description="模式 JSON 路径")
 
-    # 工具：定义在代码里，这里只存开关状态
-    tools_path: Path = Field(default=Path("data/tools.json"), description="工具开关状态 JSON 路径")
+    # 工具：定义在代码里；给哪些工具由模式的工具组决定（见 tool_groups_path），
+    # 这里不再有「全局开关」—— 那在工具组实现后就变成了改了却不生效的死控件。
+    # 工具组：工具的搭配方案（模式的组成部分之一）
+    tool_groups_path: Path = Field(
+        default=Path("data/tool_groups.json"),
+        description="工具组 JSON 路径",
+    )
 
-    # 技能：一个技能 = 一个目录（内含 SKILL.md），正文由用户维护
+    # 技能：一个技能 = 一个目录（内含 SKILL.md），正文由用户维护；
+    # 给哪些技能由模式的技能组决定（见 skill_groups_path），同样没有全局开关。
     skills_dir: Path = Field(default=Path("skills"), description="技能目录")
-    skills_state_path: Path = Field(
-        default=Path("data/skills.json"),
-        description="技能开关状态 JSON 路径",
+    # 技能组：技能的搭配方案（模式的组成部分之一）
+    skill_groups_path: Path = Field(
+        default=Path("data/skill_groups.json"),
+        description="技能组 JSON 路径",
     )
 
     # 记忆：跨会话保留的长期事实，条目由模型调用 remember 写入
