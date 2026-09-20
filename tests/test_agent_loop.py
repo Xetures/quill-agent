@@ -1,17 +1,19 @@
-"""Agent 循环的边界测试：工具轮次预算与强制收尾。
+"""Agent 循环的边界测试：工具轮次预算、开销上限与强制收尾。
 
-用假的模型客户端替换掉 OpenAI SDK，专门盯住 MAX_ITERATIONS 最容易出错的地方：
-预算耗尽后不能再去执行工具 —— 那次执行的结果没有后续请求去消化，副作用白做，
-用户拿到的还只是一句「未完成」。
+用假的模型客户端替换掉 OpenAI SDK，专门盯住两条「闸门」最容易出错的地方：
+轮次（`MAX_ITERATIONS`）和开销（`run_token_limit`）用尽后都不能再去执行工具 ——
+那次执行的结果没有后续请求去消化，副作用白做，用户拿到的还只是一句「未完成」。
 """
 
 import asyncio
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 
 from quill_agent import agent, interaction
 from quill_agent.models import ModelChoice, ModelConfig
+from quill_agent.preferences import MAX_RUN_TOKENS_KEY, PreferenceStore
 
 
 def _text_chunk(text: str) -> SimpleNamespace:
@@ -254,6 +256,65 @@ def test_stats_accumulate_usage_across_requests(monkeypatch) -> None:
     assert stats.total_tokens == 43
 
 
+def test_context_tokens_keeps_only_the_last_request(monkeypatch) -> None:
+    """上下文大小取最后一次请求，**不**跟着累加。
+
+    两次请求把同一份上下文各发了一遍：账单是 10 + 20，但窗口只占了 20。
+    仪表盘要的是后者 —— 混用的话，读一次代码（十来轮工具）读数就会虚高十倍以上。
+    """
+    responses = [
+        [_tool_chunk("call_1", "no_such_tool"), _usage_chunk(10, 5)],
+        [_text_chunk("好了"), _usage_chunk(20, 8)],
+    ]
+    stats = agent.RunStats()
+
+    _run(monkeypatch, responses, stats=stats)
+
+    assert stats.prompt_tokens == 30
+    assert stats.context_tokens == 20
+
+
+def test_context_tokens_survives_a_usage_less_request(monkeypatch) -> None:
+    """后面那次请求没带用量时，别把已有的上下文读数抹成 0。
+
+    部分网关最后一分片不带 usage。抹掉的话仪表盘会从「上次的读数」直接掉到 0，
+    看着像上下文被清空了。
+    """
+    responses = [
+        [_tool_chunk("call_1", "no_such_tool"), _usage_chunk(10, 5)],
+        [_text_chunk("好了")],
+    ]
+    stats = agent.RunStats()
+
+    _run(monkeypatch, responses, stats=stats)
+
+    assert stats.context_tokens == 10
+
+
+def test_usage_is_broadcast_after_every_request(monkeypatch) -> None:
+    """每拿到一次用量就播报一次，界面靠它把上下文读数实时刷上去。
+
+    只在结束时随 stats 给一次的话，整个跑的过程中界面都停在上一轮的旧读数上，
+    跑完才跳一下 —— 而这一轮里上下文其实已经长了好几轮。
+    """
+    responses = [
+        [_tool_chunk("call_1", "no_such_tool"), _usage_chunk(10, 5)],
+        [_text_chunk("好了"), _usage_chunk(20, 8)],
+    ]
+
+    events, _ = _run(monkeypatch, responses)
+
+    broadcasts = [item.context_tokens for item in events if isinstance(item, agent.Usage)]
+    assert broadcasts == [10, 20]
+
+
+def test_no_broadcast_when_the_service_sends_no_usage(monkeypatch) -> None:
+    """服务端不发用量时一个都不播报 —— 别把界面上的读数凭空抹成 0。"""
+    events, _ = _run(monkeypatch, [[_text_chunk("好了")]])
+
+    assert [item for item in events if isinstance(item, agent.Usage)] == []
+
+
 def test_stats_elapsed_is_always_filled(monkeypatch) -> None:
     """不管从哪条路结束，耗时都要补上。"""
     stats = agent.RunStats()
@@ -425,9 +486,88 @@ def test_cancel_between_tools_skips_the_rest_of_the_batch(monkeypatch) -> None:
 
 
 def test_no_channel_means_cancel_can_never_fire(monkeypatch) -> None:
-    """没有通道时循环不该被「取消」影响 —— Streamlit 版和单元测试走的就是这条路。"""
+    """没有通道时循环不该被「取消」影响 —— 单元测试走的就是这条路。"""
     events, requests = _run(monkeypatch, [[_text_chunk("答完了")]])
 
     assert len(requests) == 1
     assert _texts(events) == "答完了"
     assert not any("取消" in text for text in _notices(events))
+
+
+# ---------------------------------------------------------------------------
+# 单轮开销上限
+#
+# MAX_ITERATIONS 管的是「次数」，而两次请求的开销可以差两个数量级 ——
+# 一轮长任务烧掉多少钱，只有 token 这一条线拦得住。
+# ---------------------------------------------------------------------------
+
+
+def test_run_stops_when_the_token_limit_is_exceeded(monkeypatch) -> None:
+    """超过开销上限就当场停：不执行工具，也不再请求模型。"""
+    monkeypatch.setattr(agent, "run_token_limit", lambda: 100)
+
+    events, requests = _run(
+        monkeypatch,
+        # 第一轮就要执行工具，同时报出 500 token 的用量（远超上限 100）
+        [[_tool_chunk("call_1", "list_dir"), _usage_chunk(400, 100)]],
+    )
+
+    assert _steps(events) == []  # 工具一步都没执行
+    assert len(requests) == 1  # 也没再请求模型
+    assert any("超过上限" in text for text in _notices(events))
+
+
+def test_run_continues_when_the_limit_is_not_reached(monkeypatch) -> None:
+    """没超上限就照常走：执行工具、继续下一轮。"""
+    monkeypatch.setattr(agent, "run_token_limit", lambda: 10_000)
+
+    events, requests = _run(
+        monkeypatch,
+        [
+            [_tool_chunk("call_1", "list_dir"), _usage_chunk(400, 100)],
+            [_text_chunk("做完了")],
+        ],
+    )
+
+    assert len(_steps(events)) == 1
+    assert len(requests) == 2
+
+
+def test_no_limit_configured_changes_nothing(monkeypatch) -> None:
+    """上限为 0（没配）时不干预 —— 行为完全退回改动之前。"""
+    monkeypatch.setattr(agent, "run_token_limit", lambda: 0)
+
+    events, requests = _run(
+        monkeypatch,
+        [
+            [_tool_chunk("call_1", "list_dir"), _usage_chunk(999_999, 999_999)],
+            [_text_chunk("做完了")],
+        ],
+    )
+
+    assert len(_steps(events)) == 1
+    assert len(requests) == 2
+
+
+def test_run_token_limit_reads_the_preference(monkeypatch, tmp_path: Path) -> None:
+    """上限从偏好文件读；没配 / 填坏了 / 填负数都当「不限制」。
+
+    坏值不能让对话直接跑不起来 —— 它是个安全阀，不是必配项。
+    """
+    path = tmp_path / "preferences.json"
+    monkeypatch.setattr(agent, "get_settings", lambda: SimpleNamespace(preferences_path=path))
+
+    assert agent.run_token_limit() == 0  # 文件还不存在
+
+    store = PreferenceStore(path)
+    store.set(MAX_RUN_TOKENS_KEY, "5000")
+    assert agent.run_token_limit() == 5000
+
+    store.set(MAX_RUN_TOKENS_KEY, "")
+    assert agent.run_token_limit() == 0
+
+    store.set(MAX_RUN_TOKENS_KEY, "abc")
+    assert agent.run_token_limit() == 0
+
+    store.set(MAX_RUN_TOKENS_KEY, "-10")
+    assert agent.run_token_limit() == 0

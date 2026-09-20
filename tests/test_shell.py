@@ -60,6 +60,96 @@ def test_stderr_is_merged_into_the_output() -> None:
     assert "boom" in out
 
 
+# ---------------------------------------------------------------------------
+# 输出截断：必须边读边丢，不能读完再截
+# ---------------------------------------------------------------------------
+
+
+def test_terminate_uses_taskkill_on_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Windows 上清理进程走 taskkill，不碰 POSIX 专有的进程组接口。
+
+    回归测试：原先这里写死 `os.killpg` + `signal.SIGKILL`，而 `os.killpg` /
+    `os.getpgid` / `signal.SIGKILL` 在 Windows 上**都不存在** —— 那边只要有一条
+    命令超时，就会抛 AttributeError，连「命令超时，已终止」这句提示都拿不到。
+    """
+    calls: list[list[str]] = []
+
+    class _FakeProcess:
+        pid = 4242
+
+        @staticmethod
+        def poll() -> None:
+            return None  # 还在跑
+
+        @staticmethod
+        def wait(timeout: float = 0) -> int:
+            return 0
+
+        @staticmethod
+        def kill() -> None:
+            raise AssertionError("不该退回到 kill：taskkill 是可用的")
+
+    monkeypatch.setattr(shell, "_POSIX", False)
+    monkeypatch.setattr(shell.subprocess, "run", lambda argv, **kwargs: calls.append(argv))
+
+    shell._terminate(_FakeProcess())
+
+    assert calls and calls[0][:2] == ["taskkill", "/PID"]
+    assert "/T" in calls[0]
+    assert "/F" in calls[0]
+
+
+def test_terminate_skips_a_process_that_already_exited(monkeypatch) -> None:
+    """已经自己结束的进程不再发信号 —— 避开 pid 复用时误杀别的进程。"""
+    touched: list[str] = []
+
+    class _DeadProcess:
+        pid = 4242
+
+        @staticmethod
+        def poll() -> int:
+            return 0
+
+        @staticmethod
+        def kill() -> None:
+            touched.append("kill")
+
+    monkeypatch.setattr(
+        shell, "_terminate_group", lambda process: touched.append("group")
+    )
+
+    shell._terminate(_DeadProcess())
+
+    assert touched == []
+
+
+def test_bounded_sink_caps_the_total_size() -> None:
+    """收集器本身有界：喂进去多少都不该在内存里越攒越多。"""
+    sink = shell._BoundedSink(limit=100)
+
+    for _ in range(1000):
+        sink.feed("x" * 50)
+
+    text = sink.text()
+
+    assert "输出过长" in text
+    # 头部 50 + 尾部 50 再加一句提示，远小于喂进去的 50000
+    assert len(text) < 200
+
+
+def test_long_output_keeps_both_ends() -> None:
+    """真的跑一条大输出命令：开头和结尾都要在。
+
+    这正是 `communicate()` 做不到的 —— 它会把整段输出先留在内存里再截断，
+    一条 `yes` 就能把线程堆顶爆（见 `_BoundedSink` 的说明）。
+    """
+    out = shell.run_command(_py("print('HEAD'); print('x' * 200000); print('TAIL')"))
+
+    assert "HEAD" in out
+    assert "TAIL" in out
+    assert "输出过长" in out
+
+
 def test_empty_command_is_rejected() -> None:
     assert shell.run_command("   ") == "命令不能为空。"
 

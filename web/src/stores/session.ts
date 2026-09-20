@@ -4,8 +4,7 @@
  * 不引 Pinia：需要共享的东西很少（会话列表、当前会话、模型/模式选择），
  * 一个 reactive 对象就够了。等状态多到需要模块化和调试工具时再上不迟。
  *
- * 和 Streamlit 版最大的差别：这些状态活在浏览器里。改一个选择只重渲染用到它的
- * 组件，不会触发整个页面重跑 —— 那正是当初卡顿的根源。
+ * 这些状态活在浏览器里：改一个选择只重渲染用到它的组件，不会触发整个页面重跑。
  */
 
 import { reactive } from 'vue'
@@ -21,6 +20,7 @@ import type {
   PickResult,
   Question,
   SubagentEvent,
+  TodoItem,
   WorkDirInfo,
 } from '../api/types'
 import { errorText } from '../utils/error'
@@ -60,6 +60,19 @@ export const session = reactive({
   busy: false,
 
   /**
+   * 运行中播报的最新上下文读数（来自流里的 `usage` 事件）。
+   *
+   * 为什么需要它：一轮里模型会被请求多次（每执行完一轮工具再问一次），上下文一直在长，
+   * 而这些中间读数要等这一轮**落盘**（`done`）才会出现在消息的 `stats` 上 —— 在那之前
+   * 仪表盘只能读到上一轮的旧值，整个过程都不动，跑完才跳一下。
+   *
+   * 0 表示「还没播报过」，仪表盘退回读消息上的 `stats`。跑完之后**不清零**：它和刚落下
+   * 的那个值本来就相等，留着反而能保住「中途出错 / 被取消」那一轮已经长到的大小，
+   * 不至于掉回上一轮的读数。换会话时必须清 —— 那是另一份上下文。
+   */
+  liveUsage: 0,
+
+  /**
    * 运行中抛回来、还没回答的问题（目前只有执行前确认）。
    *
    * 挂在会话上而不是那条流式消息上：它要在消息列表**下方**渲染成一张卡片，
@@ -83,18 +96,28 @@ export const session = reactive({
    * 它跑完（`spawn_agent` 那一步到达）就清空 —— 成品在工具步骤里，看板没必要留着。
    */
   subagentEvents: [] as SubagentEvent[],
+
+  /**
+   * 运行中的任务清单（来自流里的 `todo` 事件）。
+   *
+   * 为什么不直接写进那条消息：清单在这一轮里会被**反复整体替换**，写进消息就得和
+   * 流式正文抢同一个字段；而且中途出错时，那份残缺的清单会和落盘的定稿混在一起，
+   * 分不清哪个算数。挂在这里，界面贴着一张实时的进度卡，和消息各归各。
+   *
+   * 什么时候清 —— 三处，各有各的理由：
+   *
+   *     跑完（收到 `done`）：定稿已随消息落盘、卡片移进消息里，不留两份；
+   *     换会话：那是另一个任务的计划；
+   *     开始下一轮：收掉上一轮留下的（被取消的那轮会留着，见下条）。
+   *
+   * **出错 / 被取消时不清**：那正是最需要看见「还剩哪几步」的时候，收掉反而把信息
+   * 抹了。道理同 `liveUsage`。
+   */
+  liveTodos: [] as TodoItem[],
 })
 
 /** 后端偏好文件里的键。 */
 const PREF_MODEL = 'model'
-/**
- * 不带会话前缀的「模式」键。
- *
- * 模式现在按会话记（见 `modeKey`），这个键**不再参与读取** —— 只要还拿它当
- * 回落值，「切到另一个任务却还是上一个任务的模式」就会原样复现。
- * 保留写入是为了 Streamlit 版：那一版读的仍是这个全局键。
- */
-const PREF_MODE = 'mode'
 
 /** 某个会话记住的模式 id 的键，与后端 `preferences.mode_key` 是同一口径。 */
 function modeKey(conversationId: string): string {
@@ -109,6 +132,78 @@ function modeKey(conversationId: string): string {
  */
 let prefs: Record<string, string> = {}
 
+/** 一次正在跑的运行的完整状态。 */
+interface ActiveRun {
+  conversationId: string
+  /** 运行 id，要等流开头的 `start` 事件才拿得到；拿到之前是空串。 */
+  runId: string
+  /** 正在生成的那条助手消息。切回来时要重新挂回 `session.messages`。 */
+  reply: Message
+  controller: AbortController
+  usage: number
+  todos: TodoItem[]
+  subagentEvents: SubagentEvent[]
+  question: Question | null
+}
+
+/**
+ * 正在跑的运行，按会话存。
+ *
+ * **运行跟着会话走，不跟着界面走。** 切走会话只是「暂时看不到它」，而不是「把它停掉」——
+ * 这才是符合直觉的行为：去看一眼别的任务，回来时它该还在跑，而不是被掐断、助手回复
+ * 消失、上下文读数归零。
+ *
+ * 之前这里是单个 `activeController`，切会话时直接 `abort()` —— 那个设计把界面和运行
+ * 绑成了一件事，于是「切出去再切回来」等于把这一轮丢掉。
+ *
+ * 用 Map 而不是单值还有一层好处：两个会话可以各跑各的（后端本来就是一请求一 run），
+ * 谁也不会覆盖谁。
+ */
+const runs = new Map<string, ActiveRun>()
+
+/**
+ * 「加载某个会话」的请求序号，用来丢弃过期响应。
+ *
+ * 没有它就会有这个 bug：连着点会话 A、B，若 A 的响应比 B 晚回来，
+ * `currentId` / `messages` 会被 A 覆盖 —— 界面停在一个已经切走的会话上。
+ */
+let loadToken = 0
+
+/**
+ * 界面切到某个会话时，把实时状态接成该会话那一份。
+ *
+ * 没有运行就把几个实时字段清空（它们描述的必须是**当前会话**的状态）；有运行就恢复它的
+ * 读数、清单、待答问题，并把还没落盘的那条助手消息重新挂回消息列表 —— 否则切回来只看得到
+ * 自己的提问，助手的回复要等这一轮结束落盘之后才会出现。
+ */
+function attachRun(conversationId: string): void {
+  const run = runs.get(conversationId)
+
+  session.busy = Boolean(run)
+  session.activeRunId = run?.runId ?? ''
+  session.liveUsage = run?.usage ?? 0
+  session.liveTodos = run?.todos ?? []
+  session.subagentEvents = run?.subagentEvents ?? []
+  session.pendingQuestion = run?.question ?? null
+
+  // 正在生成的那条不在服务端返回的历史里（还没落盘），得手动接上：先把可能存在的
+  // 同一个对象滤掉，再追加到末尾。这样写是幂等的 —— 反复切回来也只会有一条，
+  // 而且它一定在最后（顺序也对）
+  if (run) {
+    session.messages = [...session.messages.filter((item) => item !== run.reply), run.reply]
+  }
+}
+
+/** 事件到达时，把界面上的实时状态同步成这个运行的最新值（仅当正看着这个会话）。 */
+function syncRunState(run: ActiveRun): void {
+  if (run.conversationId !== session.currentId) return
+
+  session.liveUsage = run.usage
+  session.liveTodos = run.todos
+  session.subagentEvents = run.subagentEvents
+  session.pendingQuestion = run.question
+}
+
 // ---------------------------------------------------------------------------
 // 加载
 // ---------------------------------------------------------------------------
@@ -121,13 +216,23 @@ export async function loadConversations(): Promise<void> {
 }
 
 export async function loadMessages(conversationId: string): Promise<void> {
+  const token = ++loadToken
   const data = await api.get<{ messages: Message[] }>(`/conversations/${conversationId}`)
+
+  // 先发的那次可能后回来（见 loadToken）：这份数据描述的已经不是当前会话了
+  if (token !== loadToken) return
+
   session.currentId = conversationId
   session.messages = data.messages
 
   // 模式跟着会话走：换任务就把这个任务自己的模式取回来，
   // 而不是把上一个任务的选择带过去（见 restoreMode）
   restoreMode()
+
+  // 这个会话可能**还在跑**（切走时并没有停掉它）：把实时读数、清单、待回答的问题和
+  // 正在生成的那条消息都接回来；没在跑则一并清空 —— 那几个字段描述的必须是当前会话
+  // 的状态，不能留着上一个会话的
+  attachRun(conversationId)
 }
 
 export async function loadOptions(): Promise<void> {
@@ -166,7 +271,7 @@ export async function bootstrap(): Promise<void> {
   await loadPreferences()
   await Promise.all([loadConversations(), loadOptions()])
 
-  // 接续最近的会话，一个都没有就新建 —— 和 Streamlit 版的 init_state 一个行为
+  // 接续最近的会话，一个都没有就新建
   const recent = session.conversations[0]
   if (recent) await loadMessages(recent.id)
   else await startNewConversation()
@@ -184,11 +289,9 @@ export function persistModel(): void {
 function rememberMode(conversationId: string, modeId: string): void {
   const key = modeKey(conversationId)
 
-  // 内存里的快照也要跟着改，否则切回来读到的还是旧值。
-  // 全局那份是同写给 Streamlit 版的，Vue 版自己不读它（见 PREF_MODE）
+  // 内存里的快照也要跟着改，否则切回来读到的还是旧值
   prefs[key] = modeId
-  prefs[PREF_MODE] = modeId
-  void api.put('/preferences', { values: { [key]: modeId, [PREF_MODE]: modeId } })
+  void api.put('/preferences', { values: { [key]: modeId } })
 }
 
 /** 用户主动切模式：记下来，并把模式绑定的偏好模型一并套上。 */
@@ -283,17 +386,19 @@ export async function resetWorkdir(): Promise<void> {
  * Args:
  *     prompt: 本轮输入（调用方负责 trim）。
  *     files: 本轮附件；会随请求上传并落到工作目录。
- *     onProgress: 有新内容时回调 —— 视图用它把消息区滚到底部。
- *         允许返回 Promise（滚动要等 DOM 更新完），但这里不 await：
- *         滚动是纯展示的事，不该拖慢流式接收。
+ *
+ * 这里**不**给「有新内容」的回调：跟随滚动是视图的事，而它靠盯住消息区的高度
+ * 来判断，不靠这些事件 —— 见 ChatView.vue 里为什么那么做。
  */
 export async function sendMessage(options: {
   prompt: string
   files: File[]
-  onProgress?: () => void | Promise<void>
 }): Promise<void> {
-  const { prompt, files, onProgress } = options
+  const { prompt, files } = options
   const choice = currentModel()
+  // 记下这一轮属于哪个会话：跑的过程中用户可能切走，切走了就不该再往界面上灌
+  // 这条流的读数（见 syncRunState）
+  const conversationId = session.currentId
 
   // 用户消息先上屏，给即时反馈（后端同时也会落盘）。
   // files 只用于在气泡里显示「这条消息带了什么」，不参与发给模型的内容
@@ -304,61 +409,115 @@ export async function sendMessage(options: {
   })
 
   // 一条「正在生成」的占位消息，流式内容直接往里填。
-  // 这就是 Vue 相比 Streamlit 的关键差别：改一个字段只重渲染这一条，
-  // 不会整页重跑 —— 当初的卡顿正是整页重跑造成的
+  // 改一个字段只重渲染这一条，不会整页重跑
   const reply = reactive<Message>({ role: 'assistant', content: '', steps: [], notices: [] })
   session.messages.push(reply)
 
+  // 这一轮的全部状态。挂在 `runs` 里而不是散在 session 上：用户切走时它要跟着这一轮
+  // 留下来，切回来时再挂回界面（见 attachRun）
+  const run: ActiveRun = {
+    conversationId,
+    runId: '',
+    reply,
+    controller: new AbortController(),
+    usage: 0,
+    todos: [],
+    subagentEvents: [],
+    question: null,
+  }
+  runs.set(conversationId, run)
+
+  // 上一轮的清单可能还挂着（被取消的那轮会刻意留着），这一轮重新开始，收掉它
+  session.liveTodos = []
+
   session.busy = true
-  void onProgress?.()
 
   try {
-    for await (const event of streamChat({
-      conversation_id: session.currentId,
-      prompt,
-      model_config_id: choice.config_id,
-      model: choice.model,
-      mode_id: session.modeId,
-      files,
-    })) {
+    for await (const event of streamChat(
+      {
+        conversation_id: conversationId,
+        prompt,
+        model_config_id: choice.config_id,
+        model: choice.model,
+        mode_id: session.modeId,
+        files,
+      },
+      run.controller.signal,
+    )) {
       if (event.type === 'start') {
-        session.activeRunId = event.runId
+        run.runId = event.runId
+        if (run.conversationId === session.currentId) session.activeRunId = event.runId
       } else if (event.type === 'text') {
+        // 正文直接写进 reply：它是个 reactive 对象，挂回消息列表时自然会渲染。
+        // 注意这里**不看当前是哪个会话** —— 用户切走了也要照常累积，
+        // 切回来时才能看到完整的这一轮（见 attachRun）
         reply.content += event.text
-        void onProgress?.()
       } else if (event.type === 'reasoning') {
         reply.reasoning = (reply.reasoning ?? '') + event.text
+      } else if (event.type === 'usage') {
+        // 运行中的实时读数：先记进这一轮，再（在当前会话时）同步给仪表盘
+        run.usage = event.contextTokens
+        syncRunState(run)
       } else if (event.type === 'tool') {
         reply.steps?.push(event.step)
         // 子代理那一步到了 = 它跑完了，实时看板收掉（成品已经在这个步骤里）
-        if (event.step.name === 'spawn_agent') session.subagentEvents = []
-        void onProgress?.()
+        if (event.step.name === 'spawn_agent') {
+          run.subagentEvents = []
+          syncRunState(run)
+        }
+      } else if (event.type === 'todo') {
+        run.todos = event.items
+        syncRunState(run)
       } else if (event.type === 'subagent') {
-        session.subagentEvents.push(event.event)
-        void onProgress?.()
+        run.subagentEvents.push(event.event)
+        syncRunState(run)
+      } else if (event.type === 'summary') {
+        // 压缩发生在「组装上下文」阶段，比正文来得更早 —— 所以它插在当前这条正在生成的
+        // 助手消息**之前**，那正是它在时间线上的真实位置。
+        // 切走了就不动界面：后端已经落盘，切回来 loadMessages 自然会读到
+        if (session.currentId === conversationId) {
+          const at = session.messages.indexOf(reply)
+          session.messages.splice(at < 0 ? session.messages.length : at, 0, {
+            role: 'summary',
+            content: event.content,
+            covers: event.covers,
+          })
+        }
       } else if (event.type === 'notice') {
         reply.notices?.push(event.text)
       } else if (event.type === 'question') {
-        // 这一轮会在服务端**卡在这里等答案**，流不会继续往下走。
-        // 卡片在消息列表下方，所以要滚一下，否则用户只看到界面停了
-        session.pendingQuestion = event.question
-        void onProgress?.()
+        // 这一轮会在服务端**卡在这里等答案**，流不会继续往下走
+        run.question = event.question
+        syncRunState(run)
       } else if (event.type === 'done') {
         // 以后端落盘的那份为准：字段更全，也和之后从历史里读出来的一致
         Object.assign(reply, event.message)
+        // 清单的定稿已经随这条消息落地、由 MessageItem 渲染，实时卡片收掉 —— 两份
+        // 长一样的东西同时挂着，用户只会以为任务跑了两遍
+        run.todos = []
+        syncRunState(run)
       }
     }
   } catch (exc) {
-    reply.notices?.push(`请求失败：${errorText(exc)}`)
+    // 用户自己点了「停止」不算失败：在气泡里留一条「请求失败」
+    // 只会让他以为出了故障
+    if (!run.controller.signal.aborted) reply.notices?.push(`请求失败：${errorText(exc)}`)
   } finally {
-    session.busy = false
-    // 流都结束了还留着一张卡片，用户会以为还能点 —— 点了也没人接
-    session.pendingQuestion = null
-    // 运行已经收尾，再留着这个 id 只会让「停止」按钮指向一个不存在的运行
-    session.activeRunId = ''
-    // 被取消 / 出错时子代理看板可能还在，一并收掉
-    session.subagentEvents = []
-    void onProgress?.()
+    runs.delete(conversationId)
+
+    // 只有界面正看着这个会话时才收拾实时状态。用户切到别的会话去了的话，
+    // 就不该动那一边的界面 —— 那边自有它自己的一份（见 attachRun）
+    if (session.currentId === conversationId) {
+      session.busy = false
+      // 流都结束了还留着一张卡片，用户会以为还能点 —— 点了也没人接
+      session.pendingQuestion = null
+      // 运行已经收尾，再留着这个 id 只会让「停止」按钮指向一个不存在的运行
+      session.activeRunId = ''
+      // 被取消 / 出错时子代理看板可能还在，一并收掉
+      session.subagentEvents = []
+      // liveUsage / liveTodos 刻意不清：那一轮已经长到多大，正是出错后想看的（见字段注释）
+    }
+
     // 标题和排序时间可能变了，刷一下侧边栏
     void loadConversations()
   }
@@ -373,7 +532,9 @@ export async function sendMessage(options: {
  * 真正的结束信号始终是流里收到 `done` —— 到时候 `sendMessage` 的 finally 会收拾状态。
  */
 export async function stopRun(): Promise<void> {
-  const runId = session.activeRunId
+  // 取当前会话自己的运行：用户可能切到了别的任务上，那个任务的「停止」
+  // 不该停掉另一个会话里正在跑的这一轮
+  const runId = runs.get(session.currentId)?.runId ?? ''
   if (!runId) return
 
   try {
@@ -400,8 +561,12 @@ export async function answerQuestion(value: string): Promise<void> {
   const question = session.pendingQuestion
   if (!question) return
 
-  // 先清掉再发：两个按钮都点一下的话，第二个请求会因为 id 对不上而被拒
+  // 先清掉再发：两个按钮都点一下的话，第二个请求会因为 id 对不上而被拒。
+  // 这一轮里那份也要清 —— 否则切走再切回来，attachRun 会把它重新挂上，
+  // 而那个问题其实已经答过了
   session.pendingQuestion = null
+  const run = runs.get(session.currentId)
+  if (run) run.question = null
 
   const accepted = await postAnswer(question.run_id, question.id, value)
 
@@ -455,8 +620,7 @@ export async function archiveConversation(conversationId: string): Promise<boole
 // ---------------------------------------------------------------------------
 /**
  * 为什么不走后端的偏好文件：草稿是「打字过程中」的状态，每敲一个字就发一次
- * 网络请求显然不行。localStorage 零延迟，刷新页面也不丢 —— 比 Streamlit 版
- * 「每字符重跑脚本 + 落盘」的做法合适得多。
+ * 网络请求显然不行。localStorage 零延迟，刷新页面也不丢。
  */
 export function loadDraft(conversationId: string): string {
   return localStorage.getItem(draftKey(conversationId)) ?? ''

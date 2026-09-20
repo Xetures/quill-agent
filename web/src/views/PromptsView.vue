@@ -3,7 +3,7 @@ import { Plus } from '@element-plus/icons-vue'
 import { computed, defineAsyncComponent, onMounted, reactive, ref } from 'vue'
 
 import { api } from '../api/client'
-import type { PromptGroup, PromptLib } from '../api/types'
+import type { PromptGroup, PromptItem, PromptLib } from '../api/types'
 import { loadOptions } from '../stores/session'
 import { errorText } from '../utils/error'
 
@@ -19,7 +19,7 @@ const MarkdownEditor = defineAsyncComponent(() => import('../components/Markdown
 // ---------------------------------------------------------------------------
 
 const groups = ref<PromptGroup[]>([])
-const lib = ref<PromptLib>({ categories: [], names: {} })
+const lib = ref<PromptLib>({ categories: [], items: [] })
 
 const keyword = ref('')
 const promptKeyword = ref('')
@@ -35,21 +35,18 @@ const visibleGroups = computed(() => {
   )
 })
 
-/** 提示词库摊平成行，方便一张表过滤；类别单独留一列。 */
-const promptRows = computed(() =>
-  lib.value.categories.flatMap((category) =>
-    (lib.value.names[category] ?? []).map((name) => ({ category, name })),
-  ),
-)
-
+/** 提示词库的筛选（名称 + 类别）。数据本身已按「分类顺序 + 名字」排好。 */
 const visiblePrompts = computed(() =>
-  promptRows.value.filter((item) => {
+  lib.value.items.filter((item) => {
     if (promptCategory.value && item.category !== promptCategory.value) return false
     if (promptKeyword.value && !item.name.toLowerCase().includes(promptKeyword.value.toLowerCase()))
       return false
     return true
   }),
 )
+
+/** id -> 条目：渲染「组里引用的提示词」、按分类取用都靠它。 */
+const itemById = computed(() => new Map(lib.value.items.map((item) => [item.id, item])))
 
 async function load(): Promise<void> {
   const [groupData, promptData] = await Promise.all([
@@ -60,19 +57,23 @@ async function load(): Promise<void> {
   lib.value = promptData
 }
 
-/** 组里引用了一个已经被删掉的提示词文件 —— 标出来，别让它悄悄失效。 */
-function isMissing(category: string, name: string): boolean {
-  return !(lib.value.names[category] ?? []).includes(name)
+/** 某个类别下有哪些提示词（组编辑弹窗按类别分组渲染用）。 */
+function itemsOfCategory(category: string): PromptItem[] {
+  return lib.value.items.filter((item) => item.category === category)
 }
 
 /**
- * 把 `{类别: 提示词名}` 摊成数组，供表格渲染。
+ * 把组里引用的 id 摊成可渲染的标签；已经被删掉的标出来，别让它悄悄失效。
  *
- * 不直接在模板里 `v-for="(name, category) in row.settings"`：遍历对象时键会被
- * 推断成 number，传给 isMissing 要一路 cast。摊平成数组后两边都是干净的 string。
+ * 摊平一次而不是在模板里查两层：模板里既要拿名字、又要判断在不在，写起来很绕。
  */
-function settingsOf(settings: Record<string, string>): { category: string; name: string }[] {
-  return Object.entries(settings ?? {}).map(([category, name]) => ({ category, name }))
+function refsOf(ids: string[]): { id: string; label: string; missing: boolean }[] {
+  return ids.map((id) => {
+    const item = itemById.value.get(id)
+    return item
+      ? { id, label: `${item.category}：${item.name}`, missing: false }
+      : { id, label: `已删除（${id}）`, missing: true }
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -85,28 +86,43 @@ const editingId = ref('')
 const form = reactive({
   name: '',
   description: '',
-  settings: {} as Record<string, string>,
+  /** 选中的提示词 id。界面上按类别分组显示，底层就是一个列表。 */
+  prompts: [] as string[],
 })
+
+/** 当前表单里选中的、属于某个类别的 id —— 多选框绑的是它。 */
+function formIdsOf(category: string): string[] {
+  return form.prompts.filter((id) => itemById.value.get(id)?.category === category)
+}
+
+/**
+ * 换掉某个类别的选择，别的类别不动。
+ *
+ * 只能这样「替换一段」而不是双向绑定整个列表：多选框只知道本类别撤了什么、加了什么，
+ * 若直接把 `form.prompts` 换掉，别的类别的选择会被一起清空。
+ */
+function setFormCategory(category: string, ids: string[]): void {
+  const others = form.prompts.filter((id) => itemById.value.get(id)?.category !== category)
+  form.prompts = [...others, ...ids]
+}
 
 function openCreate(): void {
   editingId.value = ''
   form.name = ''
   form.description = ''
-  // 六类都预置成空串：不选中任何提示词是合法状态，界面上要看得出来「可选但没选」，
-  // 而不是一个 undefined 让下拉框显示空白
-  form.settings = Object.fromEntries(lib.value.categories.map((item) => [item, '']))
+  // 一条都不选是合法状态：那就退化成不带任何系统提示词的纯问答
+  form.prompts = []
   dialogOpen.value = true
 }
 
 // 参数按字段拆开而不是收整个对象：`el-table` 插槽里的 `row` 类型是宽泛的
 // `DefaultRow`，直接传给要求 PromptGroup 的函数过不了类型检查
-function openEdit(id: string, name: string, description: string, settings: Record<string, string>) {
+function openEdit(id: string, name: string, description: string, prompts: string[]) {
   editingId.value = id
   form.name = name
   form.description = description
-  form.settings = Object.fromEntries(
-    lib.value.categories.map((item) => [item, settings[item] ?? '']),
-  )
+  // 拷一份：直接绑原数组的话，取消编辑也会改动列表里的数据
+  form.prompts = [...prompts]
   dialogOpen.value = true
 }
 
@@ -115,16 +131,10 @@ const canSubmit = computed(() => Boolean(form.name.trim() && form.description.tr
 async function submit(): Promise<void> {
   if (!canSubmit.value) return
 
-  // 空串是「这一类不选」，提交前剔掉 —— 留着会让后端以为选了个叫空字符串的文件
-  const settings: Record<string, string> = {}
-  for (const [category, name] of Object.entries(form.settings)) {
-    if (name) settings[category] = name
-  }
-
   const payload = {
     name: form.name.trim(),
     description: form.description.trim(),
-    settings,
+    prompts: [...form.prompts],
   }
 
   try {
@@ -164,23 +174,19 @@ async function remove(id: string, name: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// 提示词正文：展开某一行时按需取，取过一次就缓存住
+// 提示词正文：展开某一行时按需取，取过一次就缓存住（键就是 id）
 // ---------------------------------------------------------------------------
 
 const contents = ref<Record<string, string>>({})
 
-function contentKey(category: string, name: string): string {
-  return `${category}/${name}`
-}
-
 // ---------------------------------------------------------------------------
 // 提示词正文：新建 / 编辑共用一个弹窗
 //
-// 名字和类别在编辑时**不可改**：它们是提示词组里的引用标识，改了会让引用静默失效
-// （组里显示「文件缺失」）。要「改名」就新建一个再把引用改过去。
+// **名字与分类都可以改**：它们只是元信息，引用用的是 id（见 quill_agent.prompts）——
+// 从前名字就是文件名，改个名等于换了个标识，所有引用会一起失效；现在不会了。
 // ---------------------------------------------------------------------------
 
-/** 正在编辑的提示词名；空串表示新建。类别和名字本身放在 promptForm 里。 */
+/** 正在编辑的提示词 id；空串表示新建。 */
 const editingPrompt = ref('')
 const promptDialogOpen = ref(false)
 const promptSaving = ref(false)
@@ -194,27 +200,29 @@ function openPromptCreate(): void {
   promptDialogOpen.value = true
 }
 
-async function openPromptEdit(category: string, name: string): Promise<void> {
-  editingPrompt.value = name
-  promptForm.category = category
-  promptForm.name = name
+async function openPromptEdit(item: { id: string }): Promise<void> {
+  editingPrompt.value = item.id
+  promptForm.category = ''
+  promptForm.name = ''
   promptForm.content = ''
   promptDialogOpen.value = true
 
   try {
-    const data = await api.get<{ content: string }>(
-      `/prompts/${encodeURIComponent(category)}/${encodeURIComponent(name)}`,
+    const data = await api.get<{ name: string; category: string; content: string }>(
+      `/prompts/${encodeURIComponent(item.id)}`,
     )
+    promptForm.name = data.name
+    promptForm.category = data.category
     promptForm.content = data.content
     // 顺手把展开区里缓存的那份也对齐，免得两个地方显示不一样的正文
-    contents.value[contentKey(category, name)] = data.content
+    contents.value[item.id] = data.content
   } catch (exc) {
     ElMessage.error(errorText(exc))
   }
 }
 
 const canSubmitPrompt = computed(
-  () => Boolean(promptForm.name.trim() && promptForm.content.trim()),
+  () => Boolean(promptForm.name.trim() && promptForm.category && promptForm.content.trim()),
 )
 
 async function submitPrompt(): Promise<void> {
@@ -222,31 +230,71 @@ async function submitPrompt(): Promise<void> {
 
   promptSaving.value = true
   try {
+    const payload = {
+      name: promptForm.name.trim(),
+      category: promptForm.category,
+      content: promptForm.content,
+    }
+
     if (editingPrompt.value) {
-      await api.put(
-        `/prompts/${encodeURIComponent(promptForm.category)}/${encodeURIComponent(promptForm.name)}`,
-        { content: promptForm.content },
-      )
+      await api.put(`/prompts/${encodeURIComponent(editingPrompt.value)}`, payload)
       ElMessage.success('已保存')
     } else {
-      await api.post('/prompts', {
-        category: promptForm.category,
-        name: promptForm.name.trim(),
-        content: promptForm.content,
-      })
+      await api.post('/prompts', payload)
       ElMessage.success('已创建')
     }
 
     promptDialogOpen.value = false
     await load()
-    // 提示词组的下拉读的是同一份名字列表，改完得让它看到最新的
+    // 提示词组的标签与下拉读的是同一份数据，改完得让它看到最新的
     await loadOptions()
   } catch (exc) {
-    // 重名、名字不合法：后端文案比前端猜的准，原样显示
+    // 名字为空/超长、分类非法：后端文案比前端猜的准，原样显示
     ElMessage.error(errorText(exc))
   } finally {
     promptSaving.value = false
   }
+}
+
+/**
+ * 删除一条提示词。
+ *
+ * 删之前先把「还有哪些提示词组在引用它」写进确认框：引用按 id 存，删掉之后那些组里
+ * 会少一条（表格里显示成「已删除」）。先告诉用户比让他事后自己发现好 ——
+ * 那个缺失标签要等他打开组表格才看得见。
+ */
+async function removePrompt(item: { id: string; name: string }): Promise<void> {
+  const usedBy = groups.value
+    .filter((group) => group.prompts.includes(item.id))
+    .map((group) => group.name)
+
+  const hint = usedBy.length
+    ? `有 ${usedBy.length} 个提示词组在引用它：${usedBy.join('、')}，删除后那些组里会少这一条。`
+    : '没有提示词组在引用它。'
+
+  try {
+    await ElMessageBox.confirm(`删除提示词「${item.name}」？${hint}`, '删除提示词', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return // 用户按了取消
+  }
+
+  try {
+    await api.del(`/prompts/${encodeURIComponent(item.id)}`)
+  } catch (exc) {
+    ElMessage.error(errorText(exc))
+    return
+  }
+
+  // 展开区里缓存过它的正文，一并清掉，免得再点开时显示已删除的内容
+  delete contents.value[item.id]
+
+  await load()
+  await loadOptions()
+  ElMessage.success('已删除')
 }
 
 /**
@@ -256,22 +304,15 @@ async function submitPrompt(): Promise<void> {
  * 第二个参数则有两种形态 —— 带展开列时给「当前展开的行数组」，不带时给布尔值，
  * 所以类型定义是两者的交叉，只能收窄着用。
  */
-async function onExpand(row: { category: string; name: string }, expanded: unknown): Promise<void> {
+async function onExpand(row: { id: string }, expanded: unknown): Promise<void> {
   const isOpen = Array.isArray(expanded)
-    ? expanded.some(
-        (item) =>
-          (item as { category?: string })?.category === row.category &&
-          (item as { name?: string })?.name === row.name,
-      )
+    ? expanded.some((item) => (item as { id?: string })?.id === row.id)
     : Boolean(expanded)
 
-  const key = contentKey(row.category, row.name)
-  if (!isOpen || contents.value[key]) return
+  if (!isOpen || contents.value[row.id]) return
 
-  const data = await api.get<{ content: string }>(
-    `/prompts/${encodeURIComponent(row.category)}/${encodeURIComponent(row.name)}`,
-  )
-  contents.value[key] = data.content
+  const data = await api.get<{ content: string }>(`/prompts/${encodeURIComponent(row.id)}`)
+  contents.value[row.id] = data.content
 }
 
 onMounted(() => {
@@ -317,24 +358,23 @@ onMounted(() => {
 
           <el-table-column prop="description" label="功能简介" min-width="150" show-overflow-tooltip />
 
-          <el-table-column label="提示词设置" min-width="240">
+          <el-table-column label="提示词" min-width="240">
             <template #default="{ row }">
-              <!-- 空设置是合法状态：那就是不带任何系统提示词的纯问答 ——
+              <!-- 一条都不选是合法状态：那就是不带任何系统提示词的纯问答 ——
                    必须显式说出来，否则看起来像漏填了 -->
-              <span v-if="!settingsOf(row.settings).length" class="muted">
+              <span v-if="!refsOf(row.prompts).length" class="muted">
                 （空 —— 不带系统提示词）
               </span>
               <template v-else>
                 <el-tag
-                  v-for="item in settingsOf(row.settings)"
-                  :key="item.category"
+                  v-for="item in refsOf(row.prompts)"
+                  :key="item.id"
                   size="small"
                   effect="plain"
-                  :type="isMissing(item.category, item.name) ? 'danger' : 'info'"
+                  :type="item.missing ? 'danger' : 'info'"
                   class="set-tag"
                 >
-                  {{ item.category }}：{{ item.name }}
-                  <template v-if="isMissing(item.category, item.name)">（文件缺失）</template>
+                  {{ item.label }}
                 </el-tag>
               </template>
             </template>
@@ -346,7 +386,7 @@ onMounted(() => {
                 size="small"
                 text
                 type="primary"
-                @click="openEdit(row.id, row.name, row.description, row.settings)"
+                @click="openEdit(row.id, row.name, row.description, row.prompts)"
               >
                 编辑
               </el-button>
@@ -398,23 +438,26 @@ onMounted(() => {
         <el-table :data="visiblePrompts" size="small" stripe @expand-change="onExpand">
           <el-table-column type="expand">
             <template #default="{ row }">
-              <pre class="prompt-body">{{ contents[contentKey(row.category, row.name)] ?? '加载中…' }}</pre>
+              <pre class="prompt-body">{{ contents[row.id] ?? '加载中…' }}</pre>
             </template>
           </el-table-column>
 
           <el-table-column prop="category" label="类别" width="110" />
-          <el-table-column prop="name" label="提示词名" min-width="200" />
+          <el-table-column prop="name" label="名称" min-width="200" />
 
-          <el-table-column label="操作" width="80" align="center">
+          <el-table-column label="操作" width="130" align="center">
             <template #default="{ row }">
-              <!-- 只传两个字段：row 的类型是宽泛的 DefaultRow，整个对象传不进具体类型 -->
+              <!-- 只传行内字段：row 的类型是宽泛的 DefaultRow，整个对象传不进具体类型 -->
+              <el-button size="small" text type="primary" @click="openPromptEdit({ id: row.id })">
+                编辑
+              </el-button>
               <el-button
                 size="small"
                 text
-                type="primary"
-                @click="openPromptEdit(row.category, row.name)"
+                type="danger"
+                @click="removePrompt({ id: row.id, name: row.name })"
               >
-                编辑
+                删除
               </el-button>
             </template>
           </el-table-column>
@@ -450,19 +493,22 @@ onMounted(() => {
 
         <el-divider content-position="left">提示词搭配</el-divider>
 
-        <!-- 六类各一个下拉。每一类都可以不选：不是每个任务都需要一整套提示词 -->
+        <!-- 六类各一个多选框。每类都可以不选，也可以选多条 —— 引用用的是 id，
+             不再有「一个分类只能选一条」的限制 -->
         <el-form-item v-for="category in lib.categories" :key="category" :label="category">
           <el-select
-            v-model="form.settings[category]"
-            clearable
+            :model-value="formIdsOf(category)"
+            multiple
+            collapse-tags
             :placeholder="`不选用${category}`"
             class="wide"
+            @update:model-value="setFormCategory(category, $event)"
           >
             <el-option
-              v-for="name in lib.names[category] ?? []"
-              :key="name"
-              :label="name"
-              :value="name"
+              v-for="item in itemsOfCategory(category)"
+              :key="item.id"
+              :label="item.name"
+              :value="item.id"
             />
           </el-select>
         </el-form-item>
@@ -476,7 +522,8 @@ onMounted(() => {
       </template>
     </el-dialog>
 
-    <!-- 提示词正文：新建 / 编辑共用。名字和类别在编辑时锁住 —— 它们是引用标识 -->
+    <!-- 提示词正文：新建 / 编辑共用。名字与分类都可以改 —— 它们只是元信息，
+         引用用的是 id，改完不影响任何已有的提示词组 -->
     <el-dialog
       v-model="promptDialogOpen"
       :title="editingPrompt ? '编辑提示词' : '添加提示词'"
@@ -485,19 +532,14 @@ onMounted(() => {
     >
       <el-form label-width="70px" size="default" @submit.prevent>
         <el-form-item label="名称" required>
-          <el-input
-            v-model="promptForm.name"
-            :disabled="Boolean(editingPrompt)"
-            placeholder="例如：Agent助手"
-            maxlength="60"
-          />
-          <div v-if="editingPrompt" class="field-hint muted">
-            名字是提示词组里的引用标识，改掉它会让已有的引用失效 —— 要换名字就新建一个
+          <el-input v-model="promptForm.name" placeholder="例如：Agent助手" maxlength="60" />
+          <div class="field-hint muted">
+            名称与分类都只是说明，随便改 —— 提示词组引用的是这条提示词本身
           </div>
         </el-form-item>
 
         <el-form-item label="分类" required>
-          <el-select v-model="promptForm.category" :disabled="Boolean(editingPrompt)" class="wide">
+          <el-select v-model="promptForm.category" class="wide">
             <el-option v-for="item in lib.categories" :key="item" :label="item" :value="item" />
           </el-select>
         </el-form-item>

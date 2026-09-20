@@ -200,7 +200,7 @@ def test_module_level_cancelled_is_false_without_a_channel() -> None:
 
 
 def test_module_level_entry_points_without_a_channel() -> None:
-    """没有通道时返回 None 而不是抛异常 —— Streamlit 版就是这个场景。
+    """没有通道时返回 None 而不是抛异常 —— 纯脚本调用 / 单元测试就是这个场景。
 
     抛异常会让整个 agent 循环挂掉；返回 None 只是「问不到」，调用方各自决定怎么办。
     """
@@ -294,6 +294,9 @@ def test_pump_reports_a_crash_instead_of_dying_silently(
 
     不兜的话线程会静默死掉，前端一直转圈等一个永远不来的 `done` —— 那种失败
     最难排查，因为日志里什么都没有。
+
+    但**异常原文不发进事件**：`str(exc)` 里常带着内部路径、配置片段，而这条
+    Notice 会原样渲染在对话里。详情写日志，界面只给一句通用的说明。
     """
     run = Run(conversation_id="c2", loop=loop)
     _open(run)
@@ -309,7 +312,8 @@ def test_pump_reports_a_crash_instead_of_dying_silently(
 
     name, payload = _next(loop, run.channel)
     assert name == "notice"
-    assert "落盘炸了" in payload["text"]
+    assert "运行中断" in payload["text"]  # 用户看得懂、能行动
+    assert "落盘炸了" not in payload["text"]  # 内部细节不外泄
 
     assert _next(loop, run.channel) is None
     _close(run)
@@ -465,7 +469,7 @@ def channel(loop: asyncio.AbstractEventLoop) -> Iterator[interaction.Interaction
 
 
 def test_ask_user_without_a_channel_says_what_to_do_instead() -> None:
-    """没有通道（Streamlit 版 / 单元测试）时不能只报「失败」——
+    """没有通道（CLI / 单元测试）时不能只报「失败」——
 
     那会让模型原地卡住或者反复重试。得告诉它「自己拿主意，并说明假设」。
     """

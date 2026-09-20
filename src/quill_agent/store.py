@@ -16,6 +16,9 @@ from pathlib import Path
 from typing import TypeVar
 from uuid import uuid4
 
+from pydantic import ValidationError
+
+from quill_agent.locking import atomic_write_text, file_lock
 from quill_agent.models import (
     Mode,
     ModelConfig,
@@ -65,6 +68,32 @@ def read_json(path: Path, default: T) -> T:
     return copy.deepcopy(default)
 
 
+def load_items(path: Path, model: type[T]) -> list[T]:
+    """读一列对象，逐条校验；不合法的**那一条**跳过，其余照常返回。
+
+    为什么不能整体校验：`read_json` 只兜得住「JSON 本身坏了」，兜不住「JSON 合法、
+    但字段不合法」。用户手工编辑 `models.json` 时把某个 `api_key`（或窗口）写错，
+    一条记录就能让 `list()` 抛异常 —— 模型页、任务页、用量页一起打不开。
+    这和 `read_json` 那句「为了一个坏文件让整个应用起不来，代价太大」是同一个
+    道理，只是粒度更细：坏到一条就只丢一条。
+
+    `MemoryStore.list` 从一开始就是这么做的，这里把它抽出来给其余存储共用
+    （原先五个 Store 各写一遍 list，行为却不一致 —— 只有记忆那一处是稳的）。
+    """
+    raw = read_json(path, [])
+    if not isinstance(raw, list):
+        return []
+
+    items: list[T] = []
+    for entry in raw:
+        try:
+            items.append(model.model_validate(entry))
+        except ValidationError:
+            continue  # 坏的那条跳过，其余照常读出
+
+    return items
+
+
 class ModelStore:
     """基于单个 JSON 文件的轻量存储。
 
@@ -76,12 +105,8 @@ class ModelStore:
         self._path = Path(path)
 
     def list(self) -> list[ModelConfig]:
-        """读取全部配置；文件缺失或损坏时返回空列表（见 read_json）。"""
-        raw = read_json(self._path, [])
-        if not isinstance(raw, list):
-            return []
-
-        return [ModelConfig.model_validate(item) for item in raw]
+        """读取全部配置；文件缺失或损坏时返回空列表，单条不合法则跳过（见 load_items）。"""
+        return load_items(self._path, ModelConfig)
 
     def get(self, model_id: str) -> ModelConfig | None:
         """按 id 查找，找不到返回 None。"""
@@ -107,27 +132,32 @@ class ModelStore:
             api_key=api_key,
             context_windows=dict(context_windows or {}),
         )
-        items = self.list()
-        items.append(item)
-        self._save_all(items)
+        with file_lock(self._path):
+            self._save_all([*self.list(), item])
+
         return item
 
     def update(self, item: ModelConfig) -> None:
         """按 id 覆盖更新；id 不存在时静默忽略。"""
-        items = [existing if existing.id != item.id else item for existing in self.list()]
-        self._save_all(items)
+        with file_lock(self._path):
+            self._save_all(
+                [existing if existing.id != item.id else item for existing in self.list()]
+            )
 
     def remove(self, model_id: str) -> None:
         """按 id 删除；id 不存在时静默忽略。"""
-        self._save_all([item for item in self.list() if item.id != model_id])
+        with file_lock(self._path):
+            self._save_all([item for item in self.list() if item.id != model_id])
 
     def _save_all(self, items: list[ModelConfig]) -> None:
-        """整体覆写：学习阶段数据量很小，简单可靠优先。"""
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        payload = [item.model_dump() for item in items]
-        self._path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        """整体覆写：学习阶段数据量很小，简单可靠优先。
+
+        必须由调用方持锁进入（见 `file_lock`），并且用原子替换落盘 ——
+        否则另一个进程要么覆盖掉这次写入，要么读到一个写了一半的文件。
+        """
+        atomic_write_text(
+            self._path,
+            json.dumps([item.model_dump() for item in items], ensure_ascii=False, indent=2),
         )
 
 
@@ -138,12 +168,8 @@ class ToolGroupStore:
         self._path = Path(path)
 
     def list(self) -> list[ToolGroup]:
-        """读取全部工具组；文件缺失或损坏时返回空列表（见 read_json）。"""
-        raw = read_json(self._path, [])
-        if not isinstance(raw, list):
-            return []
-
-        return [ToolGroup.model_validate(item) for item in raw]
+        """读取全部工具组；文件缺失或损坏时返回空列表，单条不合法则跳过（见 load_items）。"""
+        return load_items(self._path, ToolGroup)
 
     def get(self, group_id: str) -> ToolGroup | None:
         """按 id 查找，找不到返回 None。"""
@@ -167,9 +193,6 @@ class ToolGroupStore:
             ValueError: 组名已被占用。重名会让用户在模式编辑里分不清
                 两个同名的组各自是什么，所以在这里拦下而不是放任。
         """
-        if self.find_by_name(name) is not None:
-            raise ValueError(f"已有叫「{name}」的工具组，请换一个名字。")
-
         item = ToolGroup(
             id=uuid4().hex,
             name=name,
@@ -177,9 +200,16 @@ class ToolGroupStore:
             tools=list(tools),
             confirm=list(confirm or []),
         )
-        items = self.list()
-        items.append(item)
-        self._save_all(items)
+
+        # 重名校验必须在锁内、对着同一份快照判：在锁外先查再进锁写，
+        # 两个进程会同时查到「不重名」，然后各写各的
+        with file_lock(self._path):
+            items = self.list()
+            if any(group.name == name for group in items):
+                raise ValueError(f"已有叫「{name}」的工具组，请换一个名字。")
+
+            self._save_all([*items, item])
+
         return item
 
     def update(self, item: ToolGroup) -> None:
@@ -187,28 +217,27 @@ class ToolGroupStore:
 
         组名冲突在这里拦：改成与**别的组**相同的名字同样会让人分不清。
         """
-        existing = self.get(item.id)
-        if existing is None:
-            return
+        with file_lock(self._path):
+            items = self.list()
+            if not any(group.id == item.id for group in items):
+                return
 
-        clash = self.find_by_name(item.name)
-        if clash is not None and clash.id != item.id:
-            raise ValueError(f"已有叫「{item.name}」的工具组，请换一个名字。")
+            clash = any(group.name == item.name and group.id != item.id for group in items)
+            if clash:
+                raise ValueError(f"已有叫「{item.name}」的工具组，请换一个名字。")
 
-        items = [group if group.id != item.id else item for group in self.list()]
-        self._save_all(items)
+            self._save_all([group if group.id != item.id else item for group in items])
 
     def remove(self, group_id: str) -> None:
         """按 id 删除；id 不存在时静默忽略。"""
-        self._save_all([group for group in self.list() if group.id != group_id])
+        with file_lock(self._path):
+            self._save_all([group for group in self.list() if group.id != group_id])
 
     def _save_all(self, items: list[ToolGroup]) -> None:
-        """整体覆写。"""
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        payload = [item.model_dump() for item in items]
-        self._path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        """整体覆写（须由调用方持锁进入，见 `file_lock`）。"""
+        atomic_write_text(
+            self._path,
+            json.dumps([item.model_dump() for item in items], ensure_ascii=False, indent=2),
         )
 
 
@@ -219,12 +248,8 @@ class SkillGroupStore:
         self._path = Path(path)
 
     def list(self) -> list[SkillGroup]:
-        """读取全部技能组；文件缺失或损坏时返回空列表（见 read_json）。"""
-        raw = read_json(self._path, [])
-        if not isinstance(raw, list):
-            return []
-
-        return [SkillGroup.model_validate(item) for item in raw]
+        """读取全部技能组；文件缺失或损坏时返回空列表，单条不合法则跳过（见 load_items）。"""
+        return load_items(self._path, SkillGroup)
 
     def get(self, group_id: str) -> SkillGroup | None:
         """按 id 查找，找不到返回 None。"""
@@ -240,38 +265,41 @@ class SkillGroupStore:
         Raises:
             ValueError: 组名已被占用。
         """
-        if self.find_by_name(name) is not None:
-            raise ValueError(f"已有叫「{name}」的技能组，请换一个名字。")
-
         item = SkillGroup(id=uuid4().hex, name=name, description=description, skills=list(skills))
-        items = self.list()
-        items.append(item)
-        self._save_all(items)
+
+        # 校验放在锁内、对着同一份快照判（理由同 ToolGroupStore.add）
+        with file_lock(self._path):
+            items = self.list()
+            if any(group.name == name for group in items):
+                raise ValueError(f"已有叫「{name}」的技能组，请换一个名字。")
+
+            self._save_all([*items, item])
+
         return item
 
     def update(self, item: SkillGroup) -> None:
         """按 id 覆盖更新；id 不存在时静默忽略。组名冲突在这里拦。"""
-        if self.get(item.id) is None:
-            return
+        with file_lock(self._path):
+            items = self.list()
+            if not any(group.id == item.id for group in items):
+                return
 
-        clash = self.find_by_name(item.name)
-        if clash is not None and clash.id != item.id:
-            raise ValueError(f"已有叫「{item.name}」的技能组，请换一个名字。")
+            clash = any(group.name == item.name and group.id != item.id for group in items)
+            if clash:
+                raise ValueError(f"已有叫「{item.name}」的技能组，请换一个名字。")
 
-        items = [group if group.id != item.id else item for group in self.list()]
-        self._save_all(items)
+            self._save_all([group if group.id != item.id else item for group in items])
 
     def remove(self, group_id: str) -> None:
         """按 id 删除；id 不存在时静默忽略。"""
-        self._save_all([group for group in self.list() if group.id != group_id])
+        with file_lock(self._path):
+            self._save_all([group for group in self.list() if group.id != group_id])
 
     def _save_all(self, items: list[SkillGroup]) -> None:
-        """整体覆写。"""
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        payload = [item.model_dump() for item in items]
-        self._path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        """整体覆写（须由调用方持锁进入，见 `file_lock`）。"""
+        atomic_write_text(
+            self._path,
+            json.dumps([item.model_dump() for item in items], ensure_ascii=False, indent=2),
         )
 
 
@@ -286,12 +314,8 @@ class PromptGroupStore:
         self._path = Path(path)
 
     def list(self) -> list[PromptGroup]:
-        """读取全部提示词组；文件缺失或损坏时返回空列表（见 read_json）。"""
-        raw = read_json(self._path, [])
-        if not isinstance(raw, list):
-            return []
-
-        return [PromptGroup.model_validate(item) for item in raw]
+        """读取全部提示词组；文件缺失或损坏时返回空列表，单条不合法则跳过（见 load_items）。"""
+        return load_items(self._path, PromptGroup)
 
     def get(self, group_id: str) -> PromptGroup | None:
         """按 id 查找，找不到返回 None。"""
@@ -301,45 +325,49 @@ class PromptGroupStore:
         """按组名查找 —— 组名对用户是主要标识，用它判断重名。"""
         return next((item for item in self.list() if item.name == name), None)
 
-    def add(self, *, name: str, description: str = "", settings: dict[str, str]) -> PromptGroup:
+    def add(self, *, name: str, description: str = "", prompts: list[str]) -> PromptGroup:
         """新增一个提示词组，id 由本方法生成并返回。
 
         Raises:
             ValueError: 组名已被占用。
         """
-        if self.find_by_name(name) is not None:
-            raise ValueError(f"已有叫「{name}」的提示词组，请换一个名字。")
-
         item = PromptGroup(
-            id=uuid4().hex, name=name, description=description, settings=dict(settings)
+            id=uuid4().hex, name=name, description=description, prompts=list(prompts)
         )
-        items = self.list()
-        items.append(item)
-        self._save_all(items)
+
+        # 校验放在锁内、对着同一份快照判（理由同 ToolGroupStore.add）
+        with file_lock(self._path):
+            items = self.list()
+            if any(group.name == name for group in items):
+                raise ValueError(f"已有叫「{name}」的提示词组，请换一个名字。")
+
+            self._save_all([*items, item])
+
         return item
 
     def update(self, item: PromptGroup) -> None:
         """按 id 覆盖更新；id 不存在时静默忽略。组名冲突在这里拦。"""
-        if self.get(item.id) is None:
-            return
+        with file_lock(self._path):
+            items = self.list()
+            if not any(group.id == item.id for group in items):
+                return
 
-        clash = self.find_by_name(item.name)
-        if clash is not None and clash.id != item.id:
-            raise ValueError(f"已有叫「{item.name}」的提示词组，请换一个名字。")
+            clash = any(group.name == item.name and group.id != item.id for group in items)
+            if clash:
+                raise ValueError(f"已有叫「{item.name}」的提示词组，请换一个名字。")
 
-        self._save_all([group if group.id != item.id else item for group in self.list()])
+            self._save_all([group if group.id != item.id else item for group in items])
 
     def remove(self, group_id: str) -> None:
         """按 id 删除；id 不存在时静默忽略。"""
-        self._save_all([item for item in self.list() if item.id != group_id])
+        with file_lock(self._path):
+            self._save_all([item for item in self.list() if item.id != group_id])
 
     def _save_all(self, items: list[PromptGroup]) -> None:
-        """整体覆写。"""
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        payload = [item.model_dump() for item in items]
-        self._path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        """整体覆写（须由调用方持锁进入，见 `file_lock`）。"""
+        atomic_write_text(
+            self._path,
+            json.dumps([item.model_dump() for item in items], ensure_ascii=False, indent=2),
         )
 
 
@@ -354,12 +382,8 @@ class ModeStore:
         self._path = Path(path)
 
     def list(self) -> list[Mode]:
-        """读取全部模式；文件缺失或损坏时返回空列表（见 read_json）。"""
-        raw = read_json(self._path, [])
-        if not isinstance(raw, list):
-            return []
-
-        return [Mode.model_validate(item) for item in raw]
+        """读取全部模式；文件缺失或损坏时返回空列表，单条不合法则跳过（见 load_items）。"""
+        return load_items(self._path, Mode)
 
     def get(self, mode_id: str) -> Mode | None:
         """按 id 查找，找不到返回 None。"""
@@ -375,36 +399,39 @@ class ModeStore:
         Raises:
             ValueError: 模式名已被占用。
         """
-        if self.find_by_name(mode.name) is not None:
-            raise ValueError(f"已有叫「{mode.name}」的模式，请换一个名字。")
+        # 校验放在锁内、对着同一份快照判（理由同 ToolGroupStore.add）
+        with file_lock(self._path):
+            items = self.list()
+            if any(item.name == mode.name for item in items):
+                raise ValueError(f"已有叫「{mode.name}」的模式，请换一个名字。")
 
-        items = self.list()
-        items.append(mode)
-        self._save_all(items)
+            self._save_all([*items, mode])
+
         return mode
 
     def update(self, mode: Mode) -> None:
         """按 id 覆盖更新；id 不存在时静默忽略。重名在这里拦。"""
-        if self.get(mode.id) is None:
-            return
+        with file_lock(self._path):
+            items = self.list()
+            if not any(item.id == mode.id for item in items):
+                return
 
-        clash = self.find_by_name(mode.name)
-        if clash is not None and clash.id != mode.id:
-            raise ValueError(f"已有叫「{mode.name}」的模式，请换一个名字。")
+            clash = any(item.name == mode.name and item.id != mode.id for item in items)
+            if clash:
+                raise ValueError(f"已有叫「{mode.name}」的模式，请换一个名字。")
 
-        self._save_all([item if item.id != mode.id else mode for item in self.list()])
+            self._save_all([item if item.id != mode.id else mode for item in items])
 
     def remove(self, mode_id: str) -> None:
         """按 id 删除；id 不存在时静默忽略。"""
-        self._save_all([item for item in self.list() if item.id != mode_id])
+        with file_lock(self._path):
+            self._save_all([item for item in self.list() if item.id != mode_id])
 
     def _save_all(self, items: list[Mode]) -> None:
-        """整体覆写。"""
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        payload = [item.model_dump() for item in items]
-        self._path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        """整体覆写（须由调用方持锁进入，见 `file_lock`）。"""
+        atomic_write_text(
+            self._path,
+            json.dumps([item.model_dump() for item in items], ensure_ascii=False, indent=2),
         )
 
 
@@ -437,5 +464,58 @@ def migrate_prompt_groups(legacy: Path, target: Path) -> bool:
         return False
 
     target.parent.mkdir(parents=True, exist_ok=True)
-    legacy.rename(target)
+    try:
+        # rename 本身是原子的（同一分区内），不用再套锁
+        legacy.rename(target)
+    except OSError:
+        # 两套界面同时启动时会撞上：另一个进程刚好搬走了，这次就当没搬
+        return False
+
     return True
+
+
+def migrate_prompt_group_refs(path: Path, mapping: dict[tuple[str, str], str]) -> bool:
+    """把提示词组的**旧引用**（`{分类: 名字}`）换成 id 列表。
+
+    背景：提示词的标识以前是「分类 + 名字」，提示词组里存的就是这个组合。现在提示词
+    有了自己的 id（名字可以随便改、分类也不再进路径），组里的引用得跟着换 ——
+    否则升级之后，所有组里的提示词会一起「消失」。
+
+    Args:
+        path: prompt_groups.json 的路径。
+        mapping: `{(分类, 名字): id}`，由 `prompts.migrate_layout` 产出 ——
+            它正好知道每条旧提示词搬完变成了哪个 id。
+
+    Returns:
+        是否真的改了文件。没改动就不落盘（省一次写入，也让重复调用完全无副作用）。
+    """
+    raw = read_json(path, [])
+    if not isinstance(raw, list):
+        return False
+
+    changed = False
+    migrated: list[object] = []
+
+    for entry in raw:
+        # 只认「有 settings 且没有 prompts」的条目：那是旧格式，且还没迁过
+        if isinstance(entry, dict) and "settings" in entry and "prompts" not in entry:
+            settings = entry.pop("settings")
+            ids: list[str] = []
+
+            if isinstance(settings, dict):
+                for category, name in settings.items():
+                    # 映射里没有 = 那条提示词已经不在了（用户删过），跳过就好：
+                    # 为一个已删除的引用造一个假 id 只会让组里多出一条永远「文件缺失」
+                    prompt_id = mapping.get((str(category), str(name)))
+                    if prompt_id:
+                        ids.append(prompt_id)
+
+            entry["prompts"] = ids
+            changed = True
+
+        migrated.append(entry)
+
+    if changed:
+        atomic_write_text(path, json.dumps(migrated, ensure_ascii=False, indent=2))
+
+    return changed

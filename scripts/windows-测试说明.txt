@@ -1,0 +1,78 @@
+quill v0.1.0 —— Windows 测试包
+================================
+
+一、准备（只需做一次）
+    1. 装 uv（在 PowerShell 里执行这一行）：
+         powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+    2. 关掉那个窗口、重新开一个（让 PATH 生效），执行 uv --version 确认能认出来。
+
+二、启动
+    双击 start.bat。
+    首次会联网下载 Python 与依赖（约几十 MB，视网速一两分钟），之后就快了。
+    启动完成后会自动打开浏览器；若 8000 端口被占用，它会自动顺延，
+    并在窗口里打印实际地址（例如 http://127.0.0.1:8001）。
+
+    想换端口：start.bat --port 9000
+
+三、数据放在哪
+    解压目录旁边。程序看到当前目录里有 prompt/，就判定为「就地运行」，
+    于是把数据也放在这里：
+        data/       模型配置、会话记录、记忆、界面偏好
+        prompt/     提示词（中文目录名，可以直接改）
+        skills/     技能
+    想换位置：设环境变量 QUILL_HOME 到别的目录，重启即可。
+
+四、这次请重点验证这几处（都是这轮改动的地方）
+    1. 命令超时能正常终止
+       让它跑一条会超时的命令（例如 sleep 60，或 python -c "import time; time.sleep(60)"）。
+       预期：出现「命令超时（30 秒），已终止」，程序继续可用。
+       —— 旧版在这里会直接抛 AttributeError（Windows 没有 os.killpg），
+          连这句提示都看不到。
+
+    2. 后台进程能起能停
+       起一个长驻进程（例如 python -m http.server 8899），再用 stop_process 停掉。
+       预期：停掉之后用任务管理器确认没有残留的 python 进程。
+
+    3. 文件搜索不会读到工作目录之外
+       在工作目录里建一个指向外部文件的软链（mklink 或 New-Item -ItemType SymbolicLink），
+       然后用 search_content 去搜那个外部文件里的内容。
+       预期：搜不到（read_file 本来就会拒绝，搜索工具应与它一致）。
+
+    4. 一条坏配置不该让整个界面打不开
+       手动编辑 data/models.json，把某条记录的 api_key 加个空格弄成不合法格式，
+       然后刷新页面。
+       预期：页面正常打开，坏的那条被跳过，其余照常。
+
+    5. 中文文件名与中文内容
+       prompt/ 与 skills/ 下都是中文目录名，确认界面上能正常列出、打开、保存。
+
+    6. 界面整体可用性
+       配一个模型（DeepSeek / Ollama 都行）→ 发一条消息 → 看流式输出是否正常显示。
+
+五、已知情况（不是 bug）
+    - 沙箱在原生 Windows 上没有后端：SANDBOX_MODE 请保持默认的 off。
+      配成 read-only / workspace-write 会让每条命令都被拒绝执行 —— 这是刻意设计
+      （宁可拒绝，也不偷偷裸跑），不是故障。需要内核级隔离请用 WSL2。
+    - 命令走 cmd.exe：让模型跑 ls / cat 会失败，应该用 dir / type。
+      这一版已经在工具说明里提示了，可以观察模型是否会自己纠正。
+    - 首次启动慢是正常的（在装依赖）。
+
+六、双击后窗口一闪就关？
+    这一版已经修过：无论启动成功还是失败，窗口都会停下来等你按键。
+    原因是原来的 start.bat 是 LF 换行（cmd.exe 需要 CRLF），而且里面是 UTF-8 中文
+    （cmd 按系统代码页读），两者都会让脚本在解析阶段就出错退出。
+
+    如果还是闪退，用 PowerShell 手动跑一次，就能看到真正的报错：
+
+        cd C:\Users\你\Downloads\quill-v0.1.0-windows-test
+        uv --version
+        uv run quill serve
+
+    把这段输出发我。最常见的两条：
+      - 提示找不到 uv → 没装，或者装完没重开窗口（PATH 没生效）
+      - 一堆下载失败 → 网络 / 代理问题（公司网络常挡 PyPI）
+
+七、出问题时请把这些一并给我
+    - 启动窗口里的全部输出（数据根那行、以及任何报错）
+    - 界面上的报错原文
+    - data/ 的目录结构（不要发 models.json 的内容，里面有你的 API Key）

@@ -7,7 +7,7 @@
  * 自己解析的代码量比引一个库还少。
  */
 
-import type { ChatEvent, Message, Question, SubagentEvent, ToolStep } from './types'
+import type { ChatEvent, Message, Question, SubagentEvent, TodoItem, ToolStep } from './types'
 
 const BASE = '/api'
 
@@ -27,11 +27,18 @@ export interface ChatPayload {
  * 用 AsyncGenerator 而不是回调：调用方可以 `for await` 顺序处理，要提前收手也
  * 只需 `break`，不必额外设计一套取消接口。
  *
- * 注意：目前唯一的调用方（ChatView）**没有**实现提前中断 —— 流式输出到一半切走
- * 会话，这个请求会继续跑到结束。要补的话在组件卸载时 break 即可，生成器会就地
- * 停下（这正是用生成器而非回调换来的好处）。
+ * 唯一的调用方是 `stores/session.ts` 的 `sendMessage`：它拿着 AbortController，
+ * 在用户切走这个会话时 `abort()`。**没有这个中断的话**，流式输出到一半切走的
+ * 请求会继续跑，而且每个事件还会落到另一个会话的界面上。
+ *
+ * Args:
+ *     payload: 本轮请求体。
+ *     signal: 用于中途取消；取消时 `reader.read()` 会以 AbortError 抛出。
  */
-export async function* streamChat(payload: ChatPayload): AsyncGenerator<ChatEvent> {
+export async function* streamChat(
+  payload: ChatPayload,
+  signal?: AbortSignal,
+): AsyncGenerator<ChatEvent> {
   // 用 multipart 而不是 JSON：附件得和文本一起上传。拆成「先传文件、再发消息」
   // 两个请求也能做，但那样「文件属于哪一轮」就要靠额外状态去维系。
   //
@@ -45,7 +52,7 @@ export async function* streamChat(payload: ChatPayload): AsyncGenerator<ChatEven
   body.append('mode_id', payload.mode_id)
   for (const file of payload.files) body.append('files', file)
 
-  const response = await fetch(`${BASE}/chat`, { method: 'POST', body })
+  const response = await fetch(`${BASE}/chat`, { method: 'POST', body, signal })
 
   if (!response.ok || !response.body) {
     throw new Error(`对话请求失败（${response.status}）`)
@@ -55,21 +62,36 @@ export async function* streamChat(payload: ChatPayload): AsyncGenerator<ChatEven
   const decoder = new TextDecoder()
   let buffer = ''
 
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
 
-    buffer += decoder.decode(value, { stream: true })
+      buffer += decoder.decode(value, { stream: true })
 
-    // SSE 用空行分隔事件。最后一段可能被切断了，留在 buffer 里等下一块 ——
-    // 直接 parse 半截 JSON 会抛错，这就是流式解析最常见的坑
-    const blocks = buffer.split('\n\n')
-    buffer = blocks.pop() ?? ''
+      // SSE 用空行分隔事件。最后一段可能被切断了，留在 buffer 里等下一块 ——
+      // 直接 parse 半截 JSON 会抛错，这就是流式解析最常见的坑
+      //
+      // 分隔符按 `\r?\n\r?\n` 匹配：中间隔着代理时换行可能被写成 CRLF，
+      // 只认 `\n\n` 的话会一个事件都切不出来（buffer 一直涨，事件全丢）
+      const blocks = buffer.split(/\r?\n\r?\n/)
+      buffer = blocks.pop() ?? ''
 
-    for (const block of blocks) {
-      const event = parseBlock(block)
-      if (event) yield event
+      for (const block of blocks) {
+        const event = parseBlock(block)
+        if (event) yield event
+      }
     }
+  } finally {
+    // 正常结束、调用方 break、中途抛错 —— 三条路都要走到这里。
+    // 不释放的话这个 reader 会一直锁着底层流（连接也不会被关掉），
+    // 而释放时机取决于 GC，等于没有时机
+    try {
+      await reader.cancel()
+    } catch {
+      // 已经结束或已被取消，忽略
+    }
+    reader.releaseLock()
   }
 }
 
@@ -78,13 +100,20 @@ function parseBlock(block: string): ChatEvent | null {
   let data = ''
 
   for (const line of block.split('\n')) {
-    if (line.startsWith('event: ')) name = line.slice(7)
-    else if (line.startsWith('data: ')) data += line.slice(6)
+    // 不要求冒号后必须有空格：规范里可有可无，手写解析时容易只顾着自己发的那种
+    if (line.startsWith('event:')) name = line.slice(6).trim()
+    else if (line.startsWith('data:')) data += line.slice(5).trim()
   }
 
   if (!name || !data) return null
 
-  const payload = JSON.parse(data) as Record<string, unknown>
+  let payload: Record<string, unknown>
+  try {
+    payload = JSON.parse(data) as Record<string, unknown>
+  } catch {
+    // 一块坏数据不该把整条流带走：跳过它，后面的正文仍然照常显示
+    return null
+  }
 
   switch (name) {
     case 'start':
@@ -101,6 +130,17 @@ function parseBlock(block: string): ChatEvent | null {
       return { type: 'question', question: payload as unknown as Question }
     case 'subagent':
       return { type: 'subagent', event: payload as unknown as SubagentEvent }
+    case 'usage':
+      return { type: 'usage', contextTokens: Number(payload.context_tokens ?? 0) }
+    case 'todo':
+      return { type: 'todo', items: (payload.items ?? []) as TodoItem[] }
+    case 'summary':
+      return {
+        type: 'summary',
+        content: String(payload.content ?? ''),
+        covers: Number(payload.covers ?? 0),
+        saved: Number(payload.saved ?? 0),
+      }
     case 'done':
       return { type: 'done', message: payload as unknown as Message }
     default:

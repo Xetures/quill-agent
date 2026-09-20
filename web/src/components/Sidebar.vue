@@ -6,6 +6,7 @@ import {
   Cpu,
   DataLine,
   Document,
+  Link,
   MagicStick,
   Plus,
   Setting,
@@ -40,6 +41,7 @@ const NAV = [
   { to: '/archived', label: '归档', icon: Box },
   { to: '/usage', label: '用量', icon: DataLine },
   { to: '/models', label: 'API设置', icon: Cpu },
+  { to: '/search', label: '联网搜索', icon: Link },
   { to: '/settings', label: '偏好设置', icon: Setting },
 ]
 

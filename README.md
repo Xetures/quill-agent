@@ -5,14 +5,8 @@
 明天也能被命令行或脚本复用：
 
 ```
-web/ (Vue)  ──HTTP/SSE──┐
-                        ├──>  src/quill_agent/  (业务层，纯 Python)
-app/ (Streamlit) ───────┘
+web/ (Vue)  ──HTTP/SSE──>  server/ (FastAPI)  ──>  src/quill_agent/  (业务层，纯 Python)
 ```
-
-> **两个界面并存。** `web/` 是新的 Vue 前端，`app/` 是早期的 Streamlit 版本。
-> 后者保留着当参照物（接口对不上时切过去比一比），功能对齐后可以删。
-> 两套界面共用同一份会话记录，互不干扰。
 
 ---
 
@@ -24,10 +18,23 @@ app/ (Streamlit) ───────┘
 | --- | --- |
 | Python | **>= 3.10**（开发环境用 3.12，见 `.python-version`） |
 | 包管理 | [uv](https://github.com/astral-sh/uv)（仓库内已含 `uv.lock`，安装可复现） |
-| Node | **>= 20**（只在跑 Vue 前端时需要；用 Streamlit 界面可以不管） |
+| Node | **>= 20**（只在构建 / 开发前端时需要，见下） |
 | 操作系统 | macOS / Linux / Windows 均可。工作目录选择器会按平台自动适配 |
 
+> **Windows 用户**：`make` 不是系统自带的（Git Bash / MSYS2 / chocolatey 里都有）。没有它时，
+> 把下面的目标换成命令本身即可：`make dev` → `uv sync --extra dev`；
+> `make api` → `uv run uvicorn server.main:app --reload --port 8000`；
+> `make build` → `cd web && npm install && npm run build`。
+> 另外**沙箱在原生 Windows 上没有后端**（`SANDBOX_MODE` 请保持默认的 `off`，否则命令会被
+> 拒绝执行）；需要内核级隔离时在 WSL2 里跑，那条路直接复用 Linux 的 `bwrap`（见 3.10）。
+
 ### 快速开始
+
+**最省事的一条路：双击启动脚本。** macOS 双击 `start.command`、Windows 双击 `start.bat`、
+Linux 跑 `./start.sh` —— 脚本会检查 `uv`、装好依赖、起服务并自动打开浏览器。唯一的前置是
+[uv](https://github.com/astral-sh/uv)（它会顺带装好本项目需要的 Python），首次运行要联网下载。
+
+想把命令握在自己手里的话：
 
 ```bash
 # 1. 安装后端依赖（首次会自动创建 .venv 并下载对应 Python）
@@ -35,9 +42,16 @@ make dev
 
 # 2. 复制环境变量模板（可选，不配也能跑）
 cp .env.example .env
+
+# 3. 构建前端并启动（构建只需一次，之后直接 make api）
+make build && make api     # 浏览器打开 http://localhost:8000
 ```
 
-**方式一：Vue 前端（推荐）** —— 需要两个终端：
+`web/dist` 存在时后端会把它一起托管（见 `server/main.py`）—— 不用常驻 Node，也不用开两个
+终端。等价的纯命令写法是 `uv run quill serve --open-browser`，它比 `make api` 多做三件事：
+端口被占时自动顺延、启动时打印数据根在哪、自动开浏览器。
+
+**改前端代码时：前端开发模式** —— 两个终端：
 
 ```bash
 cd web && npm install      # 只需一次
@@ -47,26 +61,33 @@ make web                   # 终端 B：前端，浏览器打开 http://localhos
 
 前端开发服务器会把 `/api` 转发给后端，所以浏览器看到的是同源请求，不用配跨域。
 
-**方式二：Streamlit 界面（旧）**
-
-```bash
-make run        # 浏览器打开 http://localhost:8501
-```
-
 ### 常用命令
 
 | 命令 | 说明 |
 | --- | --- |
 | `make install` | 只装运行时依赖 |
 | `make dev` | 装运行时 + 开发依赖（pytest / ruff） |
-| `make api` | 启动后端 API（FastAPI，8000） |
+| `make api` | 启动后端（FastAPI，8000）；`web/dist` 存在时连前端一起托管 |
+| `make serve` | 同上，但端口被占时顺延、并自动打开浏览器（等价于 `quill serve --open-browser`） |
 | `make web` | 启动前端开发服务器（Vue，5173） |
-| `make run` | 启动 Streamlit UI（旧界面，8501） |
+| `make build` | 构建前端产物到 `web/dist` |
 | `make cli` | 运行命令行入口 |
 | `make test` | 运行单元测试 |
 | `make lint` | 静态检查（ruff） |
 | `make fmt` | 格式化代码 |
 | `make clean` | 清理缓存与虚拟环境 |
+
+### 发布前检查
+
+```bash
+uv run python scripts/check_clean_install.py      # 干净环境装一遍 + 跑测试
+uv run python scripts/make_release.py --windows   # 打测试包
+```
+
+第一条值得每次发布前跑一次：它新建一个空 venv、按 `pyproject.toml` 装依赖、导入应用、
+跑完整测试。**本地环境是测不出依赖问题的** —— 本地装着一堆东西，有些依赖是「借」别人
+带进来的（`python-multipart` 就曾经是被另一个包顺带装上的，那个包被拆掉之后它跟着消失，
+用户那边直接启动失败）。干净环境才会现形。
 
 ### 首次使用
 
@@ -83,23 +104,19 @@ make run        # 浏览器打开 http://localhost:8501
 > 地址 `https://api.deepseek.com`，协议 `OpenAI Chat Completions`，
 > 模型名 `deepseek-chat` / `deepseek-reasoner`
 
+> 配置示例（本地 Ollama，见 4.9.1）
+> 协议选 `Ollama（本地）`，**地址留空即可**（自动用 `http://localhost:11434/v1`），
+> Key 不用填，模型名填 `ollama list` 里看到的那些（如 `qwen3:8b`）
+
 ---
 
 ## 2. 目录结构
 
 ```
 quill-agent/
-├── app/                          # UI 层（Streamlit，旧版）—— 只做渲染与交互
-│   ├── app.py                    # 唯一入口：st.set_page_config + 声明页面列表
-│   ├── main.py                   # 页面：任务（对话主界面 + 模式 / 模型选择）
-│   ├── models.py                 # 页面：模型（连接与模型名管理）
-│   ├── prompt.py                 # 页面：提示词（提示词组配置 + 提示词库浏览）
-│   ├── tools.py                  # 页面：工具（筛选 + 展示）
-│   ├── skills.py                 # 页面：技能（元信息列表）
-│   ├── memory.py                 # 页面：记忆（查看 / 开关 / 删除）
-│   └── archived.py               # 页面：归档（归档会话的搜索 / 恢复 / 删除）
-│
-│   （工具组 / 技能组 / 模式的管理只在 Vue 版提供；Streamlit 版保留为旧界面）
+├── start.command                 # macOS 双击启动（双击 .command 才会被 Finder 当脚本）
+├── start.sh                      # Linux / 终端：./start.sh
+├── start.bat                     # Windows 双击启动
 │
 ├── server/                       # 后端：把业务层暴露成 HTTP + SSE
 │   ├── main.py                   # FastAPI 应用装配（CORS、路由挂载）
@@ -109,25 +126,30 @@ quill-agent/
 │
 ├── web/                          # 前端：Vue 3 + Vite + TypeScript
 │   ├── vite.config.ts            # 含 /api 反向代理
+│   ├── dist/                     # 构建产物（make build 生成；**进版本库**，见 1、7.5）
 │   └── src/
 │       ├── api/                  # 接口封装（REST + SSE 解析）
 │       ├── stores/               # 共享状态（会话、当前选择、草稿）
-│       ├── components/           # Sidebar / MessageItem
+│       ├── components/           # Sidebar / MessageItem / TodoList
 │       └── views/                # 各页面，与路由一一对应
 │
-├── src/quill_agent/                 # 业务层 —— 纯 Python，禁止 import streamlit
+├── src/quill_agent/                 # 业务层 —— 纯 Python，不依赖任何界面
 │   ├── __init__.py               # 版本号
-│   ├── config.py                 # 集中式配置（环境变量 / .env）
+│   ├── config.py                 # 集中式配置（环境变量 / .env）+ 数据根规则（见 4.1）
+│   ├── bootstrap.py              # 首次运行：把内置提示词 / 技能播种到数据根（只补不缺）
+│   ├── sandbox.py                # 沙箱：执行类工具的内核级边界（见 3.10）
 │   ├── models.py                 # 数据模型（Pydantic）：连接、提示词组、工具组、技能组、模式
+│   ├── locking.py                # 跨进程文件锁 + 原子写（并发写 data/ 会丢更新，见 5.1.1）
 │   ├── store.py                  # 配置类数据持久化（JSON）
 │   ├── preferences.py            # 界面偏好（上次选的模型 / 模式 / 工作目录 / 会话草稿）
 │   ├── history.py                # 会话历史（JSONL + 归档）
-│   ├── prompts.py                # 提示词库：读写 prompt/ 目录
+│   ├── prompts.py                # 提示词库：id 文件名 + 元信息承载名字与分类（见 5.2）
 │   ├── skills.py                 # 技能库：读写 skills/ 目录（元信息 + 正文）
 │   ├── memory.py                 # 记忆：跨会话保留的长期事实（JSON）
 │   ├── usage.py                  # 用量统计：按天、按任务汇总 token（扫描会话文件）
 │   ├── model_catalog.py          # 模型规格快照：模型名 -> 上下文窗口（查表）
 │   ├── naming.py                 # 用户输入的内容名 -> 安全文件名的校验
+│   ├── search.py                 # 联网搜索：后端配置 + 两家服务商的调用 + 抓正文
 │   ├── core.py                   # 接口连通性测试（拉取模型列表）
 │   ├── agent.py                  # ★ Agent 循环：组装上下文 → 请求 → 执行工具
 │   ├── interaction.py            # 运行期交互通道：工具问用户并阻塞等答案（见 3.9）
@@ -135,18 +157,25 @@ quill-agent/
 │   └── tools/                    # 工具层
 │       ├── __init__.py           # 导出 registry（import 即触发工具注册）
 │       ├── base.py               # ToolSpec / ToolRegistry：声明、路由、执行
-│       ├── builtin.py            # 通用内置工具（read_skill / remember）
-│       ├── files.py              # 文件工具 + 路径边界校验 + 附件落盘
-│       └── shell.py              # 执行工具（唯一不受工作目录约束的一个）
+│       ├── builtin.py            # 通用内置工具（read_skill / create_skill / delete_skill / remember）
+│       ├── files.py              # 文件工具（读写搜 / 新建移动复制删除）+ 路径边界校验 + 附件落盘
+│       ├── shell.py              # 执行工具：跑命令 / 起后台进程（默认不受工作目录约束，可加沙箱）
+│       ├── subagent.py           # 子代理：把一趟独立调研派出去，只把结论带回来
+│       ├── todo.py               # 任务清单：把一件事拆成几步，进度摊开给用户看
+│       └── web.py                # 联网工具（web_search / web_fetch）
 │
-├── prompt/                       # 提示词正文（用户在文件系统里直接维护）
+├── scripts/
+│   ├── make_release.py           # 打测试包（zipfile：中文名在 Windows 上不乱码）
+│   └── windows-测试说明.txt      # 随 Windows 测试包分发的一页说明
+│
+├── prompt/                       # 提示词正文：<id>.md，名字与分类写在文件头（见 5.2）
 │   ├── 身份/  能力/  工具策略/  工作流程/  输出规范/  约束/
 │
 ├── skills/                       # 技能（一个子目录一个技能）
 │   ├── 代码审查/SKILL.md
 │   └── 提交信息/SKILL.md
 │
-├── data/                         # 运行时数据（已 gitignore，不会提交）
+├── data/                         # 运行时数据；就地运行时用这里，否则是 ~/.quill（见 4.1）
 │   ├── models.json               # 模型连接配置
 │   ├── model_catalog.json        # 模型规格快照（模型名 -> 上下文窗口，可手工编辑）
 │   ├── prompt_groups.json        # 提示词组（各类选了哪个提示词）
@@ -155,12 +184,12 @@ quill-agent/
 │   ├── modes.json                # 模式（引用三类组 + 记忆开关 + 偏好模型）
 │   ├── memory.json               # 长期记忆条目
 │   ├── preferences.json          # 界面偏好
+│   ├── search.json               # 联网搜索（后端、各自的 Key、端点）
 │   └── conversations/            # 会话历史
 │       ├── active/               #   活跃会话
 │       └── archived/             #   归档会话
 │
 ├── tests/                        # 单元测试
-├── .streamlit/config.toml        # Streamlit 运行配置与主题
 ├── .env.example                  # 环境变量模板
 ├── pyproject.toml                # 项目元数据、依赖、ruff / pytest 配置
 ├── Makefile                      # 常用命令
@@ -172,13 +201,13 @@ quill-agent/
 依赖方向**严格单向**：
 
 ```
-app/  ──依赖──>  src/quill_agent/
+web/ ──HTTP──>  server/ ──依赖──>  src/quill_agent/
 ```
 
-- `src/quill_agent/` 内**不允许** import `streamlit`。这条约束是整个架构的支点：它保证业务逻辑能被 UI、CLI、
-  测试、脚本任意复用，也让底层改动不会牵动界面。
-- `app/` 内**不写业务逻辑**，只做「取输入 → 调底层 → 展示结果」。数据读写的代码全部在业务层，
-  页面里出现 `open()` / `json.load()` 基本就是分层漏了。
+- `src/quill_agent/` 内**不允许** import 界面层的东西（HTTP 框架、前端、终端 UI）。这条约束是
+  整个架构的支点：它保证业务逻辑能被 UI、CLI、测试、脚本任意复用，也让底层改动不会牵动界面。
+- `server/` 与 `web/` 内**不写业务逻辑**，只做「取输入 → 调底层 → 展示结果」。数据读写的代码
+  全部在业务层，路由里出现 `open()` / `json.load()` 基本就是分层漏了。
 
 ---
 
@@ -229,7 +258,7 @@ flowchart TD
 **核心概念：正文是文件，组合是配置。**
 
 ```
-提示词正文  →  prompt/<类别>/<名称>.md      ← 用户直接新建 / 编辑 / 删除文件
+提示词正文  →  prompt/<id>.md（文件头写 name / category）  ← 用户直接编辑文件
 提示词组（组合）→  data/prompt_groups.json      ← 界面上配置：每类挑一个
 ```
 
@@ -284,7 +313,7 @@ def your_tool(...) -> str:
 - **执行契约**：工具内部任何异常都转成可读文本返回，不向上抛。模型看到错误说明后通常能自行修正，
   而抛异常会直接打断整个 Agent 循环。
 
-**当前工具清单（13 个）：**
+**当前工具清单（26 个）：**
 
 | 工具 | 分类 | 说明 |
 | --- | --- | --- |
@@ -294,13 +323,26 @@ def your_tool(...) -> str:
 | `edit_file` | 文件 | 局部替换：要求 `old_string` 在文件中唯一 |
 | `search_content` | 文件 | 按正则搜索**文件内容**，返回 `文件:行号: 内容` |
 | `search_files` | 文件 | 按通配符查找**文件名**，如 `*.py`、`**/*.json` |
-| `delete_file` | 文件 | 删除文件（不删目录） |
+| `make_dir` | 文件 | 新建目录（父目录不存在时一并创建） |
+| `move_file` | 文件 | 移动 / 重命名文件或目录：**不覆盖**已有目标 |
+| `copy_file` | 文件 | 复制文件或目录：**不覆盖**已有目标 |
+| `delete_file` | 文件 | 删除文件或**空**目录（非空目录会拒绝） |
 | `run_command` | 执行 | 在工作目录里跑一条 shell 命令（见下） |
+| `start_process` | 执行 | 起一个长驻进程（dev server / watch），立刻返回进程号（见下） |
+| `process_output` | 执行 | 取后台进程自上次之后的新输出，兼报退出码 |
+| `stop_process` | 执行 | 停掉一个后台进程（连带清掉它派生的子进程） |
+| `list_processes` | 执行 | 列出当前所有后台进程 |
+| `spawn_agent` | 子代理 | 派一个子代理独立跑一趟调研，只把结论带回来（上下文压缩用） |
+| `todo_write` | 规划 | 把这件事拆成几步、随进度重写清单，用户据此看到进度（见 7.14.1） |
 | `ask_user` | 交互 | 向用户提问并停下等他回答（见 3.9） |
 | `submit_plan` | 交互 | 交一份实施方案给用户审批，批准了才动手（见 3.9） |
 | `read_skill` | 技能 | 读取某个技能的完整说明（技能体系的按需加载入口） |
+| `create_skill` | 技能 | 把一套做法总结成技能存进技能库（见 3.3，只新建、不覆盖） |
+| `delete_skill` | 技能 | 删除一个技能及其整个目录（不可逆，每次先问用户；见 3.3） |
 | `remember` | 记忆 | 写入一条长期记忆（跨会话保留的偏好与事实） |
 | `forget` | 记忆 | 按原文忘掉一条记忆（要求一字不差，避免误删） |
+| `web_search` | 联网 | 联网搜索，返回标题、地址和摘要（见 4.13、7.26） |
+| `web_fetch` | 联网 | 带着一个问题抓一个网页、只取相关的那部分正文（见 4.13、7.26） |
 
 > `search_content` 是这批里最关键的一个：没有它，模型要确认「某个函数在哪定义」就只能挨个读文件，
 > token 消耗是几十倍。它会自动跳过 `.venv` / `.git` / `__pycache__` 等目录，并按行截断、
@@ -341,12 +383,25 @@ if not resolved.is_relative_to(root):
 `resolve()` 会跟随符号链接，所以「在工作目录里放一个软链接指向外部」这条绕过路径也拦得住
 （只做字符串层面判断 `..` 是拦不住的）。
 
+**写操作额外上三道锁**（`make_dir` / `move_file` / `copy_file` / `delete_file`）：
+
+1. **不覆盖** —— `move_file` / `copy_file` 的目标路径必须还不存在。覆盖是这条链上最容易误伤
+   的动作，而「复制过去把原来的盖掉」往往不是模型真正想要的；真要替换，先 `delete_file` 是明确的；
+2. **父目录必须已存在** —— 顺带把目录建出来听着方便，但一次手滑就能在错的地方铺出一整条路径。
+   要建目录，用 `make_dir`；
+3. **复制目录时不跟随符号链接**（`copytree(..., symlinks=True)`）—— 跟随的话，目录里一个指向
+   工作目录外的链接会把外面那份内容**抄进**工作目录。文件工具承诺的是「只碰工作目录」，
+   这条口子必须堵上。
+
+删除只对**空目录**生效：递归删除是另一回事，一次误判就没了整棵目录树，这个工具不承担那种风险。
+另外这几个工具都不接受把**工作目录本身**当源或当删除目标。
+
 工作目录可在任务页的 📁 里切换，取值优先级：**界面选择 > 配置项 `WORK_DIR`**。
 选过的目录若被删除，会自动回落到配置默认值，不会让工具直接罢工。
 
-**`run_command` 是唯一不受这条边界约束的工具。** 文件工具的能力边界是工作目录，而一条
-命令（`cat ~/.ssh/id_rsa`、`curl …`、`pip install …`）不受它约束 —— cwd 只是它「从哪里
-开始」，不是它「只能到哪里」。这件事没法靠参数校验抹平，只能靠三件事：
+**`run_command` 和 `start_process` 不受这条边界约束。** 文件工具的能力边界是工作目录，
+而一条命令（`cat ~/.ssh/id_rsa`、`curl …`、`pip install …`）不受它约束 —— cwd 只是它
+「从哪里开始」，不是它「只能到哪里」。这件事没法靠参数校验抹平，只能靠三件事：
 
 1. **它是自选的**：工具定义不会自动进入任何模式的工具组，要用必须显式加进去 ——
    这是唯一真正的边界，也意味着用户加它的那一下就是一次知情同意；
@@ -358,12 +413,14 @@ if not resolved.is_relative_to(root):
      判定危险的是我们，能不能承担风险的是用户。
 
    **换个写法就能绕过这两个判断，所以它们都不是安全边界**，只负责拦住「模型一时糊涂写出来的
-   那几条」。真正的边界始终是第 1 条：得有人把它加进工具组。
+   那几条」。这条路上真正的边界是第 1 条（得有人把它加进工具组）和**沙箱**（见 3.10）——
+   沙箱开启后，命令跑在一个只有工作目录可写、且默认断网的命名空间里，越界写在物理上就失败，
+   和模型怎么写命令无关。
 
 另外三条是执行类工具的通用要求，缺一个都会出问题：
 
 - **必须有超时**（默认 30 秒、上限 300 秒）：一条 `sleep 1000` 会把 chat 端点的 worker
-  线程占住不放；
+  线程占住不放（**后台进程是例外**，它必须活过一轮，见下）；
 - **必须杀进程组**：只对 shell 本身发信号，它派生的子进程会变成孤儿继续跑，下一轮再来
   抢端口、抢文件。所以用 `start_new_session=True` 让它自成进程组，超时按组 `SIGTERM`
   → `SIGKILL`；
@@ -373,6 +430,24 @@ if not resolved.is_relative_to(root):
 `stderr` 并进 `stdout`：构建日志的先后顺序本身就是信息，分开收就得自己去猜它们的相对位置，
 而退出码已经能说明成败。ANSI 颜色码会被剥掉 —— 有些工具不管有没有 TTY 都上色，
 那些转义序列进了上下文纯属噪声。
+
+**后台进程（`start_process` / `process_output` / `stop_process` / `list_processes`）。**
+`run_command` 是「跑完才返回」的同步调用，且封顶 300 秒 —— 起一个 dev server 只有两种
+结局：要么把这一轮的 worker 线程占满两分钟后被掐掉，要么超时被杀。可「改完代码重启前端」
+这类活，恰恰必须让进程**活过这一轮**。所以后台进程单列一组，几张取舍如下：
+
+| 取舍 | 怎么做的 | 为什么 |
+| --- | --- | --- |
+| 不给超时 | 不设 `timeout`，只靠 `stop_process` 显式停 | dev server 刚到点就被杀，等于没这个工具（这是「必须有超时」的例外） |
+| 输出靠线程搬 | 每个进程一条线程持续读管道，攒进内存缓冲 | 管道缓冲区写满后子进程会阻塞在 write 上假死 —— 没人读的输出会把它憋死 |
+| 取输出是增量 | `process_output` 只给「上次之后」的新行 | dev server 日志越滚越长，每次全量回填既费 token 又没信息量 |
+| 缓冲封顶 | 每个进程只留最近 500 行 | 模型要看的永远是最近那段报错 |
+| 起完先观察 0.5 秒 | 立刻退出的命令不当成后台进程、当场报错 | 命令拼错时会瞬间退出，不点破的话模型会拿着一个死掉的 id 反复取输出 |
+| 进程表有上限（8 个） | 满了先回收已退出的，仍满则拒绝并提示先停 | 进程不随对话结束清理（要活到下一轮），只能靠上限兜底防泄漏 |
+
+防手滑那一套**完全共用**：`_reject_reason` / `_danger_reason` 抽成了 `_guard()`，两个入口
+同一份判断 —— 后台进程同样不受工作目录约束，放它单独走一套判断，就等于给用户留了一个
+没上闸的后门。
 
 ### 3.3 技能
 
@@ -423,6 +498,26 @@ prompt」是同一个：清单会随模式（技能组）变化，跟身份提�
 **技能没有全局开关**，给不给由模式的技能组决定（见 3.8）。`read_skill` 也不再自行
 拦截：它本来就随技能组一起下发，模型手上只有组里那几个，想读也读不到别的。
 
+**模型也能自己建技能**（`create_skill`）：用户说「把刚才那套做法记下来」，或者模型刚做完一件
+以后还会反复遇到的事，它可以自己总结成技能写进 `skills/`。三条约束，每条都对应一个具体的坑：
+
+| 约束 | 为什么 |
+| --- | --- |
+| **不覆盖同名技能**（`create_only`） | 模型看不到技能的现有正文。让它「更新」等于让它照着记忆重写一遍 —— 多半会把原来写好的东西弄丢。要改已有技能，那是用户在技能页里做的事 |
+| **`description` 必填，且必须写成使用场景** | 它是以后判断「什么时候该用这个技能」的唯一依据。写成内容摘要，等于以后谁也不知道何时该用它 |
+| **不自动加进技能组** | 技能给不给由模式的技能组决定（和工具一个道理，见 3.8）。工具偷偷改用户的组配置，等于绕开了「谁来决定这个模式有哪些能力」这件事 —— 模型可以建技能，但「下次这类任务用它吗」仍然得用户点头 |
+
+所以 `create_skill` 的返回值是**半句结果 + 半句交代**：建好的技能落在哪个文件、现在能不能生效，
+不能生效时该请用户去哪儿勾（`tools/builtin._skill_group_hint`）。少了后半句，模型会以为自己
+已经「学到」了 —— 而下一轮它照样读不到，看上去就像技能凭空消失。为此 `ModeContext` 多带了一个
+`skill_group_id`：运行本身不用它做任何判断，只为让这句交代能指名道姓（「去把 X 加进组 Y」）。
+
+**模型也能删技能**（`delete_skill`），方向和 `create_skill` 正相反 —— 删除不可逆，所以它
+**每次都要用户点头**：工具内部自己走 `interaction.confirm`，做法照抄 `run_command` 对危险命令的
+处理，没问到就按拒绝处理。两道闸都是防手滑：名字必须与清单里**完全一致**，差一个字就回「没找到」，
+**技能不存在时不弹确认题** —— 否则用户容易对着一道没意义的题顺手点掉。删除只动 `skills/` 下的目录，
+不替用户改技能组：组里若还列着它，会留下一条失效引用（见下面的「技能组」）。
+
 **技能组：技能的唯一搭配单位。** 和工具组同构 —— 同样是 `id / name / description`，
 成员字段叫 `skills`（存技能名），约束也一致：成员可为空、组名唯一。唯一的差别是**校验依据**：
 工具名对着代码里的注册表查，技能名对着 `skills/` 目录查（技能由用户建目录维护，删掉目录后
@@ -438,13 +533,72 @@ prompt」是同一个：清单会随模式（技能组）变化，跟身份提�
 | 程序性记忆 | 「这类任务怎么做」 | **技能**（见 3.3） |
 | 长期记忆 | 跨会话的事实与偏好 | `data/memory.json` + `remember` 工具 |
 
-**工作记忆**是一套「忘记」的机制。每轮只带最近 `MAX_HISTORY_RECORDS`（默认 20）条记录，
-且上一轮的工具调用会被还原成 `assistant.tool_calls` + `tool` 消息一起发过去
-（见 `agent.build_history_messages`）—— 模型因此记得自己查过什么，不会反复调用同一个工具。
+**工作记忆**是一套「忘记」的机制。每轮只带一部分历史，且上一轮的工具调用会被还原成
+`assistant.tool_calls` + `tool` 消息一起发过去（见 `agent.build_history_messages`）——
+模型因此记得自己查过什么，不会反复调用同一个工具。
 
-截断刻意放在「展开工具调用之前」：先展开再截断会把 `assistant.tool_calls` 和对应的
-`tool` 消息切开，那是 API 不接受的非法序列。单条工具结果回放时有 2000 字符上限，
-避免读一个大文件就把历史撑爆（界面上展示的仍是完整结果）。
+**带多少，按窗口算而不是按条数算**：
+
+| 情况 | 规则 |
+| --- | --- |
+| 模型配了上下文窗口（见 4.10） | 历史最多占窗口的 `HISTORY_BUDGET_RATIO`（一半），超出就从最老的开始丢 |
+| 窗口没配 | 退回 `MAX_HISTORY_RECORDS`（默认 20 条）—— **不猜窗口**：猜小了白丢历史，猜大了请求被拒 |
+
+为什么不能用固定条数：条数和 token 完全不成比例 —— 20 条闲聊是 2k token，20 轮读代码的
+可以是 20 万。只按条数截，结果就是「会不会撑爆窗口全看运气」。token 用字符数折算估算
+（`CHARS_PER_TOKEN`，**不引 tokenizer** —— 那对本地小应用太重），系数取得偏保守：
+宁可贵估、少带一点历史，也不能低估到让请求被拒。
+
+最后一条**无论多大都留着**：它通常就是「上一轮发生了什么」，丢掉它模型会直接失忆 ——
+那是截断最不该造成的结果。
+
+**截掉了，但取得回来 —— `recall_history`。** 截断只决定「发给模型多少」，不决定「能取回
+多少」：原文一行都没删，一直在会话文件里。所以给了模型一个工具，让它按关键词去更早的对话里
+捞原文（正文和工具结果都算），命中片段带「第 N 条 · 角色」的定位返回。这两件事是配套的：
+
+- 历史被截时，请求里会插一句 system 提示，告诉模型「你看到的不是全部，需要时用
+  `recall_history`」。没有这句话，模型会对着残缺的历史装作记得，甚至编出「我们之前说过……」——
+  它不是撒谎，是真看不到。
+- 检索匹配的是**关键词全部命中**（不是语义相似度）。对话历史里的检索需求大多是精确回忆
+  （某个文件路径、某条报错原文、某个参数值），关键词匹配对这类需求又快又准，而且**零依赖**：
+  不需要 embedding 模型或向量库，也不把对话内容发给任何第三方 —— 这对一个本地优先的应用
+  是重要的。模糊语义查询它确实不擅长，真需要时再加一个可插拔的检索引擎不迟。
+
+**压不动的时候：把早期历史压成摘要。** 截断是「丢掉」，摘要则是「提炼」—— 两者用的是
+同一把尺子（超出预算的那部分），所以不会出现「明明超了却没压」或者「没超却白压一次」。
+
+| 环节 | 做法 |
+| --- | --- |
+| 触发 | 组装上下文时判断：预算装不下，且可压的≥ `SUMMARY_MIN_RECORDS`（3 条） |
+| 压谁 | 最早的、超出预算的那一段；最近 `SUMMARY_KEEP_RECENT`（8）条**永远留原文** |
+| 怎么压 | 调模型生成要点（专门提示词要求保留：决定、文件路径、未完成的计划、报错原文） |
+| 存哪 | 会话文件里追加一条 `{"role": "summary", ...}` 记录 —— **只追加，原文一句不删** |
+| 生效 | 最新那条摘要替代它之前的全部记录，作为一条 system 消息发出 |
+| 失败 | 退回按预算截断，**这一轮照跑不误**（摘要生成失败不该毁掉对话） |
+
+四个值得说明的取舍：
+
+- **压缩是滚动累积的**：新摘要的输入 = 上一版摘要 + 这次的增量，所以不必每次从头重压
+  （全量重压更准，但被压的原文可能已经大到超出窗口，压缩请求自己就发不出去）。
+  `covers` 字段记着「覆盖到第几条」，`_split_for_summary` 据此只压增量。
+- **原文永不删除**：压缩只是「发给模型多少」的取舍，不是数据销毁。用户随时能翻原文，
+  模型也能用 `recall_history` 把细节捞回来 —— 摘要负责主线，检索负责细节，两者互补。
+- **界面上要能看见**：压缩发生时消息流里插一张「更早的 N 条对话已压缩为摘要」的卡片
+  （可展开看摘要正文）。不告诉用户的话，下次打开会话发现模型不记得前面的事，
+  只会以为是数据被弄丢了。
+- **`covers` 只用来给模型和界面定位**，运行本身不靠它做判断。
+
+**开销上限：一轮最多花多少 token。** 在「偏好设置」里填一个数字，留空（或 0）表示不限制。
+
+它和 `MAX_ITERATIONS` 是**两条不同的闸门**：那个管「最多几步」，管不住「花了多少钱」——
+两次请求的输入可以差两个数量级（一次问答几千 token，一次读大文件几十万）。
+
+检查点放在**每轮模型请求之后、执行工具之前**：超了就别再动文件、跑命令了 —— 那些副作用
+没人再消化。这里和 `MAX_ITERATIONS` 用尽时的做法**故意相反**：那边会再发一次「不带工具的
+收尾请求」（别浪费已经执行的工具结果），这边直接停（别再花钱了）—— 目的相反，行为也就该相反。
+
+读的是偏好文件而不是 `.env`：阈值这种东西用户会想边用边调，而改 `.env` 要重启进程。
+坏值一律当「不限制」—— 一个数字填错不该让对话直接跑不起来。
 
 **长期记忆**解决的是另外两件事：窗口一过就忘、换个会话就从零开始。它的机制刻意做得跟
 技能一样 ——
@@ -475,7 +629,7 @@ prompt」是同一个：清单会随模式（技能组）变化，跟身份提�
 
 | 路径 | 谁维护 | 作用 |
 | --- | --- | --- |
-| `prompt/<类别>/*.md` | **用户 / 界面** | 提示词正文。新建文件即新增一个可选提示词，文件名就是引用标识 |
+| `prompt/<id>.md` | **用户 / 界面** | 提示词正文。文件名是后端生成的 id（全 ASCII），**名字与分类写在文件头的元信息块里** —— 因此改名字不会破坏引用，中文名也不进路径（见 5.2 / 7.12） |
 | `skills/<技能名>/SKILL.md` | **用户 / 界面** | 技能正文。新建目录即新增一个技能，目录名就是技能名 |
 
 > 标「用户 / 界面」的两处，两条写入路径是等价的：界面的「添加 / 编辑」最终就是写这两个
@@ -634,7 +788,7 @@ ask() ──publish─┘   （生成器被阻塞时，这一路照样通）
 #### 为什么工具签名一个字没改
 
 工具是 `fn(**args) -> str`，参数从模型的 JSON 里解出来。往这个契约里塞一个「运行上下文」
-意味着 `registry.execute()` 和全部 11 个工具都要改签名 —— 而绝大多数工具根本用不上它。
+意味着 `registry.execute()` 和全部 26 个工具都要改签名 —— 而绝大多数工具根本用不上它。
 
 改用 `ContextVar`：`_pump` 在自己的线程里 `activate` 一次，谁要用谁自己 `interaction.confirm(...)`。
 每个线程天然有一份独立上下文，`finally` 里 `deactivate` 即可。（用 ContextVar 而不是
@@ -645,7 +799,7 @@ ask() ──publish─┘   （生成器被阻塞时，这一路照样通）
 | 路径 | 谁决定 | 拦在哪 |
 | --- | --- | --- |
 | 工具组的 `confirm` | **用户**（配置） | `agent._execute()` —— 它知道这一轮解析出的 `confirm` 集合 |
-| `run_command` 认出危险命令 | **工具自己** | `shell.run_command()` —— 它认识「`rm -rf /` 长什么样」 |
+| `run_command` / `start_process` 认出危险命令 | **工具自己** | `shell._guard()` —— 它认识「`rm -rf /` 长什么样」 |
 
 两者**可以叠加**，也可以单独用。第二条是顺手把一个遗留问题修掉的：原先 `run_command` 对
 灾难性命令是**硬拒绝**，理由写的是「换个写法就能绕过，所以不把它当安全边界」。有了确认机制，
@@ -657,7 +811,7 @@ ask() ──publish─┘   （生成器被阻塞时，这一路照样通）
 
 #### 三条边界上的规定
 
-- **问不到 = 拒绝。** 没有通道（Streamlit 版、单元测试）或等待超时，一律按拒绝处理。
+- **问不到 = 拒绝。** 没有通道（CLI、单元测试）或等待超时，一律按拒绝处理。
   一条被判为危险的命令，在没人点头的情况下执行，是这个机制最坏的失败方式。
 - **超时必须存在**（默认 10 分钟）。用户关掉页面走人，这一轮不能把 runner 线程永久占住 ——
   那是「暂停等人」最容易踩的坑。
@@ -705,7 +859,7 @@ ask() ──publish─┘   （生成器被阻塞时，这一路照样通）
 
 - **`options` 是可选的，而且鼓励给。** 给了就渲染成按钮，点一下答完 —— 比打字快，
   也答不偏。答案确实是有限几个的时候，这是明显的更优解。
-- **返回值必须给「接着怎么办」。** 没通道（Streamlit 版）、超时、用户交了个空白 ——
+- **返回值必须给「接着怎么办」。** 没通道（CLI / 单元测试）、超时、用户交了个空白 ——
   三种情况都不能只报「失败」：模型会原地卡住，或者把问题原样再问一遍（那也是白问）。
   所以每种都附一句「自己拿主意，并说明你的假设」。
 - **答案带「用户回答：」前缀。** 这句话会原样进 `tool` 消息，不加前缀的话，
@@ -751,7 +905,7 @@ ask() ──publish─┘   （生成器被阻塞时，这一路照样通）
 这也意味着**不该给它做一个预设模式**：模式是用户的配置，往 `data/modes.json` 里塞一条
 预设，等于把「你自己的搭配」变成「程序替你选好的搭配」。
 
-**没有通道时（Streamlit 版）不能默许它动手** —— 那正好把这个工具要防的事放了进去
+**没有通道时（CLI / 单元测试）不能默许它动手** —— 那正好把这个工具要防的事放了进去
 （「先问再动」变成「不问就动」）。这种情况下的退路是：让它把计划作为本轮回答直接输出，
 并说明自己还没有动手；用户回一句「做吧」，下一轮再执行。多一次往返，但语义是对的。
 
@@ -786,9 +940,96 @@ ask() ──publish─┘   （生成器被阻塞时，这一路照样通）
 
 #### 还没做的
 
-**子代理**（创建 / 发消息 / 等待 / 关闭）。它比上面几个都麻烦：需要的不是「一问一答」，
-而是一条能共享上下文的通道 —— 子代理得看见主代理已经知道的东西，主代理也得看得见
-子代理的产出。现在这套通道只够「停下来问一句」，不够传递上下文。
+**长驻、可来回的子代理**。现在的 `spawn_agent` 是「派出去、等它跑完、把结论带回来」——
+够用，但主代理和它之间只有**一次**交接。真正的子代理会话还要能追加指令、能看它的进展、
+能中途插手，这需要一条能双向传上下文的通道；而现在这条通道只够「停下来问用户一句」，
+不够传递上下文。
+
+### 3.10 沙箱：把边界交给内核
+
+#### 要解决的问题：审批挡不住「不小心」
+
+3.2 里那三道锁，前两道（`_reject_reason` / `_danger_reason`）是**软约束** —— 正则匹配出来的，
+换个写法就绕过去了。第 1 条（必须显式加进工具组）是真边界，但它是个**全有或全无**的开关：
+加进去之后，那条命令对整个文件系统都畅通无阻。
+
+于是缺口就出现了：**用户想让 Agent 改代码、跑测试，就必须把一整台机器交出去。**
+沙箱补的正是中间那一档 —— 给，但只给工作目录。
+
+#### 沙箱和审批是两件事
+
+这是整个设计里最容易混的地方：
+
+| | 回答的问题 | 谁在保证 |
+| --- | --- | --- |
+| 审批（见 3.9） | 要不要问用户一声 | 应用层：`interaction` 阻塞等人点头 |
+| 沙箱（本节） | 命令**够得着什么** | **内核**：命名空间 + 只读挂载 |
+
+两者正交，可以任意组合。而且顺序上**沙箱是审批的前提** —— 只有当越界的后果被物理限制住，
+「每次都问」才有放松的余地。
+
+#### 分档
+
+| `SANDBOX_MODE` | 能写哪 | 网络 | 典型场景 |
+| --- | --- | --- | --- |
+| `off`（默认） | 全盘 | 通 | 不隔离，保持既有行为 |
+| `read-only` | 什么都不行 | 默认断 | 读代码、做分析 |
+| `workspace-write` | 只有工作目录 | 默认断 | 改代码、跑测试 |
+
+`SANDBOX_NETWORK=true` 可单独放行网络（默认 `false`）—— 装依赖那一下确实需要，
+但数据外传是这类 Agent 最实际的风险，不该是默认值。
+
+#### 怎么实现的（Phase 1：Linux）
+
+用 [bubblewrap](https://github.com/containers/bubblewrap)（`bwrap`）。选它而不是自己写
+`seccomp-bpf` 规则，理由很直接：**写错的沙箱比没有沙箱更危险** —— 它会给出虚假的安全感，
+而 bwrap 已经在无数发行版里被验证过。核心就是一条命令：
+
+```bash
+bwrap --die-with-parent \
+  --ro-bind / /                 \  # 整个文件系统先只读挂进来（白名单的起点）
+  --dev /dev --proc /proc       \
+  --tmpfs /tmp                  \
+  --tmpfs ~/.ssh --tmpfs ~/.aws \  # 密钥目录直接盖成空的
+  --bind "$WORK_DIR" "$WORK_DIR" \ # 再把工作目录「抬」成可写（顺序不能反）
+  --unshare-net --unshare-pid   \  # 断网 + 看不见别的进程
+  --chdir "$WORK_DIR" -- /bin/sh -c "<命令>"
+```
+
+几个刻意的选择：
+
+- **先全只读、再开口子**（`--ro-bind / /` → `--bind $WORK_DIR`）。反过来的话，每加一条规则
+  就多一个忘记关的洞。而且顺序错了会直接失效：`--bind` 必须排在 `--ro-bind` 之后，
+  否则会被盖回只读。
+- **盖住密钥，而不是盖住整个 `$HOME`**：`~/.ssh`、`~/.aws`、`~/.config/gcloud` 这类
+  读到就等于失守，用空目录盖掉 —— **不是靠权限位，是让它在这个进程的视野里根本不存在**。
+  但 `pip` / `uv` / `npm` 的缓存也住在家里，全盖掉会让每次安装从零开始。
+- **`--unshare-pid`**：看不见的进程也就杀不掉。
+- **命令不再走 `shell=True`**：命令字符串已经明确交给 `/bin/sh -c` 了，再让 `subprocess`
+  自己猜一次 shell，猜错的那次会把 `bwrap` 当成命令名。
+
+#### 没有后端时：拒绝，而不是裸跑
+
+**没有任何后端可用时，命令被直接拒绝**，回执里说明原因 —— 代码里刻意**没有**
+「那就算了、直接跑吧」这个分支。理由：用户既然显式配了沙箱，偷偷不套比不做沙箱更糟，
+因为它给了虚假的安全感。
+
+也正因如此，**默认值是 `off`** —— 默认开着会让 macOS / Windows 上的开发和测试当场不可用。
+配置写错（比如 `workspace-writ`）会在启动时直接报错，而不是悄悄降级成 `off`：
+降级的方向恰好是「不隔离」，那个方向不能静默。
+
+`bwrap` 光在 `PATH` 里还不够 —— 装了不等于能用（Ubuntu 24.04 起
+`kernel.apparmor_restrict_unprivileged_userns=1` 会挡住非特权 user namespace）。
+所以启动时会**真跑一次探测**，把失败翻译成人话，而不是把内核报错原样丢给模型。
+
+#### 已知边界
+
+- 沙箱只换了「怎么起进程」，**输出截断、超时、杀进程组**这些逻辑一个字没变；
+- 沙箱**不管文件工具** —— 它们走 `PathGuard`，本来就是硬边界（见 3.2）；
+- 非 Linux 平台目前没有后端。macOS 的 Seatbelt 在 Phase 2，过渡期建议把程序放进
+  WSL2 / Docker 跑（那条路直接复用这里的 `bwrap` 后端）；
+- `WORK_DIR=/` 时不会把工作目录抬成可写（否则等于把整个文件系统重新挂成 rw）——
+  这是个错配置，出错时倒向安全的方向：退化成只读。
 
 ---
 
@@ -807,14 +1048,38 @@ settings = get_settings()   # 全局唯一实例（带缓存，避免重复解�
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
 | `app_name` | `quill` | 应用名 |
+| `home` | `~/.quill`（见下） | **数据根目录**：`data/`、`prompt/`、`skills/` 都挂在它下面 |
 | `work_dir` | 启动时的当前目录 | **文件工具的工作目录，同时是安全边界** |
+| `sandbox_mode` | `off` | **执行类工具的沙箱档位**：`off` / `read-only` / `workspace-write`（见 3.10） |
+| `sandbox_network` | `false` | 沙箱内是否放行网络 |
 | `models_path` | `data/models.json` | 模型配置 |
 | `prompt_groups_path` | `data/prompt_groups.json` | 提示词组 |
 | `modes_path` | `data/modes.json` | 模式 |
 | `tool_groups_path` | `data/tool_groups.json` | 工具组 |
 | `skill_groups_path` | `data/skill_groups.json` | 技能组 |
+
+**表里那些相对路径都相对于 `home`，而不是 cwd。** 「相对于谁」这件事只在
+`_anchor_to_home` 一个地方决定，理由很实际：双击启动 / 打包分发时 cwd 不可控
+（可能是安装目录，也可能是用户主目录），相对 cwd 的话数据会散落各处；装在
+`C:\Program Files` 下更惨 —— 写文件会被 Windows 静默重定向到 VirtualStore，用户
+永远找不到自己的配置。显式传绝对路径（例如 `MODELS_PATH=/etc/quill/models.json`）
+则原样保留。
+
+`home` 的取值顺序（`QUILL_HOME` 环境变量 > 下面两条自动判断）：
+
+1. **`QUILL_HOME`** —— 显式指定，永远听它的；
+2. **当前目录下有 `data/` 或 `prompt/`** —— 判定为「就地运行」（在仓库里开发、
+   或从解压目录直接跑），数据就放在旁边。这是刻意保留的向后兼容：早期版本所有
+   路径都相对 cwd，用户的数据本来就散在仓库里，直接改到 `~/.quill` 会让那些配置
+   看起来「消失」；
+3. 其余情况用 **`~/.quill`** —— 打包 / 双击启动走的就是这条。
+
+首次运行会把内置的 `prompt/` 与 `skills/` 播种到数据根（见
+`quill_agent.bootstrap`），**只补缺失的文件、绝不覆盖**：用户改过的提示词是资产，
+升级时被出厂版本盖回去比没有默认值还糟。启动日志里会写明数据根在哪、这次补了什么。
 | `skills_dir` | `skills` | 技能目录（一个子目录一个技能） |
 | `memory_path` | `data/memory.json` | 长期记忆 |
+| `search_path` | `data/search.json` | 联网搜索（后端、各自的 Key、端点） |
 | `preferences_path` | `data/preferences.json` | 界面偏好 |
 | `conversations_dir` | `data/conversations` | 会话目录 |
 | `prompt_dir` | `prompt` | 提示词目录 |
@@ -832,11 +1097,12 @@ settings = get_settings()   # 全局唯一实例（带缓存，避免重复解�
 | --- | --- |
 | `ModelConfig` | 一条连接配置：`id / name / base_url / protocol / api_key / models[] / context_windows{}`（后者是**模型级**的：模型名 → 窗口大小，见 4.10） |
 | `ModelChoice` | 一次具体选择：`config`（连接）+ `model`（模型名） |
-| `PromptGroup` | 提示词组（原「模式」）：`id / name / description / settings{}` |
+| `PromptGroup` | 提示词组（原「模式」）：`id / name / description / prompts[]`（`prompts` 是提示词 **id 列表**，同一分类可以选多条） |
 | `ToolGroup` | 工具组：`id / name / description / tools[] / confirm[]`（成员可空、组名唯一、成员名须在注册表里、`confirm` 须是 `tools` 的子集） |
 | `SkillGroup` | 技能组：`id / name / description / skills[]`（同上，成员名须在 `skills/` 目录里） |
 | `Mode` | 模式：`id / name / description / prompt_group_id / tool_group_id / skill_group_id / memory_enabled / preferred_model` |
-| `Protocol` | 协议枚举（`OPENAI` / `ANTHROPIC`）。`.label` 给出正式名：OpenAI 侧是 **Chat Completions**（`/v1/chat/completions`），Anthropic 侧是 **Messages**（`/v1/messages`）—— 「OpenAI 协议」并不是标准叫法 |
+| `Protocol` | 协议枚举（`OPENAI` / `ANTHROPIC` / `OLLAMA`）。`.label` 给出正式名：OpenAI 侧是 **Chat Completions**（`/v1/chat/completions`），Anthropic 侧是 **Messages**（`/v1/messages`），Ollama 侧是 **本地服务**（见 4.9.1）—— 「OpenAI 协议」并不是标准叫法。另有 `openai_compatible`（是否复用 OpenAI SDK 链路）与 `default_base_url`（地址留空的默认值）两个属性，把「这个协议怎么连」收拢在枚举上 |
+| `protocol_options()` | 下发协议清单（`value / label / default_base_url / hint`），界面下拉直接用 —— 前端不再硬编码一份协议表 |
 | `model_choice_key(config_id, model)` | 生成模型选择的**稳定标识** `"{连接id}::{模型名}"` |
 | `check_api_key(protocol, api_key)` | 按协议校验 Key 格式，通过返回 `None` |
 
@@ -919,18 +1185,24 @@ draft_key("20260918-043332-0307")   # -> "prompt_draft::20260918-043332-0307"
 from quill_agent.prompts import PROMPT_CATEGORIES, PromptLibrary
 
 library = PromptLibrary(settings.prompt_dir)
-library.ensure_dirs()
-library.list_names("身份")             # 某类别下的提示词名（不含扩展名）
-library.read("身份", "Agent助手")       # 正文，不存在返回 None
-library.exists("身份", "Agent助手")     # 引用是否还有效
+library.ensure_dir()
+library.list_items()             # 全部提示词的元信息（按分类顺序 + 名字排序）
+library.get("8f3a2b1c")          # 一条的元信息，不存在返回 None
+library.read("8f3a2b1c")         # 正文，不存在返回 None
 
-library.save("身份", "Agent助手", 正文)                     # 覆盖写入
-library.save("身份", "新提示词", 正文, create_only=True)     # 新建；重名报 ValueError
+created = library.create(name="Agent助手", category="身份", content=正文)
+library.save(created.id, name="助手", category="输出规范", content=正文)   # 改名 + 换分类
+library.delete(created.id)
 ```
 
-`save()` 会校验类别（必须是 `PROMPT_CATEGORIES` 里的一个）和名字（见 4.14），
-并返回去掉首尾空白后的名字。`create_only=True` 时同名文件已存在会抛 `ValueError`
-而不是覆盖 —— 提示词名是提示词组里的引用标识，而「AI助手」这种名字很容易撞上。
+**标识是 id，不是名字**（文件名就是 id，见 5.2 / 7.12）。所以：
+
+- `name` 与 `category` 只是元信息，写在文件头的 `---` 块里，**改名、换分类都不会让引用失效**；
+- 名字不再受文件名规则约束（`clean_name` 只要求非空、能压成单行、不超过 60 字），
+  重名也是合法的 —— 表格里并排显示，用户自己看得见；
+- `create()` / `save()` 会校验分类必须是 `PROMPT_CATEGORIES` 里的一个，返回 `PromptDetail`；
+- `migrate_layout(root)` 负责把旧的「目录当分类」结构搬成 id 文件，返回
+  `({(分类, 名字): id}, 搬了几条)` —— 后一项正是提示词组换引用时要用的映射。
 
 ### 4.7 技能库 `quill_agent.skills`
 
@@ -1008,8 +1280,26 @@ result.detail      # 原始错误信息（排查用，界面不展示）
 ```
 
 实现走 `GET /models`，**不消耗 token**。并非所有服务都实现了这个端点（部分中转站只有
-`/chat/completions`）——失败时改用界面上的手动录入即可。当前仅支持 OpenAI（Chat
-Completions）这一侧；Anthropic Messages 没有等价的列表端点。
+`/chat/completions`）——失败时改用界面上的手动录入即可。支持的范围是「OpenAI 兼容」这一侧：
+官方 OpenAI，以及 Ollama（它自带兼容层，见 4.9.1）；Anthropic Messages 是另一套请求体，
+没有等价的列表端点。
+
+### 4.9.1 Ollama：本地模型怎么接
+
+Ollama 有自己的一套原生接口（`/api/chat`），**同时**提供了 OpenAI 兼容层
+（`/v1/chat/completions`）。这里接的是后者 —— 单独为它写一套协议适配不值得，兼容层能覆盖
+全部功能（流式输出、工具调用、用量统计）。
+
+于是「支持 Ollama」在代码里只落成 `Protocol` 枚举上的三个属性：
+
+| 属性 | 作用 |
+| --- | --- |
+| `openai_compatible` | 为真就复用 OpenAI SDK 那条链路。**判定收拢在这里**，不再由 `core.fetch_models` 与 `agent._run_stream` 各写一句 `is not Protocol.OPENAI` —— 那种写法最怕的就是漏改一处：界面能选、一调用却报「暂未实现」 |
+| `default_base_url` | `http://localhost:11434/v1`。地址留空时用它 —— 没人愿意去背这个地址，而这正是本地服务才有的「人人如此」的地址 |
+| `API_KEY_HINTS[Protocol.OLLAMA]` | 「本地服务一般不校验 Key，留空即可」。`check_api_key` 本来就允许空串；Ollama 的格式校验只拦明显填错的输入（带空格 / 换行），而不是按某个前缀去卡 —— 卡错了会把一个本来能用的本地服务挡在门外 |
+
+界面上的协议下拉由 `GET /protocols` 下发（`value / label / default_base_url / hint`），
+选中 Ollama 之后地址会自动填好、Key 输入框的提示也跟着变。
 
 ### 4.10 模型规格快照 `quill_agent.model_catalog`
 
@@ -1058,7 +1348,7 @@ refresh(settings.model_catalog_path, settings.model_catalog_url)   # 拉一份�
 这是整个业务的入口，也是**二次开发最可能改的地方**。
 
 ```python
-from quill_agent.agent import Notice, ReasoningDelta, ToolStep, run_agent_stream
+from quill_agent.agent import Notice, ReasoningDelta, ToolStep, Usage, run_agent_stream
 
 for event in run_agent_stream(
     prompt="帮我看看当前目录有什么",   # 本轮用户输入
@@ -1073,6 +1363,8 @@ for event in run_agent_stream(
         ...        # 思维链增量（推理模型才有），累积起来展示
     elif isinstance(event, str):
         ...        # 文本增量，直接追加渲染
+    elif isinstance(event, Usage):
+        ...        # 运行中的上下文读数（context_tokens），实时刷新用量仪表盘
     else:
         ...        # ToolStep：一次工具调用已完成（name / arguments / result）
 ```
@@ -1081,8 +1373,14 @@ for event in run_agent_stream(
 文本可以立刻往外吐（用户看到逐字输出），工具调用只能累积（分片到达，中途是残缺 JSON），
 必须等整条流结束才能执行。生成器让调用方按类型分派，UI 想怎么渲染都行。
 
-事件一共四类：**文本增量**（`str`）、**思维链增量**（`ReasoningDelta`）、
-**工具调用记录**（`ToolStep`）、**系统提示**（`Notice`）。
+事件一共五类：**文本增量**（`str`）、**思维链增量**（`ReasoningDelta`）、
+**工具调用记录**（`ToolStep`）、**系统提示**（`Notice`）、**运行中的用量**（`Usage`）。
+
+这五类是**生成器产出**的。还有些事件由工具**自己**在运行途中插入 —— 走的是交互通道
+（`interaction.current().publish(...)`），不经过生成器：任务清单更新的 `todo`、子代理
+进度的 `subagent`、确认 / 提问的 `question`。它们和生成器事件在传输层是同一种格式，
+最终都由 `_sse` 统一拼出去（见 4.11.1）。`todo` 的载荷是 `{"items": [...]}` —— 一份
+**完整**清单，前端直接覆盖，不做增量合并（理由见 `tools/todo.py` 开头）。
 
 `Notice` 和文本增量刻意分开，因为它**不是模型输出** —— 界面要单独标黄渲染，而且不能写进
 会话历史：否则「请先选择模型」这类提示会被当成模型说过的话，下一轮又塞回上下文里污染对话。
@@ -1106,7 +1404,7 @@ SDK 未必保留，取不到就静默跳过，不影响正文。思考过程按�
 | `build_system_prompt(prompts)` | 按固定顺序把选中的提示词片段拼成 system prompt |
 | `build_user_message(prompt, attachments)` | 拼装运行时上下文（时间 / 工作目录 / 附件路径）+ 本轮问题（**只有文本部分**） |
 | `image_content(text, attachments)` | 把正文与图片附件拼成请求体的 `content`；没有图片时原样返回字符串 |
-| `build_history_messages(history)` | 把会话记录还原成 API 消息（含 `tool` 消息），并截断到最近 20 条记录 |
+| `build_history_messages(history, *, context_window)` | 把会话记录还原成 API 消息（含 `tool` 消息），并按 token 预算截断 |
 | `_execute(slot, confirm)` | 执行一次工具调用；命中 `confirm` 时先让用户点头（见 3.9） |
 | `_preview(name, arguments)` | 把一次调用压成确认卡片上那段给人看的说明 |
 
@@ -1114,7 +1412,8 @@ SDK 未必保留，取不到就静默跳过，不影响正文。思考过程按�
 注意它计的是**工具轮次**而不是请求次数：预算用尽后会再发一次**不带工具**的请求，
 强制模型基于已有信息收尾 —— 整个循环因此最多请求 `MAX_ITERATIONS + 1` 次。
 这样就不会出现「工具已经执行、副作用已经发生，结果却没机会被模型看到」的浪费。
-发给模型的历史上限由 `MAX_HISTORY_RECORDS` 控制（默认 20 条记录）。
+发给模型的历史按 token 预算截断（窗口 × `HISTORY_BUDGET_RATIO`）；模型没配窗口时退回
+`MAX_HISTORY_RECORDS`（默认 20 条记录）。
 
 > `history` 参数收的是**会话记录**（界面口径，可能带 `steps` / `ts`），不是现成的 API 消息 ——
 > 还原与截断都由 `build_history_messages` 负责，调用方不需要先清洗字段。
@@ -1125,13 +1424,24 @@ SDK 未必保留，取不到就静默跳过，不影响正文。思考过程按�
 stats = RunStats()
 for event in run_agent_stream(..., stats=stats):
     ...
-print(stats.total_tokens, stats.elapsed)
+print(stats.total_tokens, stats.context_tokens, stats.elapsed)
 ```
 
 生成器没法「返回」值，而这两项都要等流结束才知道，所以只能由调用方创建、由
 `run_agent_stream` 就地填充。`elapsed` 在任何结束路径上都会补上（内部用 `try/finally`
 包了一层）。用量依赖接口支持 `stream_options`：少数网关不认这个参数，第一次失败后
 会自动退回普通请求并**记住结果**，不会每轮都白试一次。
+
+`context_tokens` 和计费三项是**两个口径，别混用**：一次对话里模型可能被请求十来次
+（每执行一轮工具就要再问一轮），而每轮都要把同一份上下文重发一遍，所以
+`prompt_tokens` 是**累加**出来的账单（用量页读它），`context_tokens` 只记**最后一次**
+请求的输入量 —— 那才是「上下文现在有多大」（仪表盘读它，见 7.14）。混用的话，读一次
+代码就能让占比虚高十倍以上，而且随每轮工具次数的多少来回跳。
+
+**想要运行中的实时读数就接 `Usage` 事件。** 上面那套 `RunStats` 要等整轮跑完才填好 ——
+只读它，界面在整个跑的过程中都只能显示上一轮的旧值，跑完才「啪」地跳一下。而 `Usage`
+是**每请求完一次模型就播报一次**（带那一刻的 `context_tokens`），界面据此把读数一路刷上去。
+它只带这一个字段、也**不落盘**：累加的账单要等结束才准，实时界面上也用不到它。
 
 **附件分两条路：文本落盘给路径，图片直接变成内容块。**
 
@@ -1187,7 +1497,7 @@ answer = interaction.ask(kind="ask", text="要哪个环境？", options=("测试
 
 两个约定值得记住：
 
-- **没有通道时不抛异常，返回 `None`。** 「没法问」是这类场景的常态（Streamlit 版就没有通道），
+- **没有通道时不抛异常，返回 `None`。** 「没法问」是这类场景的常态（CLI、单元测试都没有通道），
   不该被当成错误。但调用方必须处理这个分支 —— `ask_user` 该退回「自己拿主意」，
   确认题该退回「拒绝」。
 - **`None` 和 `False` 必须分开。** 前者是「当前界面根本没法确认」，后者是用户的决定；
@@ -1205,7 +1515,56 @@ registry.categories()                    # 现有分类
 registry.execute("read_file", '{"path": "README.md"}')   # 执行，异常转文本
 ```
 
-### 4.13 用量统计 `quill_agent.usage`
+### 4.13 联网搜索 `quill_agent.search`
+
+```python
+from quill_agent.search import SearchConfig, SearchError, SearchStore, fetch_page, search
+
+config = SearchStore(settings.search_path).load()  # 后端 / 各自的 Key / 端点
+hits = search("今天的科技新闻", config=config)       # list[SearchHit]
+text, title = fetch_page("https://example.com")    # (正文纯文本, 标题)
+```
+
+| 对象 | 说明 |
+| --- | --- |
+| `SearchBackend` | 枚举：`TAVILY` / `BOCHA`。`value` 是**持久化用的键**，`label` / `endpoint` / `hint` 供界面用 |
+| `SearchConfig` | `backend` / `keys` / `base_url` / `max_results` |
+| `SearchHit` | `title` / `url` / `snippet`（摘要，不是正文） |
+| `SearchStore` | 单个对象的 JSON 读写 —— 和另外几个 store 不同，它存的不是一列 |
+| `SearchError` | 唯一的异常出口。消息是**给模型和用户看的**，调用方直接当结果文本返回即可 |
+
+**配置只存一份，不是一列。** 「用哪个后端」全局只有一个答案，做成列表就还要多一套
+「选中的是哪个」。
+
+**`keys` 是「后端 -> Key」的字典，不是一个字段。** Tavily 和博查之间切来切去是常事，
+只留一个字段的话，切一次就把另一边填过的 Key 抹掉了。
+
+**`base_url` 一开始就留着。** 它是给「自建 / 中转」留的口子 —— 将来接 SearXNG 这类
+需要自己起实例的后端也挂在这里，那时只需多写一个解析函数和一个枚举项，不用动存储格式。
+
+**多支持一家 = 多写一个解析函数。** `_BACKENDS` 是一张 `SearchBackend -> 函数` 的表。
+两家响应的字段名不一样（Tavily 是 `title` / `url` / `content`，博查是 `name` / `url` /
+`snippet` + `summary`），但结构是一样的，所以解析抽成了
+`_hits_from(pages, *, title_key, url_key, text_keys)`。
+
+**不引第三方库。** 搜索接口就是两个 POST，为它拉一个依赖不划算；正文提取用标准库的
+`html.parser` 也够 —— 目标是文章页，不是要跟浏览器比 DOM 还原度。用 `html.parser` 而不是
+正则还另有一层原因：正则剥标签会把 `<script>` 里的内容一起当正文（那段代码里往往有
+`if (a < b)`），遇到属性值里带 `<` `>` 也会错位。
+
+三个实现上的取舍：
+
+| 点 | 做法 | 为什么 |
+| --- | --- | --- |
+| 重试只挑「可能会自己好」的错 | 网络抖动 / 超时 / 429 / 5xx 退避重试一次；4xx 立刻抛 | Key 不对时重试多少次都是同一个结果，白等两轮只会让用户以为卡死了。对端说了什么就转述什么（`{"msg": …}` 和 `{"detail": {"error": …}}` 两种形状都抠一遍），不自己编一句「请求失败」 |
+| 摘要按字数压 | 一条最多 400 字 | 搜索接口给的摘要偶尔很长（博查开了 `summary` 尤其如此），五条就是几千字，会挤掉模型本来该用来干活的上下文 |
+| 编码按「响应头 → meta → gb18030」猜 | 见 `_decode` | 中文站点用 GBK 的还不少，一律按 UTF-8 解会得到一屏乱码 —— 那句乱码最后会被当成摘要交给模型，等于白抓 |
+
+**不做 SSRF 拦截。** 这个 Agent 本来就带着 `run_command`，能 `curl` 任何地址，在这儿堵
+没有意义（只拒掉非 http/https 的协议，那是为了给出可读的报错）。真正的边界始终是
+「给不给模型这个工具」—— 由工具组决定。
+
+### 4.14 用量统计 `quill_agent.usage`
 
 ```python
 from quill_agent.usage import build_report
@@ -1244,7 +1603,7 @@ report.tasks     # [TaskUsage(...)]，一行一个任务
 （`ConversationMeta.created_at` 直接解它），比文件 mtime 可靠 —— 归档会把 mtime 改成
 归档那一刻。
 
-### 4.14 内容写入的名字校验 `quill_agent.naming`
+### 4.15 内容写入的名字校验 `quill_agent.naming`
 
 提示词和技能都是「名字就是文件名 / 目录名」的目录约定，而这两个名字**直接来自界面
 输入框**。不拦的话，`../..` 之类的输入会写到 `prompt/` 和 `skills/` 之外去 —— 和文件
@@ -1273,7 +1632,7 @@ safe_name("../逃出去")       # ValueError（文案可直接展示给用户）
 > 只校验**写入**。读取路径（`path_of` / `exists`）保持宽松：技能组里可能已经存着一条
 > 历史的引用，读的时候抛异常会让整个页面 500，而正确行为是「这个引用失效了」。
 
-### 4.15 二次开发：三个常见场景
+### 4.16 二次开发：三个常见场景
 
 **① 新增一个工具**（最常见）
 
@@ -1326,12 +1685,34 @@ data/
 ├── modes.json            # 模式（引用三类组 + 记忆开关 + 偏好模型）
 ├── memory.json           # 长期记忆条目
 ├── preferences.json      # 界面偏好
+├── search.json           # 联网搜索（后端、各自的 Key、端点）
 └── conversations/
     ├── active/           # 活跃会话
     │   └── 20260918-034512-a1b2.jsonl
     └── archived/         # 归档会话
         └── 20260918-030000-c3d4.jsonl
 ```
+
+### 5.1.1 并发写同一份文件
+
+`data/` 下的东西全是「读全量 → 改内存 → 整文件覆写」，而**真的会并发**：后端把同步路由
+跑在线程池里，同一瞬间可能有两个请求各改一个键；用户也可能在服务开着时自己跑脚本、
+或再起一个实例。所以两个机制必须都在（见 `quill_agent.locking`）：
+
+| 机制 | 解决的问题 |
+| --- | --- |
+| `file_lock(path)` | **丢失更新**：两边各自读到同一份基线，后写的把先写的整份覆盖掉 |
+| `atomic_write_text(path, text)` | **读到中间态**：`write_text` 是先截断再写，另一个进程此刻读会拿到空文件 —— 它对空文件的处理是「退回默认值」，接着可能把默认值写回去，配置整份消失 |
+
+几个容易踩的点：
+
+- **读必须和写在同一个锁里**。先在锁外读基线、再进锁写回，等于没锁 —— 两边照样会各自读到
+  同一份旧数据。所以 `add` / `update` / `remove` 里的「读」都在 `with file_lock(...)` 里面，
+  重名校验也一样（校验和写入之间被插进一次别人的写入，校验就白做了）。
+- **锁是跨平台的**：POSIX 用 `fcntl.flock`，Windows 用 `msvcrt.locking`；两边都不可用时
+  降级为不加锁而不是报错 —— 少一层保护好过整个应用在这台机器上不可用。
+- **Windows 上替换被占用的文件会失败**，所以 `os.replace` 撞上 `PermissionError` 时会短暂
+  重试：另一个进程恰好在这几十毫秒里读同一个文件，是正常会发生的事。
 
 ### 5.2 各文件的数据结构
 
@@ -1363,14 +1744,19 @@ data/
     "id": "286d7e6ed0d2450d9fade2f43e356b19",
     "name": "严谨分析",
     "description": "偏保守、重推理的回答风格",
-    "settings": { "身份": "Agent助手", "能力": "通用能力", "约束": "安全边界" }
+    "prompts": ["8f3a2b1c", "5d9e0f12", "a1b2c3d4"]
   }
 ]
 ```
 
-`settings` 只包含用户实际选了的类别（一个都不选也合法 = 纯问答）；
+`prompts` 是提示词 **id 列表**（允许为空 = 不带任何系统提示词的纯问答）；
 `description` 是功能简介（后加的字段，老数据默认空串）。
 **这里没有 `preferred_model`** —— 它搬到了模式上（见 3.7）。
+
+**同一分类可以选多条**：早先的写法是 `{类别: 名字}`，等于「一个分类只能选一条」，想在
+一个分类里同时用两段内容就只能把它们合并进一个文件。换成 id 列表后这个限制自然消失，
+而且改名不再破坏引用（名字只是展示用的，见 7.12）。老的 `settings` 字段会在启动时
+由 `store.migrate_prompt_group_refs()` 换成 id（见 5.5）。
 
 **`modes.json`** — 数组，每个元素是一个模式
 
@@ -1460,17 +1846,36 @@ data/
 两类键都按会话隔离，所以在会话 A 里写一半切到 B，两边互不影响：
 
 - `prompt_draft::<会话id>` —— 输入框草稿。
-- `mode::<会话id>` —— 这个任务记住的模式（见 7.19）。**不带前缀的 `mode` 键仍然照写，
-  但 Vue 版不再读它** —— 只要还拿它当回落值，「切到另一个任务却还是上一个任务的模式」
-  就会原样复现。留着它是给 Streamlit 版当全局默认。
+- `mode::<会话id>` —— 这个任务记住的模式（见 7.19）。**不带前缀的 `mode` 键不再读也不再写** ——
+  只要还拿它当回落值，「切到另一个任务却还是上一个任务的模式」就会原样复现。老数据里可能
+  还留着它，不影响（没人读）。
+
+**`search.json`** — 单个对象，不是数组（见 4.13）
+
+```json
+{
+  "backend": "tavily",
+  "keys": {
+    "tavily": "tvly-xxxx",
+    "bocha": "sk-xxxx"
+  },
+  "base_url": "",
+  "max_results": 5
+}
+```
+
+`keys` 按后端分别存：两边都填好之后随时切换，不会互相覆盖。`base_url` 留空表示用内置
+地址。文件损坏或字段写错（比如 `max_results` 填了非数字）时**退回默认值**而不是报错 ——
+配置类数据坏掉的代价不该是「这一页打不开」，重新填一遍即可。
 
 **`conversations/*.jsonl`** — 一个会话一个文件，**一行一条消息**
 
 ```jsonl
 {"role": "user", "content": "你好", "ts": "2026-09-18T04:33:32"}
-{"role": "assistant", "content": "你好！有什么可以帮你的？", "ts": "2026-09-18T04:33:35", "model": "deepseek-flash", "steps": [], "stats": {"prompt_tokens": 812, "completion_tokens": 12, "total_tokens": 824, "elapsed": 2.4}}
+{"role": "assistant", "content": "你好！有什么可以帮你的？", "ts": "2026-09-18T04:33:35", "model": "deepseek-flash", "steps": [], "stats": {"prompt_tokens": 812, "completion_tokens": 12, "total_tokens": 824, "context_tokens": 812, "elapsed": 2.4}}
 {"role": "assistant", "content": "", "ts": "2026-09-18T04:34:02", "steps": [], "notices": ["模型没有返回任何内容。可以重试，或换一个模型 —— 推理模型有时会把输出预算全用在思考上。"]}
 {"role": "user", "content": "读一下附件", "ts": "2026-09-18T04:35:10", "files": ["quill-attachment.txt"]}
+{"role": "assistant", "content": "我先把这件事拆成几步。", "ts": "2026-09-18T04:35:20", "steps": [], "todos": [{"content": "读附件", "status": "completed"}, {"content": "整理要点", "status": "in_progress"}], "stats": {"prompt_tokens": 900, "completion_tokens": 20, "total_tokens": 920, "context_tokens": 900, "elapsed": 1.8}}
 ```
 
 **会话 id 就是文件名**（`时间戳-随机后缀`），所以按文件名排序即按时间排序，不需要额外的索引文件。
@@ -1482,8 +1887,12 @@ data/
 `stats` 是这一轮的用量与耗时，只用于界面展示（消息下方的 `⏱ 2.4s · 824 tokens`），
 组历史时同样不带 —— 它在发给模型的消息里没有任何意义。
 
+`todos` 是这一轮列过的任务清单（模型没列过就是空数组）。和 `stats` / `notices` 一样**只给界面
+回看用、不进历史** —— 清单是「说给用户听的过程」，回传给模型没有意义。落盘而不是只在运行中
+显示，是为了**跑完还看得到它当初打算做哪几步**（见 7.14.1）。
+
 `model` 是这一轮用的模型名，**落盘时就记下**。用量页要按模型分组，而 `stats` 里只有
-token 数、认不出是哪个模型花的 —— 一个会话中途可以换模型，事后也没法反推（见 4.13）。
+token 数、认不出是哪个模型花的 —— 一个会话中途可以换模型，事后也没法反推（见 4.14）。
 老记录没有这个字段，用量页会把它们显示成「—」。
 
 `notices` 是系统提示（没选模型、调用失败、模型空回答）。界面把它们标黄渲染；这类记录的
@@ -1515,6 +1924,25 @@ token 数、认不出是哪个模型花的 —— 一个会话中途可以换模
 - **永久删除会话时同步清理它的草稿与模式偏好**，避免偏好文件里堆积孤儿键。
   （归档 / 恢复不动它们：会话还在，只是搬了个目录。）
 
+### 5.4.1 导出：会话是产出物，得拿得走
+
+`GET /api/conversations/{id}/export`，两种格式：
+
+| 格式 | 给谁用 | 内容 |
+| --- | --- | --- |
+| `markdown`（默认） | 人读 | 正文照抄；工具调用收进 `<details>` 折叠块；每条助手消息末尾一行 `耗时 · tokens · 模型` |
+| `json` | 程序用 | 原始记录，一个字段不落（含 `steps` / `stats`） |
+
+两个取舍：
+
+- **正文照抄、过程收起**：对话本身要能直接读；工具调用是过程 —— 回看时通常不关心，
+  但删掉就丢了信息，所以收起来而不是丢掉。
+- **用普通链接让浏览器下载**，不写一段 `fetch`：进度、保存对话框、大文件都是浏览器的事。
+  响应带 `Content-Disposition`，点一下落成 `quill-<会话id>.md`。
+
+渲染函数放在业务层（`history.render_markdown`）而不是服务层：它是纯数据渲染、和界面无关 ——
+以后 TUI 想导出会用同一个。
+
 ### 5.5 旧数据兼容
 
 所有新增字段都带默认值，且用 `model_validator(mode="before")` 兜底老格式：
@@ -1537,59 +1965,8 @@ token 数、认不出是哪个模型花的 —— 一个会话中途可以换模
 
 ---
 
-## 6. 界面层：Streamlit（旧版）
 
-> 下面是早期 Streamlit 界面的实现记录。里面不少坑（尤其是 6.3、6.4）恰好解释了
-> **为什么后来要换 Vue**，所以原样留着。
-
-### 6.1 结构
-
-使用 Streamlit 的 `st.navigation` 多页模式：
-
-- **`app/app.py` 是唯一入口**，声明页面列表；`st.set_page_config` 只能在这里调用一次
-- 侧边栏的会话列表也在这里渲染 —— 它属于全局 UI，与当前在哪个页面无关
-- 页面文件整体执行，各自的 `main()` 在导航切换时运行
-
-### 6.2 页面职责
-
-页面只做三件事：**取输入 → 调业务层 → 渲染结果**。
-
-一个典型例子是任务页的提交流程：把参数交给 `run_agent_stream()`，然后按事件类型分派 ——
-文本增量写进输出区预留的 `st.empty()` 占位符（实时渲染），工具调用写进 `st.status` 面板。
-
-### 6.3 几个踩过的坑（改动 UI 前建议先读）
-
-| 现象 | 原因与对策 |
-| --- | --- |
-| 切换页面后输入框内容消失 | **widget 的状态在切页时会被清理**，普通 `st.session_state` 键不会。需要跨页保留的状态要自己存到普通键里（或用 widget 的 `persist_state="page"`） |
-| 弹窗里点按钮后弹窗直接消失 | `st.dialog` 只在其 `if` 分支里渲染，重跑后条件不成立就没了。要用 `session_state` 驱动渲染（见 `archived.py`）。**`st.popover` 没有这个问题**，它的展开状态由前端管理 |
-| 改变控件后错误提示一闪而过 | 回调/按钮点击后紧跟 `st.rerun()` 会清掉提示。错误路径不要 rerun |
-| 改 `src/quill_agent/` 后页面报 ImportError | Streamlit 热重载只重跑页面脚本，**不会重新 import 已加载的模块**。新增/删除被导入的符号、改 `.env`、动依赖，都需要重启进程 |
-
-### 6.4 样式定制
-
-任务页的高度布局依赖 CSS 覆盖，选择器基于 Streamlit 内部类名（`st-key-*`、`data-testid`），
-属于**非公开接口**，升级 Streamlit 后可能失效。相关代码集中在 `app/main.py` 的 `PAGE_CSS` 里，
-并附有实测结论（哪一层才是真正控制高度的元素），改动前建议先读那段注释。
-
-### 6.5 输出区自动跟随
-
-`st.container(height=...)` **不会**因为内容变长而自动滚动。而对话恰恰全是「新内容长在底部」，
-所以不做处理的话，用户发完消息什么也看不到 —— 思考过程和回答都在下面看不见的地方。
-
-方案是注入一段脚本（`app/main.py` 的 `AUTO_SCROLL_HTML`）。三个要点各对应一个踩过的坑：
-
-| 坑 | 处理 |
-| --- | --- |
-| `st.markdown(unsafe_allow_html=True)` 会把 `<script>` 过滤掉 | 改用 `components.html`：它的 iframe 与原页面同源，能拿到父页面的 `document` |
-| `components.html` 在重跑时被 React 复用，脚本**只在首次打开页面时执行过一次**，重跑后不会再对齐到底部 | 往 HTML 里塞一个时间戳注释，让每次重跑的内容都不同，iframe 才会真正重新加载 |
-| 无脑跟随会打断「用户往上翻看历史」 | 只在距底部 40px 以内时跟随；用户上翻即停止，自己滚回底部后自动恢复 |
-
-脚本里用的 `.st-key-task_output` 与 6.4 是同一类**非公开接口**，升级 Streamlit 后需要回归验证。
-
----
-
-## 7. 界面层：Vue（新）
+## 7. 界面层：Vue
 
 ### 7.1 为什么换掉 Streamlit
 
@@ -1598,7 +1975,7 @@ token 数、认不出是哪个模型花的 —— 一个会话中途可以换模
 | Streamlit 的做法 | 后果 |
 | --- | --- |
 | 每次交互**重跑整个脚本** | 打字时每个字符都要往返一次；页面一复杂就卡 |
-| 状态存在服务端 `session_state` | 输入框、选择器全靠 workaround 兜（见 6.3 那张坑表） |
+| 状态存在服务端 `session_state` | 输入框、选择器全靠 workaround 兜（切页丢状态、弹窗要靠条件渲染维持） |
 | 高度布局要覆盖内部 CSS / JS | 依赖非公开接口，Streamlit 一升级就坏 |
 
 换成 Vue 之后前两条从根上消失：**状态在浏览器内存里，改一个字段只重渲染用到它的
@@ -1610,8 +1987,8 @@ token 数、认不出是哪个模型花的 —— 一个会话中途可以换模
 而不是照抄业务层的模块划分。前端 `web/src/` 四个目录：`api`（接口）、`stores`（共享状态）、
 `components`、`views`（与路由一一对应）。
 
-**两套界面共用同一份数据**：会话文件、模型配置、技能、记忆都在 `data/` 和 `skills/`，
-Streamlit 版和 Vue 版读写的完全是同一批东西，可以对照着用。
+**数据都在服务端**：会话文件、模型配置、技能、记忆都在 `data/` 和 `skills/`，前端不持有
+权威副本，刷新页面重新拉。
 
 ### 7.3 三个值得留意的实现点
 
@@ -1645,11 +2022,21 @@ Streamlit 版和 Vue 版读写的完全是同一批东西，可以对照着用�
 ### 7.5 启动
 
 ```bash
-make api    # 后端 8000
-make web    # 前端 5173（Vite 把 /api 代理到 8000，所以浏览器看到的是同源请求）
+make build  # 构建前端产物（只需一次）
+make api    # 后端 8000 —— 它会把 web/dist 一起托管，浏览器打开 8000 就是完整应用
 ```
 
-生产部署时把前端 `npm run build` 出静态文件、由 FastAPI 一起托管即可，那时不需要代理。
+改前端代码时用开发模式（两个终端，Vite 把 `/api` 代理到 8000，所以浏览器看到的是同源请求）：
+
+```bash
+make api
+make web    # 前端 5173
+```
+
+后端的托管是**条件注册**的：`web/dist/index.html` 存在才挂那条兜底路由，开发模式下接口行为
+完全不变。兜底路由必须注册在**所有 API 路由之后**（FastAPI 按注册顺序匹配），并且显式让
+`/api/*` 返回 404 —— 否则一个不存在的接口会返回「200 + 一坨网页」，调用方很难看出问题。
+静态文件路径也要做一次「解析后仍在 dist 内」的校验，避免 `../` 穿越。
 
 ### 7.6 输入区：两个设计点
 
@@ -1676,15 +2063,15 @@ make web    # 前端 5173（Vite 把 /api 代理到 8000，所以浏览器看到
 
 ### 7.7 附件与工作目录
 
-两者都是「后端本来就有、Vue 版漏接」的功能（业务层的 `save_attachments` / `set_work_dir`
-一直都在，Streamlit 版也接了）。补的时候业务层一行没改。
+两者都是「后端本来就有、前端漏接」的功能（业务层的 `save_attachments` / `set_work_dir`
+一直都在）。补的时候业务层一行没改。
 
 **附件走 multipart，而不是拆成两个接口。** 先传文件拿路径、再带路径发消息也能做，但那样
 「文件属于哪一轮」就得靠额外状态去维系；一轮请求带齐，语义最清楚。
 
 后端为此加了一个适配壳（`server/routes/chat.py` 的 `Attachment`）：`save_attachments()`
 是按鸭子类型写的（有 `name`、能 `read()` 就行），补个同样形状的壳就能复用 ——
-**两个界面因此共用同一份附件落盘逻辑**。
+**附件怎么落盘只有业务层那一份实现**。
 
 > 壳里包的是 `UploadFile.file`（底层同步文件对象）而不是 `UploadFile.read()`：
 > 后者是 async，而 chat 端点是同步 `def`（跑在线程池里），没有 await 可用。
@@ -1812,28 +2199,42 @@ Teleport 正是为这种「逻辑上属于 A、DOM 上要放进 B」的场景准
 主题选择存在 `localStorage` 的 `quill:theme`，三档：浅色 / 深色 / 跟随系统（默认）。
 选「跟随系统」时会监听 `prefers-color-scheme` 的变化实时切换。
 
-### 7.12 提示词页：为什么是一次改名，不是一次新建
+### 7.12 提示词页：标识是 id，不是名字
 
-页面分上下两半：**上「提示词组」**（组名 / 功能简介 / 提示词设置 / 编辑·删除），
-**下「提示词库」**（六类及其下的 `.md`，展开行按需取正文，行上可编辑、右上角可添加 ——
-见 7.20）。和工具页、技能页同一套骨架 ——
-组是搭配单位，下面的列表是素材，上面的组从里面挑。
+页面分上下两半：**上「提示词组」**（组名 / 功能简介 / 提示词 / 编辑·删除），
+**下「提示词库」**（分类 + 名称 + 操作；展开行按需取正文，行上可编辑可删除，右上角可添加 ——
+见 7.20）。和工具页、技能页同一套骨架：组是搭配单位，下面的列表是素材，上面的组从里面挑。
 
-关键决定是**复用**：提示词组没有另起一套数据，用的就是原先「模式」的记录
+**这页的结构动过一次：提示词的标识从「名字」换成了「id」。** 原先的约定是
+`prompt/<类别>/<名字>.md` —— 目录当分类、文件名当名字。它留了两个后患：
+
+1. **中文路径**。最阴的一条是 Unicode 规范化：macOS 存 NFD、Linux / Windows 存 NFC，
+   同一个中文目录名在两个系统上是**不同的字节序列**，git 会当成两个文件，克隆/同步时
+   冒出「幽灵重命名」。此外还有 Windows 命令行的 GBK 编码、git 的八位转义显示、
+   打包时的 UTF-8 标志位。
+2. **改名会破坏引用**。名字一旦就是文件名，重命名就等于换了个标识 —— 所有引用它的
+   提示词组会静默失效（组里显示「文件缺失」，而用户多半要等到某个模式跑得不对劲才发现）。
+
+现在文件是 `prompt/<id>.md`（id 是 8 位十六进制，全 ASCII），名字与分类写在文件头的
+`--- name / category ---` 块里。于是：改名字、换分类都只动元信息，引用不动；同一个分类
+也能选多条（组的引用变成了 id 列表，不再是「类别 → 名字」的映射）。
+
+> 换结构对老数据是安全的：启动时 `bootstrap.migrate_legacy_layout()` 先把旧目录搬成 id 文件，
+> 再拿「(分类, 名字) → id」的映射把组里的引用换掉 —— **两件事必须一起做**，分开做会停在
+> 「文件搬了、引用全悬空」的中间状态。两步都幂等，重复启动无副作用。
+
+组表格里要能看出「这条已经被删了」：`refsOf(ids)` 拿当前库查一遍，查不到就渲染成
+`已删除（id）`。删除提示词时后端还会回报「哪些组在引用它」，界面把这个名单写进确认框 ——
+**引用不自动清理**：替用户改他的配置，比留着一条标红的缺失更糟。
+
+**复用**：提示词组没有另起一套数据，用的就是原先「模式」的记录
 （`PromptGroupStore` / `data/prompt_groups.json` / `/prompt-groups` 接口）。那套记录本来
-做的就是这件事 —— 从六类里各挑一个 —— 只是当时叫「模式」。**加一套新存储只会让同一件事
-在两个地方存两份，以后必然对不上。** 所以这次动的只有措辞、存储/接口名，和一个新加的
-`description` 字段。
+做的就是这件事 —— 挑几条提示词拼一套 —— 只是当时叫「模式」。**加一套新存储只会让同一件事
+在两个地方存两份，以后必然对不上。**
 
-> 换名对老数据是安全的：启动时 `store.migrate_prompt_groups()` 会把旧版 `modes.json`
-> （元素带 `settings`、不带 `prompt_group_id`）搬到 `prompt_groups.json`，只有目标文件
-> 不存在时才搬，重复调用无副作用（见 5.5）。`description` 给了默认空串，老数据反序列化
-> 不会报错。**唯一语义变化**是 `preferred_model` 搬到了模式上，不再属于提示词组（见 3.7）。
-
-它和另外两类组有一处**结构差异**：提示词组的成员是「类别 → 提示词名」的映射，不是平铺列表
-（原因见 3.6）。这让组表格渲染多一步 —— 直接
-`v-for="(name, category) in row.settings"` 遍历对象时，键会被 TS 推断成 `number`，
-传给 `isMissing(category, name)` 要一路 cast。摊平成 `{category, name}[]` 再渲染就干净了。
+> 换名对老数据也是安全的：启动时 `store.migrate_prompt_groups()` 会把旧版 `modes.json`
+> （元素带 `settings`、不带 `prompt_group_id`）搬到 `prompt_groups.json`，只在目标文件
+> 不存在时才搬（见 5.5）。**唯一语义变化**是 `preferred_model` 搬到了模式上（见 3.7）。
 
 两处 `el-table` 的老坑也在这个页面上复现了（`DefaultRow` 与新加的字段）：
 
@@ -1881,15 +2282,81 @@ Teleport 正是为这种「逻辑上属于 A、DOM 上要放进 B」的场景准
 
 两个数字的来源是关键：
 
-- **分子（占用）取最近一条带 `stats` 的 assistant 消息的 `stats.prompt_tokens`**，而不是
-  「数消息条数」或「前端估长度」。`prompt_tokens` 正是这一轮**实际发出去的全部上下文**的大小
-  （system + 历史 + 这一轮用户消息），是唯一准确的现成数据。
+- **分子（占用）运行中取流里播报的实时读数，其余时候取最近一条带 `stats` 的 assistant
+  消息的 `stats.context_tokens`**。两者是同一个口径 ——「**最后一次请求**发出去的全部上下文
+  有多大」（system + 历史 + 这一轮用户消息 + 目前为止的工具结果），也是唯一准确的现成数据；
+  区别只在**新鲜度**：消息上的 `stats` 要等这一轮落盘（`done`）才有，只读它的话，整个跑的
+  过程中读数都停在上一轮、跑完才跳一下。因为一轮里模型会被请求多次（每执行完一轮工具再问
+  一次），上下文是**一路长上去**的，所以后端每拿到一次用量就播报一个 `usage` 事件
+  （见 4.11 的 `Usage`），前端存进 `session.liveUsage` 优先采用 —— 读数因此是跟着涨的，
+  多轮工具调用也不再是「一个数卡住不动」。**切会话时它跟着会话走**：每个会话有自己的一份
+  读数，切走再切回来还是它（见 7.14.2）。跑完则**不清**：它和刚落下的值本来就相等，留着
+  反而能保住中途出错 / 被取消那一轮已经长到的大小。
+  **两个来源都不能读 `prompt_tokens`**：一轮里每请求一次都要把同一份上下文重发一遍，那个
+  字段是累计的账单（用量页读它）。拿它当占用，读一次代码（十来轮工具调用）就能把读数累到
+  真实的十倍以上；而且每轮的请求次数不一样，读数会在几条消息之间忽高忽低，看起来像上下文
+  自己在大幅涨落（见 4.11 里两个口径的区别）。老记录没有 `context_tokens` 字段，退回
+  `prompt_tokens` 顶上 —— 偏高，但比显示 0 更像「有数据」，发下一条消息就正常了。
 - **分母（窗口）取当前所选模型自己的窗口大小**（在「API 设置」里按模型填，见 4.10）。
   各家、甚至同一条连接下的不同模型窗口都不一样，而模型名是任意字符串、没法可靠推断，
   所以做成显式可配项 —— 取值顺序是「接口 → 本地快照 → 留空」。**留空时显示「—」
   而不是拿默认值凑**：编一个数是错的，而错的占比会让人以为上下文还有空间。
 
 颜色随占用率变化：< 70% 用主色，70~90% 用 `--el-color-warning`，> 90% 用 `--el-color-danger`。
+
+### 7.14.1 任务清单：把「现在到哪一步了」摊开
+
+一轮长任务里，模型心里有一份计划，用户看不到 —— 中间十几分钟的调用在界面上只是一串看不懂
+的工具名。`todo_write` 把那份计划变成看得见的东西：模型每推进一步就重写一次清单，
+`TodoList.vue` 据此渲染进度条（完成数 / 总数）。
+
+三处实现要点：
+
+- **实时靠 `todo` 事件，回看靠消息上的 `todos`。** 前者在运行中由工具经交互通道推出来
+  （见 4.11），实时刷新进度；后者随这一轮的消息落盘（见 5.2 会话文件），切走再回来还在。
+  两条路不是重复：一条要活在被工具阻塞的生成器之外，一条要活过这一轮。
+- **运行中的清单挂在 store 上（`session.liveTodos`），不挂在消息上。** 流式正文此刻正在抢
+  消息对象，再往同一条消息上写清单，两处状态会互相打架。跑完 / 开新一轮时清空，
+  **出错或被取消时不清** —— 和 `liveUsage` 同一个道理（见 7.14），保住已经跑出来的进度。
+  换会话也不清，而是跟着会话走（见 7.14.2）。
+- **运行中那份浮在输出区底部，而且默认折叠。** 浮起来是因为它回答的是「现在还剩几步」，
+  翻上去看历史时不该看不见（和确认卡片同一个理由，见 7.22）。折叠是因为十几项的清单摊开
+  会把输出区吃掉一大块，而多数时候用户只想知道还剩几步 —— 收起时只剩「完成数 / 总数」
+  一行，点开才展开（`TodoList` 的 `collapsible`）。**消息里那份定稿不折叠**：回看历史时
+  要一眼看全。
+- **提交的是完整清单，前端直接覆盖，不做增量合并。** 全量提交是幂等的：重复调用、漏掉一次、
+  多个调用乱序到达，最终结果都只取决于最后一次提交，不会留下幽灵条目（详见 `tools/todo.py` 开头）。
+
+### 7.14.2 运行跟着会话走，不跟着界面走
+
+**切换会话不等于中断正在跑的那一轮。** 去看一眼别的任务，回来时它该还在跑 —— 而不是被掐断、
+助手回复消失、上下文读数归零。
+
+这条规则落在 `session.ts` 的一个 `Map<conversationId, ActiveRun>` 上：一轮的全部状态（运行 id、
+正在生成的那条消息、中断句柄、实时用量、清单、待答问题）都存在它所属的会话下面。界面上的
+`busy` / `liveUsage` / `liveTodos` / `pendingQuestion` 只是**当前会话那一份的投影**：
+
+| 时机 | 做什么 |
+| --- | --- |
+| 切走（`loadMessages`） | 不管旧的那一轮，只把界面状态换成新会话的（新会话没在跑就是空） |
+| 流的事件到达 | 先写进 run，再（**仅当正看着这个会话时**）同步给界面 —— 切走期间照常累积 |
+| 切回（`attachRun`） | 把读数、清单、待答问题接回来，并把**还没落盘的那条助手消息重新挂回消息列表** —— 否则切回来只看得到自己的提问 |
+
+之前这里是单个 `AbortController`，切会话直接 `abort()`：那个设计把界面和运行绑成了一件事，
+于是「切出去再切回来」等于把这一轮丢掉。用 Map 还顺带支持了同时跑两个会话（后端本来就是一
+请求一 run），谁也不会覆盖谁。
+
+两个连带点：
+
+- `answerQuestion` 回答完之后，除了清界面上那张卡片，**也要清 run 里那份** —— 不然切走再切
+  回来，`attachRun` 会把已经答过的问题重新挂上。
+- 停止按钮作用于**当前会话自己的**运行，不是"那个正在跑的"：切到别的任务后点停止，停的是这个
+  任务的东西。
+
+> 排查时踩到过的一个坑，记在这里省得下次再迷惑：agent 的流式正文是**按句子边界 flush** 的
+> （见 `agent._run_stream` 里的 `_HOLD_CHARS`），不是每个 delta 都往外发。所以拿"没有句末标点
+> 的短文本"去验证运行中的界面，会看到正文一直为空 —— 那是设计如此（前端 Markdown 更适合整句
+> 渲染），不是事件丢了。
 
 ### 7.15 API 设置页：模型从列表里选
 
@@ -1901,9 +2368,12 @@ Teleport 正是为这种「逻辑上属于 A、DOM 上要放进 B」的场景准
 - 下拉同时开了 `allow-create`，**仍可手动输入后回车新建** —— 有些中转站没有 `/models` 端点，
   或列表里就是没有目标模型。
 
-协议下拉的选项文案用两家官方对自家接口的正式叫法：**OpenAI Chat Completions**
-（`/v1/chat/completions`）与 **Anthropic Messages**（`/v1/messages`）；后端 `Protocol.label`
-是同一份口径，前端的 `PROTOCOL_LABELS` 与它对齐。
+协议下拉的选项**由后端下发**（`GET /protocols`）：展示名用各家对自家接口的正式叫法
+（**OpenAI Chat Completions** `/v1/chat/completions`、**Anthropic Messages** `/v1/messages`、
+**Ollama（本地）**）。前端不再维护一份 `PROTOCOL_LABELS` —— 后端加协议时界面自动多出一项。
+下发的还有 `default_base_url` 与 Key 提示：选中 Ollama 会把地址填成
+`http://localhost:11434/v1`（只在这个地址为空、或还留着上一个协议的默认地址时才动手，
+用户自己填过的地址不覆盖），Key 输入框的 placeholder 也跟着协议变。
 
 **表单收进了弹窗。** 这一页原先上半屏常驻一张添加表单、下半屏才是列表 —— 但配好之后
 日常只是「看列表」，那张表单白占一半高度。现在页面只剩「计数 + 新建按钮 + 列表」，
@@ -1983,7 +2453,7 @@ Teleport 正是为这种「逻辑上属于 A、DOM 上要放进 B」的场景准
 ### 7.18 用量页：手写 SVG，不引图表库
 
 页面分两块：上半是折线（横轴日期、纵轴 token，**一个模型一条线**），下半是按任务的表格。
-只统计 token，不折算金额（理由见 4.13）。
+只统计 token，不折算金额（理由见 4.14）。
 
 **为什么手写 SVG**：引 echarts / chart.js 要给产物添几百 KB，还得在运行时把 CSS 变量
 读出来再喂给它，主题才能跟着切；而这张图的形状是固定的（几个点、几条线），手写反而更短 ——
@@ -2071,7 +2541,7 @@ Teleport 正是为这种「逻辑上属于 A、DOM 上要放进 B」的场景准
 SKILL.md 拆开后的两部分，拼回文件由 `skills.compose_skill` 负责（理由见 4.7）：元信息块
 只认单行 `键: 值`，让用户直接编它，多写一行就会静默解析失败、`description` 丢掉。
 
-写进去的值同样要过 `naming.safe_name`（见 4.14），所以「名字带斜杠」「叫 CON」这类输入
+写进去的值同样要过 `naming.safe_name`（见 4.15），所以「名字带斜杠」「叫 CON」这类输入
 会在点确认时被后端拒绝，文案直接弹给用户 —— 前端不另写一套规则。
 
 ### 7.21 几处小修，以及两个容易反复踩的点
@@ -2143,26 +2613,39 @@ SKILL.md 拆开后的两部分，拼回文件由 `skills.compose_skill` 负责�
 而是把容器高度**量出来**（`ResizeObserver`）传给 `el-table` 的 `height`：它只在拿到具体
 数值时才会「表头固定 + 表体内部滚动」，传 `100%` 它算不出表体高度，等于没设。
 
-### 7.22 确认卡片：放在消息流里，不放弹窗
+### 7.22 确认卡片：浮在输出区底部，不放弹窗也不进消息流
 
-执行前确认的卡片（见 3.9）**内联在消息流末尾**，不用 `el-dialog`：
+执行前确认的卡片（见 3.9）、子代理看板、运行中的任务清单（见 7.14.1）都放在同一个
+**浮在输出区底部、紧贴输入区上方**的浮层里，从上到下按「概览 → 细节 → 要动手的」排：
+任务清单（折叠成一行）、子代理看板、待确认卡片 —— 越往下越靠近输入框。
 
-- **判断依据就在上下文里。** 「该不该允许这条命令」要看模型在上面说了什么、之前调过什么，
-  弹窗会把那些盖住。卡片跟着消息走，滚动一下就能对照着看。
+- **不用弹窗：判断依据就在上下文里。** 「该不该允许这条命令」要看模型在上面说了什么、
+  之前调过什么，弹窗会把那些盖住。浮层只占底部一条，上下文照样能翻。
+- **不放进消息流：放进去就意味着滚走就看不见。** 它出现时会**阻塞**那一轮（服务端在等答案），
+  而用户此刻很可能正往上翻着看模型干了什么 —— 翻两屏回来，卡片已经不在视野里了。
+  子代理看板同理：一个几十秒的工具调用期间，那块「现在在干嘛」的看板不该因为滚动而消失。
 - **它不属于任何一条消息。** 所以状态挂在 `session.pendingQuestion` 上，而不是塞进那条
   助手消息里 —— 塞进去的话它会跟着消息一起写进会话文件，回看历史时会看到一串早已失效的按钮。
 - **答完不重发 `/chat`。** 那一轮还在服务端跑着，只是卡在等答案；前端把答案 POST 过去，
   然后继续从原来那条流里收后续事件。所以卡片的消失只是「清掉 pendingQuestion」，
   不需要任何重新请求的逻辑。
 
+**定位与留白这两件事都不是可有可无的**（见 `ChatView.vue` 的 `.floater`）：
+
+- **用 `bottom: 100%` 相对输入区定位**，而不是相对 `.chat` 算一个偏移：输入框长高
+  （多行、带附件）时浮层自动跟着上移，不用去同步两个高度。
+- **消息区底部要主动留出等高的空间**（`.stream-inner` 的 `padding-bottom`）。浮层是盖在
+  输出区上的、不占高度，不补这块留白的话滚到底时最后一条消息会被永久盖住 —— 那和放回
+  消息流里没什么区别。留白交给一个 `ResizeObserver` 去算（浮层高度 + 20），不是写固定值：
+  卡片展开、计划正文重排、日志追加都会改高度；浮层消失时留白收回 16px。
+
 两个小设计：
 
 - **选项给按钮，不给输入框。** 确认题的选项就两个，点一下比打字快、也不会打错字。
-  模型主动提问（`kind: 'ask'`）通常没有选项，那时才退回输入框 —— 两种形态共用一个 `answerTo`。
+  模型主动提问（`kind: 'ask'`）通常没有选项，那时才退回输入框 —— 两种形态共用一个
+  `answerTo`，反正最终都是「抛一个字符串回去」。
 - **第一个选项是肯定项，给它主色。** 后端 `confirm()` 就是按 `options=(允许, 拒绝)` 定义的，
   前端按**下标**取而不是匹配「允许」这两个字 —— 匹配中文字面量会在改名时静默失效。
-- **同一张卡片管两种问题。** `kind: 'confirm'` 渲染按钮组，`kind: 'ask'` 有选项时也渲染按钮、
-  没选项才退回输入框 —— 两种形态共用一个 `answerTo`，反正最终都是「抛一个字符串回去」。
 
 ### 7.23 停止按钮：和发送按钮共用同一个位置
 
@@ -2207,6 +2690,76 @@ SKILL.md 拆开后的两部分，拼回文件由 `skills.compose_skill` 负责�
 **「按钮 + 补充说明」怎么拼**：约定**第一行是按钮文本，其余是说明**，用换行分隔。
 用换行而不是冒号，是因为用户写的说明里完全可能有冒号，而按钮文本那一行一定干净。
 判定只看第一行 —— 用户在说明里随手写个「驳回」不该把结论翻过来（有测试钉着这条）。
+
+---
+
+### 7.25 消息流跟随最新内容
+
+对话全是「新内容长在底部」，所以消息区必须自己跟着滚 —— 但**别用事件驱动**。
+
+原先的写法是：`sendMessage` 收到文本增量、工具步骤、子代理事件、提问卡片时回调 `onProgress`，
+视图接到就滚到底。它漏掉的是最关键的一类时机 —— **内容长高了，却没有任何事件**：
+
+- 一轮结束时的 `done` 会把整条消息**换成后端那份**（正文、工具步骤、统计一起 `Object.assign`），
+  正文可能和流式期间拼出来的不完全一样，高度跟着变；
+- Markdown 是整段重排的，代码块、表格的最终高度可能比最后一个文本增量晚一拍才定下来。
+
+结果就是「流早就停了，最后一段却还在折叠线下面，得手动滚一下」。
+
+现在改成**盯住内容区本身的高度**（`ResizeObserver` 观察 `.stream-inner`）：谁把它撑高的都算，
+一个时机都漏不掉。`session.ts` 里的 `onProgress` 也随之删掉 —— 视图怎么滚动是视图的事，
+store 不该管。两条配套细节：
+
+| 点 | 做法 | 为什么 |
+| --- | --- | --- |
+| 不硬跟 | 距底部 120px 以内才跟；用户往上翻就停住，自己滚回来再继续 | 一轮长任务里「边跑边回看」和「跟着看最新一行」一样常用，硬跟等于把滚动条从用户手里抢走 |
+| 不用组件实例 | `inner.closest('.el-scrollbar__wrap')` 直接取滚动容器 | 这里只需要读 `scrollHeight`、写 `scrollTop` 两件事，而实例上有没有暴露 `setScrollTop` 取决于 Element Plus 版本 —— 拿不到会**静默地不滚**，没有任何提示 |
+
+### 7.26 联网搜索页：把「搜」和「读」拆成两个工具
+
+一个页面配一份配置（后端、Key、端点、默认条数），外加一个「不用先保存就能测」的连通测试。
+配置本身的设计理由在 4.13，这里只记界面和工具上值得说的几处。
+
+**页面紧挨着「API 设置」。** 它和模型配置是同一类东西 —— 一份「外部服务的地址 + Key」，
+只是服务的是搜索而不是模型。所以导航上挨着放，而不是塞进「偏好设置」（那一页明确只管
+「只影响本地界面」的选项，密钥不属于那一类）。
+
+**后端清单由接口一起下发**（`GET /search` 连着 `backends` 返回），前端不硬编码。
+多支持一家搜索服务时只改后端，界面上自动出现那一项。
+
+**Key 输入框绑的是计算属性，不是 `form.keys[form.backend]`。** 没配过的后端在 `keys` 里
+根本没有这个键，直接绑会绑到 `undefined` 上，输入框从「未受控」变成「受控」，控制台滚
+一个警告。
+
+**测试走的是界面上当前填的配置，不是已保存的那份。** 先测通了再存，比存完发现 Key 是错的
+再改了重存省一轮往返。失败返回 200（`ok: false`）—— 「Key 填错了」是填错了，不是服务端
+故障。搜到 0 条算成功，界面单独说一句「这个词没结果，Key 和网络是通的」，免得用户看到
+空列表以为又失败了。
+
+**两个工具是一对，分工是「搜」便宜、「读」贵：**
+
+| 工具 | 给模型什么 | 什么时候用 |
+| --- | --- | --- |
+| `web_search` | 标题 + 地址 + 摘要 | 先看清楚「有哪些候选」 |
+| `web_fetch` | 针对**它自己的问题**的摘录 | 从候选里挑一两篇细读 |
+
+**`web_fetch` 的 `prompt` 是必填，这是整个设计的支点，不是随手加的约束。** 整页正文动辄
+几千字，全塞进上下文就等于把一个它本来只关心两句话的页面整个交出去。一旦 `prompt` 可以
+省略，模型就会习惯性「先抓来再说」，而且**它自己不会知道窗口为什么突然不够用了**。
+
+**抓回来的正文先过一次压缩再交给主模型**（`_summarize`）：用当前模型带着那个问题把正文
+读薄，只把相关的那几百字带回来。这和 subagent 是同一个思路 —— 都是 context 压缩机制，
+而且两者共用一份用量账（摘要那次调用的 token 会并进这一轮，否则花了钱却不出现在用量页上）。
+
+**压缩失败不该让「读网页」整体失败。** 不在一次运行里（直接调用 / 测试）、超时、限流、
+模型名不认 —— 全都退回「原文节选」，并明说这是节选，免得模型以为整页就这么短。
+
+**没配 Key 时返回的是一句「去哪儿填」，而不是一个错误。** 工具契约要求异常转成可读文本
+（见 3.2），而且模型会把它原样转述给用户 —— 提示里不指出「打开左侧联网搜索页」，用户
+拿到的就只是一句「搜索失败」。
+
+**工具不自动生效。** 配好之后还要到工具页把这两个加进要用的工具组 —— 工具给不给由工具组
+决定，没有第二份开关（见 3.2）。
 
 ---
 

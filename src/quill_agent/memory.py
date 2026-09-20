@@ -22,6 +22,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, ValidationError
 
+from quill_agent.locking import atomic_write_text, file_lock
 from quill_agent.store import read_json
 
 # 记忆条数上限。它要以清单形式常驻上下文，放任增长就等于把「按需加载」又改回
@@ -98,33 +99,40 @@ class MemoryStore:
                 f"这条太长了（{len(cleaned)} 字，上限 {MAX_MEMORY_CHARS} 字），请压缩成一句话。"
             )
 
-        items = self.list()
-
-        # 完全相同的正文不再记第二遍：模型每轮都可能想「记一下」，
-        # 不去重的话同一件事会被反复写进来，把清单撑满
-        if any(item.text == cleaned for item in items):
-            raise ValueError("这条已经记过了，不需要重复记录。")
-
-        if len(items) >= MAX_MEMORIES:
-            raise ValueError(
-                f"记忆已满（上限 {MAX_MEMORIES} 条）。请提醒用户到「记忆」页面清理一些。"
-            )
-
         item = MemoryItem(
             id=uuid4().hex,
             text=cleaned,
             created_at=datetime.now().isoformat(timespec="seconds"),
         )
-        self._save_all([item, *items])
+
+        # 去重与上限都在锁内、对着同一份快照判：模型可能连着两轮都想「记一下」，
+        # 而两套界面也可能同时写同一个文件
+        with file_lock(self._path):
+            items = self.list()
+
+            # 完全相同的正文不再记第二遍：模型每轮都可能想「记一下」，
+            # 不去重的话同一件事会被反复写进来，把清单撑满
+            if any(existing.text == cleaned for existing in items):
+                raise ValueError("这条已经记过了，不需要重复记录。")
+
+            if len(items) >= MAX_MEMORIES:
+                raise ValueError(
+                    f"记忆已满（上限 {MAX_MEMORIES} 条）。请提醒用户到「记忆」页面清理一些。"
+                )
+
+            self._save_all([item, *items])
+
         return item
 
     def set_enabled(self, memory_id: str, enabled: bool) -> None:
         """切换某条记忆是否参与注入。"""
-        items = [
-            item.model_copy(update={"enabled": enabled}) if item.id == memory_id else item
-            for item in self.list()
-        ]
-        self._save_all(items)
+        with file_lock(self._path):
+            self._save_all(
+                [
+                    item.model_copy(update={"enabled": enabled}) if item.id == memory_id else item
+                    for item in self.list()
+                ]
+            )
 
     def forget(self, text: str) -> MemoryItem:
         """按原文忘掉一条记忆。
@@ -144,13 +152,14 @@ class MemoryStore:
         if not target:
             raise ValueError("要忘掉的内容不能为空。")
 
-        items = self.list()
-        for index, item in enumerate(items):
-            if item.text != target:
-                continue
+        with file_lock(self._path):
+            items = self.list()
+            for index, item in enumerate(items):
+                if item.text != target:
+                    continue
 
-            self._save_all(items[:index] + items[index + 1 :])
-            return item
+                self._save_all(items[:index] + items[index + 1 :])
+                return item
 
         raise ValueError(
             f"没有找到内容为「{target}」的记忆。"
@@ -159,7 +168,8 @@ class MemoryStore:
 
     def remove(self, memory_id: str) -> None:
         """删除一条记忆；id 不存在时静默忽略（和别的 store 保持一致）。"""
-        self._save_all([item for item in self.list() if item.id != memory_id])
+        with file_lock(self._path):
+            self._save_all([item for item in self.list() if item.id != memory_id])
 
     def clear(self) -> int:
         """清空全部记忆。
@@ -167,14 +177,18 @@ class MemoryStore:
         Returns:
             被删掉的条数。
         """
-        removed = len(self.list())
-        self._save_all([])
+        with file_lock(self._path):
+            removed = len(self.list())
+            self._save_all([])
+
         return removed
 
     def _save_all(self, items: list[MemoryItem]) -> None:
-        """整体覆写：记忆条数天然很少，简单可靠优先。"""
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(
+        """整体覆写：记忆条数天然很少，简单可靠优先。
+
+        与别的存储一样：调用方持锁进入，落盘走原子替换（见 `file_lock`）。
+        """
+        atomic_write_text(
+            self._path,
             json.dumps([item.model_dump() for item in items], ensure_ascii=False, indent=2),
-            encoding="utf-8",
         )

@@ -4,7 +4,7 @@
 模型给出的任何路径都会先过 PathGuard 校验，越界（例如 ../../.ssh/id_rsa）
 直接拒绝 —— 而不是指望模型「看到工作目录后自觉不去碰外面」。
 
-七个工具的分工：
+十个工具的分工：
 
     list_dir        看目录里有什么（模型的「眼睛」，没有它只能猜文件名）
     read_file       读文件内容（带行号，超长自动截断并给出续读方式）
@@ -12,7 +12,10 @@
     edit_file       局部替换（比整文件重写省 token，也不容易误改别处）
     search_content  按正则搜文件内容（跳过依赖缓存与构建产物）
     search_files    按文件名模式找文件
-    delete_file     删除文件（写操作里最危险的一个）
+    make_dir        新建目录（父目录不存在时一并创建）
+    move_file       移动 / 重命名（文件或目录）
+    copy_file       复制（文件或目录，原文件保留）
+    delete_file     删除文件或空目录（写操作里最危险的一个）
 
 两条贯穿始终的约束：
     1. 读取一律截断 —— 一个几千行的文件足以把上下文吃光；
@@ -147,6 +150,25 @@ def current_work_dir() -> Path:
     return get_settings().work_dir.resolve()
 
 
+def work_dir_change_error(conversation_has_messages: bool) -> str | None:
+    """换工作目录前的业务规则；返回错误文案，None 表示可以换。
+
+    只允许**空会话**换：工作目录是文件工具的安全边界，聊到一半换掉的话，模型脑子里
+    「我读过哪些文件」和实际边界就对不上了（历史里还留着旧目录的文件内容，而新目录下
+    同名文件是另一个东西）。
+
+    这条规则放在业务层而不是路由里 —— 它和界面无关，而**规则留在某一个界面里就会漏**：
+    上一个界面（已删掉的 Streamlit 版）就没有这道校验，TUI 再写一遍同样会漏。
+
+    Args:
+        conversation_has_messages: 当前会话是否已经有消息。由调用方判断 ——
+            业务层不该反向依赖会话存储。
+    """
+    if conversation_has_messages:
+        return "会话已经开始，不能再改工作目录。"
+    return None
+
+
 def set_work_dir(raw: str) -> str | None:
     """设置工作目录。
 
@@ -222,7 +244,7 @@ def save_attachments(files: list) -> list[SavedAttachment]:
     同名文件直接覆盖：附件是这一轮的输入，不需要保留历史版本。
 
     Args:
-        files: 上传的文件对象列表（Streamlit 的 UploadedFile / server 的适配壳）。
+        files: 上传的文件对象列表（由 server 侧的适配壳提供，见 routes/chat.py）。
 
     Returns:
         每个附件一条记录。目录都建不出来时返回一条带 error 的记录 ——
@@ -243,7 +265,8 @@ def save_attachments(files: list) -> list[SavedAttachment]:
         name = Path(str(getattr(item, "name", "attachment"))).name or "attachment"
 
         try:
-            # Streamlit 的 UploadedFile 是 BytesIO 子类，getbuffer() 拿到原始字节
+            # 上传对象可能是 BytesIO 子类（getbuffer() 能一次拿到全部字节），
+            # 也可能只有 read()，两种都认
             raw = item.getbuffer() if hasattr(item, "getbuffer") else item.read()
             path = target_dir / name
             path.write_bytes(bytes(raw))
@@ -441,6 +464,45 @@ def _target(
         return None, f"不是目录：{path}"
 
     return target, ""
+
+
+def _destination(path: str) -> tuple[Path | None, str]:
+    """解析一个**将要写入**的目标路径（新建 / 移动 / 复制的落点）。
+
+    比 `_target` 多两条规矩，都是写操作特有的：
+
+        1. **目标必须还不存在** —— 覆盖是这条链上最容易误伤的动作。两个工具都
+           选择「不覆盖」：模型要替换一个已有文件，先 delete_file 是明确的，
+           而「复制过去把原来的盖掉」往往不是它真正想要的；
+        2. **父目录必须已经存在** —— 顺带把目录建出来听着方便，但一次手滑就能
+           在错的地方铺出一整条路径。宁可让调用方先用 make_dir。
+
+    Returns:
+        (路径, 错误文案)。成功时错误是空串，失败时路径是 None。
+    """
+    target, error = _target(path, want="any", must_exist=False)
+    if error:
+        return None, error
+
+    if target.exists():
+        return None, f"目标已存在：{path}（本工具不覆盖已有内容；确实要替换就先 delete_file）"
+
+    if not target.parent.is_dir():
+        return None, f"目标所在的目录不存在：{target.parent}（先用 make_dir 建出目录）"
+
+    return target, ""
+
+
+def _points_to_same(src: Path, raw: str) -> bool:
+    """目标写法是否和 `src` 指向同一处。
+
+    解析不出来（越界、非法路径）时一律返回 False —— 那种情况真正的说明由
+    `_destination` 给出，这里只负责把「源和目标本来就是同一个」提前挑出来。
+    """
+    try:
+        return guard().resolve((raw or "").strip() or ".") == src
+    except ValueError:
+        return False
 
 
 @registry.tool(
@@ -641,6 +703,10 @@ def edit_file(path: str, old_string: str, new_string: str) -> str:
         return f"{error}（edit_file 只能改已经存在的文件）"
 
     try:
+        # 大小上限和 read_file 同一把尺子：edit_file 也得把整个文件读进内存才谈得上
+        # 替换，几十 MB 的文件既慢又可能把内存撑爆
+        if target.stat().st_size > MAX_FILE_BYTES:
+            return f"文件太大（超过 {MAX_FILE_BYTES // 1024} KB），edit_file 不改它。"
         text = target.read_text(encoding="utf-8")
     except (UnicodeDecodeError, OSError) as exc:
         return f"读取失败：{exc}"
@@ -671,13 +737,34 @@ def edit_file(path: str, old_string: str, new_string: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 搜索与删除
+# 搜索 / 新建 / 移动 / 复制 / 删除
 # ---------------------------------------------------------------------------
-def _walk_files(root: Path, file_pattern: str = "") -> Iterator[Path]:
-    """遍历目录下的文件，顺手剪掉噪声目录。
+def _within(path: Path, boundary: Path) -> bool:
+    """路径解析后是否仍在边界内。
+
+    解析（`resolve`）会展开 `..` 并跟随符号链接 —— 和 `PathGuard.resolve` 一个口径。
+    """
+    try:
+        return path.resolve().is_relative_to(boundary)
+    except OSError:
+        return False
+
+
+def _walk_files(root: Path, boundary: Path, file_pattern: str = "") -> Iterator[Path]:
+    """遍历目录下的文件，顺手剪掉噪声目录与越界的软链。
 
     用 os.walk 而不是 rglob：要在**进入目录之前**就砍掉 .venv 这类目录。
     先进去再过滤，等于白读几万个文件。
+
+    Args:
+        root: 遍历起点。
+        boundary: 安全边界（工作目录）。
+
+    为什么这里必须自己判一次边界：`os.walk` 默认不「进入」软链目录，但
+    **指向文件的软链仍会出现在 `filenames` 里**。搜索类工具原先直接读这些路径，
+    于是「工作目录里放一个指向 `~/.ssh/id_rsa` 的软链」就能让 `search_content`
+    读出内容 —— 而同样的文件 `read_file` 会被 PathGuard 拦下。同一个边界两种
+    行为，等于没有边界。
     """
     for current, subdirs, filenames in os.walk(root):
         # 原地修改 subdirs 才会让 os.walk 真的跳过这些目录
@@ -686,15 +773,25 @@ def _walk_files(root: Path, file_pattern: str = "") -> Iterator[Path]:
         for name in filenames:
             if file_pattern and not fnmatch.fnmatch(name, file_pattern):
                 continue
-            yield Path(current) / name
+
+            candidate = Path(current) / name
+            # 只在「它是个软链」时才多花一次 resolve()：普通文件的父目录已经在
+            # 边界内（遍历起点就是边界内的），没必要对每个文件都解析一遍
+            if candidate.is_symlink() and not _within(candidate, boundary):
+                continue
+
+            yield candidate
 
 
 def _read_text_safely(path: Path) -> str | None:
     """尽力把文件当文本读出来；二进制、超大、无权限一律返回 None。"""
     try:
-        if path.stat().st_size > MAX_FILE_BYTES:
+        # 读解析后的路径：检查与读取之间隔着一次系统调用，直接读原路径的话，
+        # 软链有机会在这中间被换掉（_walk_files 那道过滤就白做了）
+        resolved = path.resolve()
+        if resolved.stat().st_size > MAX_FILE_BYTES:
             return None
-        return path.read_text(encoding="utf-8")
+        return resolved.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return None
 
@@ -710,6 +807,22 @@ def _match_pattern(relative: Path, pattern: str) -> bool:
         fnmatch.fnmatch(str(relative), item) or fnmatch.fnmatch(relative.name, item)
         for item in patterns
     )
+
+
+# 灾难性回溯的典型形状：一个分组里带重复量词，分组外又跟一个量词（`(a+)+`、`(\w*)*`）。
+#
+# 为什么要拦：Python 的 `re` **没有超时机制**，一个写歪的模式会让整个进程卡死 ——
+# 而这个模式是模型随手生成的、没人审过。这里宁可拒绝一个本来能用的模式
+# （模型收到提示后会换个更具体的写法，代价很小），也不要让服务挂在上面。
+#
+# 这是**启发式**，不是证明：它只覆盖最常见的形状。误伤面刻意压得很小 ——
+# 只认「分组里的量词」这一种，像 `a*b*` 这种正常的相邻量词不拦
+_NESTED_QUANTIFIER = re.compile(r"\([^()]*[+*}][^()]*\)\s*[+*{]")
+
+
+def _unsafe_pattern(pattern: str) -> bool:
+    """模式里有没有灾难性回溯的典型形状。"""
+    return bool(_NESTED_QUANTIFIER.search(pattern))
 
 
 @registry.tool(
@@ -742,6 +855,8 @@ def _match_pattern(relative: Path, pattern: str) -> bool:
         "required": ["pattern"],
     },
 )
+
+
 def search_content(
     pattern: str,
     path: str = ".",
@@ -749,6 +864,12 @@ def search_content(
     max_results: int = DEFAULT_MAX_RESULTS,
 ) -> str:
     """在文件内容里做正则搜索，返回「文件:行号: 内容」形式的命中列表。"""
+    if _unsafe_pattern(pattern):
+        return (
+            "这个正则容易被灾难性回溯拖死（分组里带量词、外面又跟量词，比如 `(a+)+`）。"
+            "换个写法：把它拆开，或者用一个更具体的前缀。"
+        )
+
     try:
         regex = re.compile(pattern)
     except re.error as exc:
@@ -766,7 +887,7 @@ def search_content(
     scanned = 0
     truncated = False
 
-    for file in _walk_files(root, file_pattern):
+    for file in _walk_files(root, base, file_pattern):
         text = _read_text_safely(file)
         if text is None:
             continue
@@ -844,7 +965,7 @@ def search_files(
     matched: list[str] = []
     truncated = False
 
-    for file in _walk_files(root):
+    for file in _walk_files(root, base):
         if not _match_pattern(file.relative_to(root), pattern):
             continue
 
@@ -866,27 +987,174 @@ def search_files(
 
 @registry.tool(
     description=(
-        "删除一个文件。确认某个文件确实不再需要时才使用 —— 这是不可撤销的操作。"
-        "不能用来删除目录。"
+        "创建一个目录，父目录不存在时一并创建。已经存在时不算错，会告诉你它本来就在。"
+        "要写一个新文件不需要先建目录 —— write_file 会自己建父目录。"
     ),
     category="文件",
     parameters={
         "type": "object",
         "properties": {
-            "path": {"type": "string", "description": "要删除的文件路径，相对工作目录"},
+            "path": {"type": "string", "description": "目录路径，相对工作目录"},
+        },
+        "required": ["path"],
+    },
+)
+def make_dir(path: str) -> str:
+    """创建目录（含多级父目录）。"""
+    # 允许路径不存在 —— 这个工具的职责就是把它建出来
+    target, error = _target(path, want="any", must_exist=False)
+    if error:
+        return error
+
+    if target.exists():
+        if target.is_dir():
+            return f"目录已存在：{path}"
+        return f"已存在同名文件，无法创建目录：{path}"
+
+    try:
+        target.mkdir(parents=True)
+    except OSError as exc:
+        return f"创建目录失败：{exc}"
+
+    return f"已创建目录：{path}"
+
+
+@registry.tool(
+    description=(
+        "移动或重命名一个文件 / 目录。"
+        "目标路径必须还不存在 —— 本工具不覆盖已有内容。"
+        "「重命名」就是移到同一目录下的新名字。"
+    ),
+    category="文件",
+    parameters={
+        "type": "object",
+        "properties": {
+            "source": {"type": "string", "description": "要移动的路径，相对工作目录"},
+            "destination": {"type": "string", "description": "移动到的目标路径，相对工作目录"},
+        },
+        "required": ["source", "destination"],
+    },
+)
+def move_file(source: str, destination: str) -> str:
+    """移动 / 重命名文件或目录。"""
+    src, error = _target(source, want="any")
+    if error:
+        return f"{error}（要移动的路径必须存在）"
+
+    if src == guard().root:
+        return "不能移动工作目录本身。"
+
+    # 源和目标指向同一处时先说明 —— 否则下一步会以「目标已存在」为由拒绝，
+    # 而那句报错会把人引偏
+    if _points_to_same(src, destination):
+        return f"源和目标相同，无需移动：{source}"
+
+    dst, error = _destination(destination)
+    if error:
+        return error
+
+    # 目录不能移进自己内部：shutil 会抛一句难懂的系统错误，这里提前说清
+    if src.is_dir() and dst.is_relative_to(src):
+        return "目标在源目录内部，无法移动。"
+
+    kind = "目录" if src.is_dir() else "文件"
+
+    try:
+        shutil.move(str(src), str(dst))
+    except OSError as exc:
+        return f"移动失败：{exc}"
+
+    return f"已移动{kind}：{source} -> {destination}"
+
+
+@registry.tool(
+    description=(
+        "复制一个文件或目录，原文件保留。"
+        "目标路径必须还不存在 —— 本工具不覆盖已有内容。"
+        "复制目录时会连同里面的内容一起复制。"
+    ),
+    category="文件",
+    parameters={
+        "type": "object",
+        "properties": {
+            "source": {"type": "string", "description": "要复制的路径，相对工作目录"},
+            "destination": {"type": "string", "description": "复制到的目标路径，相对工作目录"},
+        },
+        "required": ["source", "destination"],
+    },
+)
+def copy_file(source: str, destination: str) -> str:
+    """复制文件或目录。"""
+    src, error = _target(source, want="any")
+    if error:
+        return f"{error}（要复制的路径必须存在）"
+
+    if src == guard().root:
+        return "不能复制整个工作目录。"
+
+    # 同 move_file：源和目标相同时先说明，别让它以「目标已存在」收场
+    if _points_to_same(src, destination):
+        return f"源和目标相同，无需复制：{source}"
+
+    dst, error = _destination(destination)
+    if error:
+        return error
+
+    if src.is_dir():
+        if dst.is_relative_to(src):
+            return "目标在源目录内部，无法复制。"
+        try:
+            # symlinks=True：目录里的符号链接照原样复制过去，**不跟随**。
+            # 跟随的话，一个指向工作目录外的链接会把外面那份内容抄进工作目录 ——
+            # 文件工具承诺的是「只碰工作目录」，不能从这个口子漏进来
+            shutil.copytree(src, dst, symlinks=True)
+        except OSError as exc:
+            return f"复制失败：{exc}"
+        return f"已复制目录：{source} -> {destination}"
+
+    try:
+        shutil.copy2(src, dst)  # copy2 连时间戳一起带过去
+    except OSError as exc:
+        return f"复制失败：{exc}"
+
+    return f"已复制文件：{source} -> {destination}"
+
+
+@registry.tool(
+    description=(
+        "删除一个文件，或一个**空**目录。确认它确实不再需要时才使用 —— 这是不可撤销的操作。"
+        "目录非空时会拒绝，需要先清掉里面的内容。"
+    ),
+    category="文件",
+    parameters={
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "要删除的路径，相对工作目录"},
         },
         "required": ["path"],
     },
 )
 def delete_file(path: str) -> str:
-    """删除文件（不删目录）。"""
-    target, error = _target(path, want="file")
+    """删除文件或空目录。"""
+    target, error = _target(path, want="any")
     if error:
-        return f"{error}（本工具只删除文件）"
+        return error
+
+    if target == guard().root:
+        return "不能删除工作目录本身。"
+
+    if target.is_dir():
+        # 只删空目录。递归删除是另一回事 —— 一次误判就没了整棵目录树，
+        # 这个工具不打算承担那种风险
+        try:
+            target.rmdir()
+        except OSError as exc:
+            return f"删除失败：{exc}（本工具只删除空目录，请先清空里面的内容）"
+        return f"已删除空目录：{path}"
 
     try:
         target.unlink()
     except OSError as exc:
         return f"删除失败：{exc}"
 
-    return f"已删除：{path}"
+    return f"已删除文件：{path}"

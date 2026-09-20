@@ -2,9 +2,14 @@
 /**
  * 上下文用量仪表盘：占用 / 窗口，一个占比圆环 + `xxk/xxk` 文字。
  *
- * 两个数字的来源：
- *   - **占用**取最近一条真正发过请求的 assistant 消息的 `stats.prompt_tokens`。
- *     那正是「这一轮发出去的全部上下文」有多大，比数消息条数准确得多。
+ * 读数从哪来：
+ *   - **运行中**优先用流里播报的实时读数（`session.liveUsage`）。一轮里模型会被请求
+ *     多次（每执行完一轮工具再问一次），上下文一路在长；每拿到一次用量就刷新一次，
+ *     所以读数是**跟上去**的，而不是全程停在上一轮、跑完才跳一下。
+ *   - **没在跑**（或服务端不发用量）时退回读最近一条真正发过请求的 assistant 消息的
+ *     `stats.context_tokens` —— 它和最后一次播报本来就是同一个值。
+ *     这两处都不能读 `prompt_tokens`：一轮里每请求一次就要把同一份上下文重发一遍，
+ *     那个字段是累计的账单，一个读了十来个文件的轮次能把它累到真实的十倍以上。
  *   - **窗口**取当前所选模型**这个模型**的窗口大小（在「API 设置」里配，按模型分开填）。
  *     没填就是 0，显示「—」而不是拿一个默认值硬凑 —— 错的占比比没有占比更糟。
  *
@@ -15,14 +20,32 @@ import { computed } from 'vue'
 
 import { session } from '../stores/session'
 
-/** 从后往前找最后一条带 prompt_tokens 的消息；没有就返回 0。 */
-const used = computed(() => {
+/**
+ * 从后往前找最后一条有上下文读数的消息；没有就返回 0。
+ *
+ * 退回 `prompt_tokens` 只对「加 `context_tokens` 之前落盘的老记录」生效 ——
+ * 那些记录里最后一次请求的输入量没被记下来，只能拿累计值顶上（偏高，
+ * 但比显示 0 更像「有数据」）。发一条新消息就会恢复正常。
+ */
+function fromMessages(): number {
   for (let i = session.messages.length - 1; i >= 0; i -= 1) {
-    const tokens = session.messages[i].stats?.prompt_tokens
+    const stats = session.messages[i].stats
+    if (!stats) continue
+
+    const tokens = stats.context_tokens || stats.prompt_tokens
     if (tokens) return tokens
   }
   return 0
-})
+}
+
+/**
+ * 运行中播报的读数优先：它比消息上的 `stats` 新。
+ *
+ * 消息里的 `stats` 要等这一轮落盘（`done`）才有 —— 只读它的话，整个跑的过程中读数
+ * 都停在上一轮，跑完才跳一下。运行中的每个 `usage` 事件都给一个当时的上下文大小，
+ * 所以这个数是一路跟着长上去的。
+ */
+const used = computed(() => session.liveUsage || fromMessages())
 
 const windowSize = computed(() => {
   const option = session.models.find((item) => item.key === session.modelKey)

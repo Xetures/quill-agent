@@ -13,6 +13,15 @@ const OPTIONS: { value: ThemeMode; label: string; hint: string }[] = [
 
 const version = ref('')
 
+/**
+ * 单轮对话的开销上限（token 数的字符串形式）。
+ *
+ * 存成字符串是因为偏好文件里全是字符串（见后端 `preferences.py`），
+ * 空串 = 不限制 —— 这样「没配过」和「配了 0」是同一种状态，不用分两套判断。
+ */
+const MAX_RUN_TOKENS_KEY = 'max_run_tokens'
+const maxRunTokens = ref('')
+
 onMounted(async () => {
   // 版本号只有探活接口有。拿不到就不显示，不值得为它加一个专门的端点
   try {
@@ -21,7 +30,23 @@ onMounted(async () => {
   } catch {
     version.value = ''
   }
+
+  // 键不存在就留空（= 不限制），不写默认值回文件 —— 用户没配过的东西不该被我们改
+  try {
+    const prefs = await api.get<Record<string, string>>('/preferences')
+    maxRunTokens.value = prefs[MAX_RUN_TOKENS_KEY] ?? ''
+  } catch {
+    maxRunTokens.value = ''
+  }
 })
+
+async function saveBudget(): Promise<void> {
+  // 空串照传：后端把它当作「不限制」。**不能跳过保存** —— 那用户就没法把
+  // 已经设过的上限改回不限制了
+  await api.put('/preferences', {
+    values: { [MAX_RUN_TOKENS_KEY]: maxRunTokens.value.trim() },
+  })
+}
 </script>
 
 <template>
@@ -58,6 +83,24 @@ onMounted(async () => {
     </section>
 
     <section class="group">
+      <h2>对话</h2>
+      <p class="muted desc">
+        单轮对话最多花多少 token。超过就当场停下 —— 一轮里模型可能被请求很多次，
+        光靠「最多几步」管不住花了多少钱。留空或填 0 表示不限制。
+      </p>
+
+      <div class="field">
+        <el-input
+          v-model="maxRunTokens"
+          class="budget-input"
+          placeholder="例如 200000"
+          @change="saveBudget"
+        />
+        <span class="muted unit">token / 轮</span>
+      </div>
+    </section>
+
+    <section class="group">
       <h2>关于</h2>
       <div class="app-info">
         <!-- 大尺寸图标（1024，带羽毛细节的那版）：这里放得下，也就只有这里用得到 -->
@@ -80,6 +123,20 @@ onMounted(async () => {
   margin-top: 28px;
   padding-top: 24px;
   border-top: 1px solid var(--border);
+}
+
+.field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.budget-input {
+  width: 200px;
+}
+
+.unit {
+  font-size: 12px;
 }
 
 .app-info {

@@ -7,7 +7,7 @@ from quill_agent.tools import files
 
 
 class FakeUpload(io.BytesIO):
-    """Streamlit 的 UploadedFile 就是 BytesIO 子类，多一个 name 属性。"""
+    """上传对象是 BytesIO 子类、多一个 name 属性时也要能读出来。"""
 
     def __init__(self, name: str, data: bytes) -> None:
         super().__init__(data)
@@ -67,7 +67,7 @@ def test_multiple_attachments(monkeypatch, tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # 路径解析与校验（_target）
 #
-# 直接测这个内部函数：它是七个个工具共同的第一步，也是整套文件工具的**安全
+# 直接测这个内部函数：它是所有文件工具共同的第一步，也是整套文件工具的**安全
 # 边界**。单独测它比逐个工具去构造「越界路径」省事得多，覆盖面还更全。
 # ---------------------------------------------------------------------------
 

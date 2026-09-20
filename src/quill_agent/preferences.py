@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from quill_agent.locking import atomic_write_text, file_lock
 from quill_agent.store import read_json
 
 # 草稿类偏好的键前缀：一个会话一份，避免互相覆盖
@@ -22,6 +23,12 @@ DRAFT_KEY_PREFIX = "prompt_draft"
 # 模式偏好的键前缀。模式同样按会话记：任务是「用这个模式在聊」，
 # 切到另一个任务就该回到那个任务自己的模式，而不是把上一个任务的模式带过去
 MODE_KEY_PREFIX = "mode"
+
+# 单轮对话的开销上限（token，以字符串存）。空串 / 非法值 / 0 一律表示**不限制**。
+#
+# 放偏好文件而不是只写 .env：阈值这种东西用户会想边用边调，改 .env 得重启进程。
+# 它是安全阀而不是必配项 —— 没配就维持原来的行为（只受 MAX_ITERATIONS 约束）。
+MAX_RUN_TOKENS_KEY = "max_run_tokens"
 
 
 def draft_key(conversation_id: str) -> str:
@@ -65,30 +72,29 @@ class PreferenceStore:
         return value if isinstance(value, str) else default
 
     def set(self, key: str, value: str) -> None:
-        """写入一个偏好，保留文件里的其他键；值没变则不落盘。"""
-        data = self._load()
-        if data.get(key) == value:
-            return
+        """写入一个偏好，保留文件里的其他键；值没变则不落盘。
 
-        data[key] = value
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        「读 → 改 → 写」整段在文件锁里：前端是**每个键各发一个请求**，
+        而后端把同步路由跑在线程池里 —— 两个请求真会并发。不加锁的话，
+        它们各自读一份快照再整份写回，后写的那个会把先写的键抹掉。
+        """
+        with file_lock(self.path):
+            data = self._load()
+            if data.get(key) == value:
+                return
+
+            data[key] = value
+            atomic_write_text(self.path, json.dumps(data, ensure_ascii=False, indent=2))
 
     def remove(self, key: str) -> None:
         """删除一个偏好；不存在时静默忽略。"""
-        data = self._load()
-        if key not in data:
-            return
+        with file_lock(self.path):
+            data = self._load()
+            if key not in data:
+                return
 
-        del data[key]
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+            del data[key]
+            atomic_write_text(self.path, json.dumps(data, ensure_ascii=False, indent=2))
 
     def _load(self) -> dict[str, Any]:
         """读取整个文件；任何异常都退回空字典。"""

@@ -229,7 +229,7 @@ def deactivate(token: Token) -> None:
 
 
 def current() -> Interaction | None:
-    """当前这一轮的通道；没有（单元测试 / Streamlit / 非对话场景）时返回 None。"""
+    """当前这一轮的通道；没有（单元测试 / 非对话场景）时返回 None。"""
     return _current.get()
 
 
@@ -252,7 +252,7 @@ def ask(
 ) -> str | None:
     """问用户一个问题并阻塞等答案；没有通道时直接返回 None。
 
-    没有通道**不抛异常**：「没法问」是这类场景的常态（Streamlit 版就没有这条通道），
+    没有通道**不抛异常**：「没法问」是这类场景的常态（单元测试、纯脚本调用都没有这条通道），
     不该被当成错误。但调用方必须处理这个分支 —— 见 `confirm` 对 None 的说明。
     """
     channel = _current.get()

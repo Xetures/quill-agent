@@ -31,13 +31,45 @@ export interface RunStats {
   prompt_tokens: number
   completion_tokens: number
   total_tokens: number
+  /**
+   * 最后一次请求的输入量 = 这一轮结束时上下文实际有多大。
+   *
+   * 和 `prompt_tokens` 不是一个口径：后者是一轮里多次请求的累加（每轮都要重发
+   * 同一份上下文），值随工具轮次多少虚高几倍到十几倍。仪表盘要的是窗口占用，
+   * 所以读这个。
+   *
+   * 标成可选是因为它是后加的字段，在这之前落盘的记录里没有（见下面的 `elapsed`，
+   * 同一个理由）。
+   */
+  context_tokens?: number
   /** 整轮耗时（秒），含工具执行。 */
   elapsed: number
 }
 
-export interface Message {
-  role: 'user' | 'assistant'
+/** 任务清单里一项的状态；和后端 `tools/todo.py` 的 STATUSES 一一对应。 */
+export type TodoStatus = 'pending' | 'in_progress' | 'completed'
+
+/**
+ * 任务清单里的一项。
+ *
+ * 由 `todo_write` 工具产生。清单是**全量替换**的 —— 后端的每一次提交都带着完整条目，
+ * 前端不用做增量合并（那正是「每次都提交完整清单」换来的好处）。
+ */
+export interface TodoItem {
   content: string
+  status: TodoStatus
+}
+
+export interface Message {
+  /**
+   * `summary` 是压缩产物（见 agent 的 `SummaryMade`）：它覆盖它之前的全部记录，
+   * 界面上渲染成一张「已压缩」的卡片。**原文一条都没删** —— 压缩只是「发给模型
+   * 多少」的取舍，不是数据销毁。
+   */
+  role: 'user' | 'assistant' | 'summary'
+  content: string
+  /** 摘要覆盖到第几条记录（1-based）。只有 `role === 'summary'` 的记录带它。 */
+  covers?: number
   ts?: string
   /**
    * 用户消息带过的附件名。
@@ -61,13 +93,26 @@ export interface Message {
    * 老记录没有这个字段，用量页会把它们显示成「—」。
    */
   model?: string
+  /**
+   * 这一轮列过的任务清单（`todo_write` 的最后一次提交），只用于回看。
+   *
+   * 运行中的实时进度走 `todo` 事件，不落在这里 —— 这里存的是跑完之后的定稿，
+   * 好让回看一条长任务时还看得见它当初打算做哪几步。老记录没有这个字段。
+   */
+  todos?: TodoItem[]
 }
 
 export interface ModelConfig {
   id: string
   name: string
   base_url: string
-  protocol: 'openai' | 'anthropic'
+  /**
+   * 协议标识（`openai` / `anthropic` / `ollama` …）。
+   *
+   * 故意写成 `string` 而不是联合类型：可选协议由 `GET /protocols` 下发，
+   * 后端加一个协议时界面不该因为前端这份枚举没跟着改而编译不过。
+   */
+  protocol: string
   api_key: string
   models: string[]
   /**
@@ -78,6 +123,16 @@ export interface ModelConfig {
    * 用量仪表盘会显示「—」，不拿默认值硬凑。
    */
   context_windows: Record<string, number>
+}
+
+/** `GET /protocols` 下发的一个协议选项。 */
+export interface ProtocolOption {
+  value: string
+  label: string
+  /** 地址留空时后端会用这个默认值；空串表示交给 SDK 用它自己的官方地址。 */
+  default_base_url: string
+  /** API Key 的填写提示，直接拿来做输入框的 placeholder。 */
+  hint: string
 }
 
 /** 「连接 + 模型名」摊平后的下拉选项，`key` 就是后端的稳定标识。 */
@@ -101,7 +156,7 @@ export interface RemoteModel {
 }
 
 /**
- * 提示词组：从六类提示词里各挑一个（可以不挑）拼成的一套提示词。
+ * 提示词组：从提示词库里挑若干条（可以不挑）拼成的一套提示词。
  *
  * 原先这个东西就叫「模式」，现在模式指四类组的组合，它只是其中提示词那一类。
  * 偏好模型不在这里 —— 搬到模式上了（见 `Mode`）。
@@ -111,8 +166,12 @@ export interface PromptGroup {
   name: string
   /** 功能简介：和工具组、技能组一致，给模式编辑界面用。 */
   description: string
-  /** 类别 -> 提示词名。允许为空 —— 那就是不带任何系统提示词的纯问答。 */
-  settings: Record<string, string>
+  /**
+   * 提示词 id 列表。允许为空 —— 那就是不带任何系统提示词的纯问答。
+   *
+   * 用 id 而不是名字：名字可以随便改（改完引用照旧有效），同一个分类也能选多条。
+   */
+  prompts: string[]
 }
 
 /**
@@ -148,10 +207,21 @@ export interface ModeList {
   }
 }
 
-/** 提示词库：六类，以及每类下可选哪些提示词（只有名字，正文要单独取）。 */
+/**
+ * 提示词库里的一条（元信息 —— 正文要单独按 id 取）。
+ *
+ * 注意 `name` 只是展示名：它不存在路径里，也不作引用，所以随便改都安全。
+ */
+export interface PromptItem {
+  id: string
+  name: string
+  category: string
+}
+
+/** 提示词库：分类清单 + 全部提示词的元信息。 */
 export interface PromptLib {
   categories: string[]
-  names: Record<string, string[]>
+  items: PromptItem[]
 }
 
 export interface ToolSpec {
@@ -205,6 +275,57 @@ export interface MemoryItem {
   text: string
   enabled: boolean
   created_at: string
+}
+
+/**
+ * 一个可选的搜索后端。
+ *
+ * 清单由后端随 `GET /search` 一起给出来，前端不硬编码 —— 多支持一家搜索服务
+ * 时只改后端，界面上自动出现。
+ */
+export interface SearchBackendOption {
+  value: string
+  label: string
+  /** 默认接口地址；界面上当输入框的 placeholder 用。 */
+  endpoint: string
+  /** Key 去哪领。直接显示给用户，省得再去翻文档。 */
+  hint: string
+}
+
+export interface SearchConfig {
+  backend: string
+  /**
+   * 后端 -> API Key。
+   *
+   * 按后端分开存，不是一个字段：Tavily 和博查之间切来切去是常事，
+   * 只留一个字段的话，切一次就把另一边填过的 Key 抹掉了。
+   */
+  keys: Record<string, string>
+  /** 覆盖默认端点；空串表示用后端内置的地址（走自建或中转时才改）。 */
+  base_url: string
+  /** 模型没指定条数时的默认返回条数。 */
+  max_results: number
+}
+
+/** `GET /search` 的响应。 */
+export interface SearchInfo {
+  config: SearchConfig
+  backends: SearchBackendOption[]
+  limits: { min: number; max: number; default: number }
+}
+
+/** 一条搜索结果。`snippet` 是摘要，不是正文。 */
+export interface SearchHit {
+  title: string
+  url: string
+  snippet: string
+}
+
+/** `POST /search/test` 的响应。`ok` 为 false 时 `message` 是失败原因。 */
+export interface SearchTestResult {
+  ok: boolean
+  message: string
+  hits: SearchHit[]
 }
 
 /** `GET /workdir` 的响应。`native_picker` 表示后端所在环境能否拉系统对话框。 */
@@ -305,4 +426,26 @@ export type ChatEvent =
   | { type: 'notice'; text: string }
   | { type: 'question'; question: Question }
   | { type: 'subagent'; event: SubagentEvent }
+  /**
+   * 运行中的用量播报：**每请求一次模型就播报一次**，界面据此实时刷新上下文仪表盘。
+   *
+   * 一轮里模型会被请求多次（每执行完一轮工具就要再问一次），上下文是**一路长上去**的；
+   * 这些中间读数既不落盘也不进消息，只是让仪表盘别停在上一次的旧值上。
+   */
+  | { type: 'usage'; contextTokens: number }
+  /**
+   * 任务清单更新：模型调用了 `todo_write`。
+   *
+   * 每次推的都是**完整清单**，前端直接覆盖即可；也**不落盘** —— 落盘的那份随
+   * `done` 一起回来（见 `Message.todos`），两者内容相同，但这条要负责「跑的过程中
+   * 就能看见进度」。
+   */
+  | { type: 'todo'; items: TodoItem[] }
+  /**
+   * 早期历史被压成了摘要。
+   *
+   * 它**会落盘**（和助手消息一样是一条记录）：刷新之后这张卡片还在 ——
+   * 否则用户下次打开会话，发现模型不记得前面的事，只会以为数据被弄丢了。
+   */
+  | { type: 'summary'; content: string; covers: number; saved: number }
   | { type: 'done'; message: Message }

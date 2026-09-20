@@ -13,6 +13,7 @@ from quill_agent.memory import MemoryStore
 from quill_agent.model_catalog import ModelCatalog
 from quill_agent.preferences import PreferenceStore
 from quill_agent.prompts import PromptLibrary
+from quill_agent.search import SearchStore
 from quill_agent.skills import SkillLibrary
 from quill_agent.store import (
     ModelStore,
@@ -60,7 +61,7 @@ def modes() -> ModeStore:
 def prompts() -> PromptLibrary:
     """提示词正文库（prompt/ 目录）。"""
     library = PromptLibrary(get_settings().prompt_dir)
-    library.ensure_dirs()
+    library.ensure_dir()
     return library
 
 
@@ -89,3 +90,8 @@ def memory() -> MemoryStore:
 def preferences() -> PreferenceStore:
     """界面偏好（上次选的模型 / 模式 / 工作目录等）。"""
     return PreferenceStore(get_settings().preferences_path)
+
+
+def search() -> SearchStore:
+    """联网搜索配置（后端、各自的 Key、可选的自定义端点）。"""
+    return SearchStore(get_settings().search_path)

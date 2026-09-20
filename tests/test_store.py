@@ -3,9 +3,10 @@
 这些 JSON 用户会直接编辑（手滑写坏一个括号是常事），所以容错行为值得钉住。
 """
 
+import json
 from pathlib import Path
 
-from quill_agent.store import read_json
+from quill_agent.store import ModelStore, read_json
 
 
 def test_missing_file_returns_default(tmp_path: Path) -> None:
@@ -42,3 +43,44 @@ def test_default_is_deep_copied(tmp_path: Path) -> None:
 
     assert shared == []
     assert read_json(tmp_path / "nope.json", shared) == []
+
+
+def test_single_bad_entry_is_skipped(tmp_path: Path) -> None:
+    """一条记录不合法只丢那一条。
+
+    这条曾经是硬伤：`read_json` 只兜「JSON 本身坏了」，兜不住「JSON 合法但字段
+    不合法」—— 用户把某个 api_key 改出格式问题，模型页、任务页会一起打不开。
+    """
+    path = tmp_path / "models.json"
+    path.write_text(
+        json.dumps(
+            [
+                {"id": "ok", "name": "好的一条", "models": ["m"]},
+                {"id": "bad", "name": "坏的一条", "api_key": "带空格 的 key"},
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    items = ModelStore(path).list()
+
+    assert [item.id for item in items] == ["ok"]
+
+
+def test_bad_entry_does_not_hide_the_rest(tmp_path: Path) -> None:
+    """坏的在中间时，前面和后面的记录都要读出来（不是遇到坏的就把后面全丢）。"""
+    path = tmp_path / "models.json"
+    path.write_text(
+        json.dumps(
+            [
+                {"id": "first", "name": "第一条", "models": ["m"]},
+                {"id": "bad", "name": ""},
+                {"id": "last", "name": "最后一条", "models": ["m"]},
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    assert [item.id for item in ModelStore(path).list()] == ["first", "last"]

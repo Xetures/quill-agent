@@ -1,6 +1,6 @@
 """Agent 循环：组装上下文 → 请求模型 → 执行工具 → 直到得出答案。
 
-这一层不依赖 streamlit、不依赖界面：
+这一层不依赖界面：
 
     输入：本轮输入 + 模式 + 模型选择 + 历史
     输出：一个事件流（文本增量 / 思维链增量 / 工具调用记录 / 系统提示），
@@ -38,8 +38,9 @@ from openai import OpenAI
 from quill_agent import interaction
 from quill_agent.config import get_settings
 from quill_agent.memory import MemoryStore
-from quill_agent.models import Mode, ModelChoice, Protocol
-from quill_agent.prompts import PROMPT_CATEGORIES, PromptLibrary
+from quill_agent.models import Mode, ModelChoice
+from quill_agent.preferences import MAX_RUN_TOKENS_KEY, PreferenceStore
+from quill_agent.prompts import PromptLibrary
 from quill_agent.skills import SkillLibrary
 from quill_agent.store import (
     PromptGroupStore,
@@ -53,6 +54,7 @@ from quill_agent.tools.files import (
     image_data_url,
     save_attachments,
 )
+from quill_agent.tools.todo import TodoBoard
 
 # 一轮对话里最多允许执行几「轮」工具调用，防止模型陷入死循环。
 # 注意它计的是工具轮次而不是请求次数：预算用尽后还会再发一次
@@ -77,7 +79,56 @@ REQUEST_TIMEOUT = 120.0
 # 发给模型的历史最多保留多少条会话记录。
 # 按「记录」而不是「消息」计数：一条记录若含工具调用，展开后是一组消息，
 # 按记录截断才不会把 assistant.tool_calls 和对应的 tool 消息从中间切开。
+#
+# 这是**模型窗口未知时的兜底**。窗口配过的时候改用 token 预算（见 HISTORY_BUDGET_RATIO）：
+# 条数和 token 完全不成比例 —— 20 条闲聊是 2k token，20 轮读代码的可以是 20 万。
+# 只按条数截，结果就是「会不会撑爆窗口全看运气」。
 MAX_HISTORY_RECORDS = 20
+
+# 历史最多能占模型窗口的多少比例。剩下的留给 system 提示词、技能清单、记忆、
+# 本轮输入和输出 —— 长模式下前面那几样加起来也可能上几万 token，取一半是保守值。
+HISTORY_BUDGET_RATIO = 0.5
+
+# 估算 token 时每个 token 按几个字符折算。**不引 tokenizer**：它对一个本地小应用
+# 太重（额外几百 KB 依赖 + 首次加载开销），而这里只需要「别超窗口」这个量级的精度。
+#
+# 取 2 而不是常见的 3~4：中文约 1 字符 ≈ 0.7 token，英文/代码约 3~4 字符 1 token，
+# 折中后偏保守。**宁可贵估**（少带一点历史）也不能低估 —— 低估会让请求直接超窗被拒。
+CHARS_PER_TOKEN = 2
+
+# 单条记录的最低估算值：再短的消息也有 role、分隔符这些消息框架开销
+MIN_RECORD_TOKENS = 8
+
+# 历史因为预算被截掉时，在它前面插的这一句 —— 让模型知道自己看到的不是全部。
+#
+# 没有这一句，模型会对着残缺的历史继续作答，甚至编出「我们之前说过……」：
+# 它不是在编，是它真的看不到。同时必须指出取回的办法（recall_history），
+# 否则「我看不到」对模型来说就是一条死路。
+HISTORY_OMITTED_NOTE = (
+    "（更早的对话因超出上下文预算已被省略，你看到的不是全部历史。"
+    "需要回忆其中内容时用 recall_history 工具按关键词检索原文，不要凭猜测作答。）"
+)
+
+# ── 摘要：把超预算的早期历史压成一段 ────────────────────────────────────────
+
+# 压缩后至少保留多少条**原文**（最近的）。摘要负责很久以前，原文负责正在进行 ——
+# 正在做的事最怕失真：模型下一步要动的就是那个文件，而摘要里的路径未必还准。
+SUMMARY_KEEP_RECENT = 8
+
+# 至少有多少条可压才值得压。只超出一两条时压缩不划算：摘要本身也占上下文，
+# 还要多花一次模型调用 —— 那种情况直接按预算丢更省事。
+SUMMARY_MIN_RECORDS = 3
+
+# 摘要正文的字符上限。它会长期留在上下文里（每次请求都带着），不能任它长；
+# 提示词里也把这个字数告诉模型，两头一起约束。
+SUMMARY_MAX_CHARS = 1200
+
+# 拼给摘要模型的工具结果片段长度：要的是要点，不需要原始全文
+SUMMARY_STEP_CHARS = 300
+
+# 生成摘要的超时（秒）。它比一轮对话短得多：失败了就走降级路径（不压缩），
+# 让用户为一个「压缩请求」等两分钟是不合理的。
+SUMMARY_TIMEOUT = 60.0
 
 # 单条工具结果回放给模型时的长度上限。读大文件的工具结果动辄上万字符，
 # 原样带入会让历史迅速膨胀；这里只截断回放的那一份，
@@ -135,24 +186,39 @@ class RunStats:
     「返回」值，而用量和耗时都要等流结束才知道，只能这样把结果带出来。
 
     Attributes:
-        prompt_tokens / completion_tokens / total_tokens: 接口返回的用量。
-            服务不支持流式用量时不会带这些值，三项都保持 0。
+        prompt_tokens / completion_tokens / total_tokens: 接口返回的用量，
+            **一轮里请求了多次就累加多次**。服务不支持流式用量时不会带这些值，
+            三项都保持 0。
+        context_tokens: 最后一次请求的输入量，也就是这一轮结束时**上下文实际有多大**。
+            它和 `prompt_tokens` 是两个口径，别混用：每轮都要把同一份上下文重发
+            一遍，累加起来是账单，只有「最后一次」才是窗口占用。界面上的用量仪表盘
+            读这个，用量页读那三个累加值。
         elapsed: 整轮耗时（秒），包含工具执行的时间。
     """
 
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    context_tokens: int = 0
     elapsed: float = 0.0
 
     def add_usage(self, usage) -> None:
-        """累加一次请求的用量 —— 一轮里可能请求模型好几次。"""
+        """记下一次请求的用量 —— 一轮里可能请求模型好几次。
+
+        计费三项累加；`context_tokens` 取最后一次（覆盖）。
+        """
         if usage is None:
             return
 
-        self.prompt_tokens += getattr(usage, "prompt_tokens", 0) or 0
+        prompt = getattr(usage, "prompt_tokens", 0) or 0
+        self.prompt_tokens += prompt
         self.completion_tokens += getattr(usage, "completion_tokens", 0) or 0
         self.total_tokens += getattr(usage, "total_tokens", 0) or 0
+
+        # 没拿到 prompt_tokens 就别覆盖：网关偶尔不发用量分片，抹成 0 会让仪表盘
+        # 从「上次的读数」直接掉到 0，看着像上下文被清空了
+        if prompt:
+            self.context_tokens = prompt
 
     def merge(self, other: RunStats) -> None:
         """把另一轮的用量并进来（目前只有子代理会走这条）。
@@ -160,6 +226,10 @@ class RunStats:
         **只并用量，不并耗时。** 子代理的耗时本来就包含在父级的 `elapsed` 里
         （父级那一次工具调用就是在等它跑完），再并一次就成了双倍。
         用量则必须并 —— 不并的话那些 token 花了钱却不出现在用量页上。
+
+        `context_tokens` 也不并：子代理的上下文是它自己那一份，不是父级的。
+        父级下一次请求会把它覆盖成正确的值 —— 那时子代理的结论已经作为工具结果
+        进了父级的上下文，本来就该算进去。
         """
         self.prompt_tokens += other.prompt_tokens
         self.completion_tokens += other.completion_tokens
@@ -179,6 +249,26 @@ class Notice:
 
 
 @dataclass(frozen=True)
+class SummaryMade:
+    """刚把一段早期历史压成了摘要。
+
+    它**要落盘**（不是过程数据）：摘要必须活过这一轮，否则下一轮重新组装上下文时
+    又得从头压一遍 —— 每次都白花一次模型调用。所以调用方收到它应当把它追加进会话文件，
+    和助手消息一样是一条记录。
+
+    界面上它对应一张「已压缩 N 条」的卡片：不告诉用户的话，下次打开会话发现模型不记得
+    前面的事，只会以为是把数据弄丢了。而**原文一条都没删** —— 截断只影响发给模型多少。
+    """
+
+    content: str
+    """摘要正文。"""
+    covers: int
+    """覆盖到第几条记录（1-based，含）—— 它之后的记录仍以原文发送。"""
+    saved: int
+    """估算省下的 token 数，只用于界面显示。"""
+
+
+@dataclass(frozen=True)
 class ReasoningDelta:
     """思维链的一个增量片段（推理模型专有）。
 
@@ -191,6 +281,22 @@ class ReasoningDelta:
 
 
 @dataclass(frozen=True)
+class Usage:
+    """一次请求的用量播报，供界面在**跑的过程中**刷新读数。
+
+    为什么需要它：一轮里模型会被请求多次（每执行完一轮工具就要再问一次），而上下文
+    每轮都在长。用量本来只随 `RunStats` 在结束时一起给出去 —— 界面在整个跑的过程中
+    只能显示上一轮的旧值，跑完才「啪」地跳一下。所以每拿到一次用量就播报一次。
+
+    只带 `context_tokens`：它是**这次请求的输入量**，也就是「上下文现在有多大」，
+    正是仪表盘要的那个数。累加的账单三项不给 —— 那要等这一轮结束才准，
+    而实时界面上也不需要它。
+    """
+
+    context_tokens: int
+
+
+@dataclass(frozen=True)
 class AgentResult:
     """一轮 Agent 对话的结果。
 
@@ -200,6 +306,9 @@ class AgentResult:
         notices: 系统提示。界面单独渲染，不进入下一轮的上下文。
         reasoning: 这一轮的思维链全文（推理模型才有）；只用于回看。
         stats: 本轮的用量与耗时，供界面展示和排查。
+        todos: 这一轮列过的任务清单（`todo_write` 的最后一次提交）；没列过就是空列表。
+            存的是 payload 形状而不是 `TodoItem`，因为它下一步就是原样落盘、
+            原样推给前端，中间不再有人读它的字段。
     """
 
     text: str
@@ -207,6 +316,7 @@ class AgentResult:
     notices: list[str] = field(default_factory=list)
     reasoning: str = ""
     stats: RunStats = field(default_factory=RunStats)
+    todos: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -217,21 +327,30 @@ class ModeContext:
     中间这层解析单独拎出来：解析只需要读一次存储，而组装要用到的地方有四处。
     """
 
-    prompts: dict[str, str] = field(default_factory=dict)  # 类别 -> 提示词名
+    prompts: list[str] = field(default_factory=list)  # 提示词 id 列表
     tools: list[str] = field(default_factory=list)
     skills: list[str] = field(default_factory=list)
     memory_enabled: bool = True
     # 其中每次调用都要用户点头的工具名。是 tools 的子集（保存时校验过）。
     confirm: frozenset[str] = frozenset()
+    # 这一轮用的技能组的 id。**运行本身不用它做任何判断**，只为「回话」而带：
+    # 技能可能是运行中新建的（create_skill），而技能给不给由组决定 ——
+    # 新建的技能不在组里就不会生效，得让模型知道该请用户去哪儿勾
+    # （见 tools/builtin._skill_group_hint）。组被删了就留空
+    skill_group_id: str = ""
 
 
 @dataclass(frozen=True)
 class RunEnvironment:
-    """一次运行的环境：解析后的模式、模型选择、账本。
+    """一次运行的环境：解析后的模式、模型选择、账本、清单板。
 
     给「运行内部还需要再跑一轮」的场景用 —— 目前只有子代理。它要照搬父级的
     `context`（同一个身份、同一套工具，只是换一份干净的上下文），用同一个模型，
     还要把用量记到父级账上。
+
+    `stats` 和 `todos` 都是为了绕开同一件事：生成器没法「返回」值，只能由调用方拿一个
+    可变对象进来、跑完再读。区别在于账本每次都会被读（用量要落盘），而清单板**大多数
+    时候是空的** —— 模型没列过清单就一直是空的，这不是异常。
 
     为什么用 ContextVar：工具函数的签名里只有参数本身（`registry.execute(name, args)`），
     拿不到「当前这一轮」的任何东西。和 `interaction` 是同一个理由、同一套做法。
@@ -240,6 +359,12 @@ class RunEnvironment:
     context: ModeContext
     choice: ModelChoice | None
     stats: RunStats
+    todos: TodoBoard
+    # 这一轮的历史记录，**全量、未截断**：给 recall_history 工具用。
+    #
+    # 给全量而不是截断后的那份，是因为那个工具的价值恰恰在于「捞回被截掉的部分」——
+    # 截断只影响发给模型多少，不影响能取回多少（见 build_history_messages）。
+    history: list[dict] = field(default_factory=list)
 
 
 _environment: ContextVar[RunEnvironment | None] = ContextVar("quill_environment", default=None)
@@ -263,15 +388,15 @@ def resolve_mode(mode: Mode | None) -> ModeContext:
         mode: 选中的模式；None 表示没有模式（什么都不给）。
     """
     if mode is None:
-        return ModeContext(prompts={}, tools=[], skills=[], memory_enabled=False)
+        return ModeContext(prompts=[], tools=[], skills=[], memory_enabled=False)
 
     settings = get_settings()
 
-    prompts: dict[str, str] = {}
+    prompts: list[str] = []
     if mode.prompt_group_id:
         group = PromptGroupStore(settings.prompt_groups_path).get(mode.prompt_group_id)
         if group is not None:
-            prompts = dict(group.settings)
+            prompts = list(group.prompts)
 
     tools: list[str] = []
     confirm: frozenset[str] = frozenset()
@@ -299,34 +424,38 @@ def resolve_mode(mode: Mode | None) -> ModeContext:
         skills=skills,
         memory_enabled=mode.memory_enabled,
         confirm=confirm,
+        skill_group_id=mode.skill_group_id,
     )
 
 
-def build_system_prompt(prompts: dict[str, str]) -> str:
-    """把选中的提示词片段拼成 system prompt。
+def build_system_prompt(prompt_ids: list[str]) -> str:
+    """把选中的提示词正文拼成 system prompt。
 
-    顺序固定按 PROMPT_CATEGORIES（身份 → 能力 → 工具策略 → 工作流程 →
-    输出规范 → 约束），与用户在弹窗里的勾选顺序无关 ——
+    顺序按 `PROMPT_CATEGORIES`（身份 → 能力 → 工具策略 → 工作流程 → 输出规范 →
+    约束），同一类别内按名字排序 —— 与用户在界面上怎么排、什么时候勾的**无关**。
     顺序稳定，同一模式下拼出来的内容才完全一致，前缀缓存才有意义。
 
+    一个类别下可以有多条提示词（引用不再限「一类一条」），它们会按名字顺序接着拼。
+
     Args:
-        prompts: {类别: 提示词名}；空字典表示不带系统提示词（纯问答）。
+        prompt_ids: 提示词 id 列表。空列表表示不带系统提示词（纯问答）。
 
     Returns:
-        拼好的 system prompt；一个片段都没有时返回空字符串。
+        拼好的 system prompt；一条都没读到（比如全被删了）时返回空字符串。
     """
-    if not prompts:
+    if not prompt_ids:
         return ""
 
     library = PromptLibrary(get_settings().prompt_dir)
+    wanted = set(prompt_ids)
 
+    # list_items 已经按「分类顺序 + 名字」排好了，直接筛出来遍历即可
     parts: list[str] = []
-    for category in PROMPT_CATEGORIES:
-        name = prompts.get(category)
-        if not name:
+    for item in library.list_items():
+        if item.id not in wanted:
             continue
-        content = library.read(category, name)
-        if content:
+        content = library.read(item.id)
+        if content and content.strip():
             parts.append(content.strip())
 
     return "\n\n".join(parts)
@@ -462,7 +591,239 @@ def _clip(text: str, limit: int) -> str:
     return f"{text[:limit]}…（内容过长已截断，原长 {len(text)} 字符）"
 
 
-def build_history_messages(history: list[dict] | None) -> list[dict]:
+def _estimate_record_tokens(record: dict) -> int:
+    """估算一条会话记录展开成 API 消息后占多少 token。
+
+    正文、工具参数、工具结果都要算 —— 它们在请求里都是实打实的内容。工具结果按
+    **回放时的上限**算（见 MAX_TOOL_RESULT_CHARS）：发出去的就是截断后的那份，
+    按原长算会把它估得过大。
+    """
+    size = len(str(record.get("content") or ""))
+
+    for step in record.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        size += len(str(step.get("name") or ""))
+        size += len(str(step.get("arguments") or ""))
+        size += min(len(str(step.get("result") or "")), MAX_TOOL_RESULT_CHARS)
+
+    return max(MIN_RECORD_TOKENS, size // CHARS_PER_TOKEN)
+
+
+def _trim_by_budget(records: list[dict], budget: int) -> list[dict]:
+    """从最近一条往前留，直到预算用尽；返回保留下来的记录（原顺序）。
+
+    以**记录**为单位取舍，理由同 `build_history_messages`：一轮里
+    assistant(tool_calls) 和它的 tool 消息必须成对出现，切在中间会产生 API 拒绝的
+    非法序列。
+
+    最后一条无论多大都留着：它通常就是「上一轮发生了什么」，丢掉它模型直接失忆 ——
+    那是截断最不该造成的结果。单条自己就超预算时（用户粘了一大段代码）也只能超。
+    """
+    kept: list[dict] = []
+    used = 0
+
+    for record in reversed(records):
+        cost = _estimate_record_tokens(record)
+        if kept and used + cost > budget:
+            break
+
+        kept.append(record)
+        used += cost
+
+    return list(reversed(kept))
+
+
+def _estimate_text_tokens(text: str) -> int:
+    """估算一段纯文本占多少 token（按字符折算，见 CHARS_PER_TOKEN）。"""
+    return len(text) // CHARS_PER_TOKEN
+
+
+def _estimate_records_tokens(records: list[dict]) -> int:
+    """估算一组记录展开后占多少 token。"""
+    return sum(_estimate_record_tokens(record) for record in records)
+
+
+def _last_summary(records: list[dict]) -> tuple[int, str]:
+    """找到最后一条摘要，返回（它覆盖到第几条, 摘要正文）。
+
+    没有摘要时返回 `(0, "")`。「最后一条」是关键：滚动摘要下新摘要里已经并进了旧摘要的
+    内容，所以只有最新那条算数，之前的都是它的前身。
+    """
+    covered = 0
+    text = ""
+
+    for index, record in enumerate(records, start=1):
+        if record.get("role") == "summary":
+            covered = index
+            text = str(record.get("content") or "")
+
+    return covered, text
+
+
+def format_records_for_summary(records: list[dict]) -> str:
+    """把记录拼成给摘要模型看的文本。
+
+    工具结果要带上（但可以短）：需要被保留下来的「报错原文」「文件内容」往往只出现在
+    工具的返回里，正文一个字都没提。
+    """
+    lines: list[str] = []
+
+    for index, record in enumerate(records, start=1):
+        role = {
+            "user": "用户",
+            "assistant": "助手",
+            "summary": "上一版摘要",
+        }.get(record.get("role"), "其它")
+
+        content = str(record.get("content") or "").strip()
+        if content:
+            lines.append(f"[{index}] {role}：{content}")
+
+        for step in record.get("steps") or []:
+            if not isinstance(step, dict):
+                continue
+            result = _clip(str(step.get("result") or ""), SUMMARY_STEP_CHARS)
+            lines.append(f"[{index}] 工具 {step.get('name') or '?'} 返回：{result}")
+
+    return "\n".join(lines)
+
+
+SUMMARY_PROMPT = """下面是一段对话记录。请把它压缩成一份要点摘要，供后续对话继续使用。
+
+必须保留（有就写，没有就跳过）：
+- 已经确定的决定和结论
+- 涉及的文件路径、函数名、命令、参数值
+- 未完成的计划和待办
+- 用户的偏好、约束、明确要求
+- 已知的错误现象和报错原文
+
+可以丢弃：寒暄、重复的解释、试错过程、已被推翻的方案。
+
+要求：中文，Markdown，{limit} 字以内。直接输出摘要正文，不要写「以下是摘要」之类的前言。
+
+{previous}对话记录：
+{records}"""
+
+
+def summarize_history(
+    *,
+    client: OpenAI,
+    model: str,
+    records: list[dict],
+    previous: str = "",
+) -> str | None:
+    """调模型把一段历史压成摘要；失败返回 None。
+
+    **失败不抛异常**：压缩是锦上添花，它失败不该毁掉整轮对话 —— 调用方拿到 None
+    就照旧按预算截断，信息少一点而已。「摘要没做好反而更糟」正是要避免的。
+    """
+    if not records:
+        return None
+
+    prompt = SUMMARY_PROMPT.format(
+        limit=SUMMARY_MAX_CHARS,
+        previous=f"上一版摘要（要把它也并进新摘要里）：\n{previous}\n\n" if previous else "",
+        records=format_records_for_summary(records),
+    )
+
+    try:
+        # 只传 create() 认的参数：`max_retries` / `base_url` 那些是**客户端构造时**的，
+        # 塞到这里会直接 TypeError —— 而它会被下面的 except 吞掉，表现成「摘要总是失败」
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            timeout=SUMMARY_TIMEOUT,
+        )
+        content = (response.choices[0].message.content or "").strip()
+    except Exception:  # noqa: BLE001
+        # 网络、超时、网关报错、返回结构不对 —— 全都不该让这一轮挂掉。
+        # 这里刻意不区分：对调用方来说处理方式都是「这次不压」
+        return None
+
+    if not content:
+        return None
+
+    # 超长就截断：它会长期占着上下文，而模型不一定守字数
+    return _clip(content, SUMMARY_MAX_CHARS)
+
+
+def _split_for_summary(records: list[dict], budget: int) -> tuple[list[dict], list[dict]]:
+    """把记录切成「该压缩的」和「保留原文的」两段。
+
+    判据和截断用的是**同一把尺子**：`_trim_by_budget` 留不住的那些，正是要丢掉的 ——
+    与其丢掉，不如先压成摘要。这样不会出现「明明超了却没压」或者「没超却白压一次」。
+
+    `budget` 为 0（窗口没配）时**不压缩**：没有预算就说不清能省下多少，
+    而摘要 + 本来就装得下的历史，可能反而更大。
+
+    Returns:
+        (要压缩的记录, 保留原文的记录)；第一个为空表示不用压。
+    """
+    if budget <= 0 or len(records) <= SUMMARY_KEEP_RECENT:
+        return [], records
+
+    head = records[:-SUMMARY_KEEP_RECENT]
+    tail = records[-SUMMARY_KEEP_RECENT:]
+
+    # 已经压过的不再压：只处理上次摘要之后的增量（滚动摘要）
+    covered, _ = _last_summary(records)
+    pending = head[covered:]
+
+    if len(pending) < SUMMARY_MIN_RECORDS:
+        return [], records
+
+    # 预算本来就装得下 → 不值得多花这一次模型调用
+    if _estimate_records_tokens(records) <= budget:
+        return [], records
+
+    return pending, tail
+
+
+def _compact_if_needed(
+    *,
+    history: list[dict],
+    budget: int,
+    client: OpenAI,
+    model: str,
+) -> Iterator[Notice | SummaryMade]:
+    """需要就把早期历史压成摘要，顺便 yield 过程事件；最后 return 组装用的记录列表。
+
+    做成生成器而不是普通函数，是因为压缩要**当场调一次模型**（几秒到十几秒）。
+    界面得能立刻看到「正在压缩」，而不是整轮对话卡在那里毫无反应。
+    """
+    to_compress, keep = _split_for_summary(history, budget)
+
+    if not to_compress:
+        return history
+
+    covered, previous = _last_summary(history)
+    yield Notice(f"上下文快满了，正在把更早的 {len(to_compress)} 条记录压缩成摘要……")
+
+    summary = summarize_history(
+        client=client, model=model, records=to_compress, previous=previous
+    )
+
+    if summary is None:
+        # 降级：不压缩，照旧按预算截断。信息少一点，但这一轮照跑不误
+        yield Notice("摘要没能生成（调模型失败或返回为空）。这一轮改按上下文预算裁剪历史。")
+        return history
+
+    covers = covered + len(to_compress)
+    saved = max(0, _estimate_records_tokens(to_compress) - _estimate_text_tokens(summary))
+
+    yield SummaryMade(content=summary, covers=covers, saved=saved)
+
+    # 旧摘要不必带上了：它的内容已经并进新摘要（提示词里带了 previous）
+    return [
+        {"role": "summary", "content": summary, "covers": covers},
+        *keep,
+    ]
+
+
+def build_history_messages(
+    history: list[dict] | None, *, context_window: int = 0
+) -> list[dict]:
     """把会话记录还原成 API 需要的消息序列。
 
     会话记录是界面口径：``{role, content, ts, steps?}``。
@@ -474,23 +835,60 @@ def build_history_messages(history: list[dict] | None) -> list[dict]:
     「上一轮我查了什么、结果是什么」。少了这一步，模型每轮都会失忆，
     反复调用同样的工具去重新获取已经拿到过的信息。
 
-    截断发生在**展开之前**（只取最近 MAX_HISTORY_RECORDS 条记录）：
-    先展开再截断，可能把 assistant.tool_calls 和它的 tool 消息切开，
-    产生 API 无法接受的非法序列。
+    截断发生在**展开之前**（按记录取舍）：先展开再截断，可能把
+    assistant.tool_calls 和它的 tool 消息切开，产生 API 无法接受的非法序列。
+
+    `history` 里可能有 `role == "summary"` 的记录（压缩产物，见 `_compact_if_needed`）：
+    最新那条之前的所有记录都由它替代，**只有它之后的记录才按原文发送**。
+
+    留多少条取决于 `context_window`：
+
+        知道窗口 —— 按 token 预算留（见 `_trim_by_budget`）。「最近 20 条」这种
+                    和窗口大小无关的固定值，正是「一轮读代码就爆窗」的成因；
+        不知道   —— 退回按条数上限（`MAX_HISTORY_RECORDS`）。**不猜窗口**：
+                    猜小了白丢历史，猜大了请求被拒。
 
     Args:
         history: 会话记录列表；记录里的 ts 等展示字段会被忽略。
+        context_window: 当前模型的上下文窗口（token）。0 表示不知道。
 
     Returns:
         可直接拼进请求体的消息列表。
     """
     messages: list[dict] = []
 
-    records = list(history or [])
+    all_records = list(history or [])
+
+    # 摘要覆盖它之前的全部记录：那些不再单独发送（滚动摘要下只有最新那条算数）。
+    # 它作为一条 system 消息放在最前面 —— 模型读到的顺序就成了
+    # 「很久以前（摘要）→ 近期（原文）→ 本轮提问」
+    covered, summary_text = _last_summary(all_records)
+    if summary_text:
+        messages.append(
+            {
+                "role": "system",
+                "content": (
+                    "（更早的对话已压缩成摘要；原文仍在会话记录里，必要时可检索）\n"
+                    f"{summary_text}"
+                ),
+            }
+        )
+
+    # 摘要之后、还需要按预算取舍的那些记录
+    after_summary = all_records[covered:]
+    records = after_summary
+
+    if context_window > 0:
+        records = _trim_by_budget(records, int(context_window * HISTORY_BUDGET_RATIO))
     # 这里不能写成 records[-MAX_HISTORY_RECORDS:] —— 上限为 0 时 -0 等于 0，
     # 切片会退化成「全部保留」，语义正好相反。
-    if MAX_HISTORY_RECORDS > 0:
+    elif MAX_HISTORY_RECORDS > 0:
         records = records[-MAX_HISTORY_RECORDS:]
+
+    # 比对的是「摘要之后」那一段：被摘要覆盖掉的记录不算「被截掉」——
+    # 它们的内容还在摘要里，两者不是一回事
+    if len(records) < len(after_summary):
+        messages.append({"role": "system", "content": HISTORY_OMITTED_NOTE})
 
     for index, record in enumerate(records):
         role = record.get("role")
@@ -687,8 +1085,9 @@ def run_agent_stream(
     choice: ModelChoice | None,
     history: list[dict] | None = None,
     stats: RunStats | None = None,
+    board: TodoBoard | None = None,
     context: ModeContext | None = None,
-) -> Iterator[str | ReasoningDelta | ToolStep | Notice]:
+) -> Iterator[str | ReasoningDelta | ToolStep | Notice | Usage | SummaryMade]:
     """以流式方式跑一轮 Agent 对话。
 
     Args:
@@ -700,6 +1099,9 @@ def run_agent_stream(
             助手记录可带 "steps"（工具调用），会被还原成 tool 消息，
             并只保留最近 MAX_HISTORY_RECORDS 条，见 build_history_messages。
         stats: 由调用方提供的账本，跑完就地填好（生成器没法「返回」值）。
+        board: 由调用方提供的清单板；模型每次调用 todo_write 就地更新它（同样是
+            因为生成器没法「返回」值）。不给就自己建一个 —— 子代理走的正是这条路：
+            它自己那份清单和父级没有关系，也不该混进父级的进度条里。
         context: **已经解析好的模式**；给了就不再解析 `mode`。子代理走这条路 ——
             它要照搬父级的提示词和技能，但工具集要去掉几样（见 tools/subagent.py）。
             没有这个参数的话，「给谁用哪些工具」就只能靠运行时的拒绝来兜，
@@ -707,13 +1109,15 @@ def run_agent_stream(
 
     Yields:
         文本增量（str）/ 思维链增量（ReasoningDelta）/ 工具调用记录（ToolStep）/
-        系统提示（Notice）。任何异常都转成 Notice 产出，不向上抛。
+        系统提示（Notice）/ 运行中的用量播报（Usage）。任何异常都转成 Notice 产出，
+        不向上抛。
 
     最多请求模型 MAX_ITERATIONS + 1 次：前 MAX_ITERATIONS 次带工具，最后
     一次不带。预算用尽后强制模型基于已有信息收尾，避免出现「工具已经执行、
     副作用已经发生，结果却没机会被模型看到」的浪费。
     """
     tracker = stats if stats is not None else RunStats()
+    todos = board if board is not None else TodoBoard()
     started = time.monotonic()
 
     resolved = context if context is not None else resolve_mode(mode)
@@ -721,7 +1125,15 @@ def run_agent_stream(
     # 把这一轮的环境挂到当前线程上，给「运行内部要再跑一轮」的场景用（子代理）。
     # 子代理会自己再挂一层，退出时各自 reset —— 嵌套多少层都不会串
     token = _environment.set(
-        RunEnvironment(context=resolved, choice=choice, stats=tracker),
+        RunEnvironment(
+            context=resolved,
+            choice=choice,
+            stats=tracker,
+            todos=todos,
+            # 传全量：截断发生在组装请求的时候（见 build_history_messages），
+            # 而 recall_history 要能捞回被截掉的那部分
+            history=list(history or []),
+        ),
     )
 
     try:
@@ -739,6 +1151,22 @@ def run_agent_stream(
         tracker.elapsed = time.monotonic() - started
 
 
+def run_token_limit() -> int:
+    """本轮的开销上限（token）；0 表示不限制。
+
+    这是**安全阀**，不是必配项：一轮死循环能烧多少钱，光靠 `MAX_ITERATIONS`
+    的「次数」是管不住的 —— 每次请求的大小可以差两个数量级。
+
+    读的是偏好文件（见 `preferences.MAX_RUN_TOKENS_KEY`），坏值一律当不限制：
+    一个数字填错不该让对话直接跑不起来。
+    """
+    raw = PreferenceStore(get_settings().preferences_path).get(MAX_RUN_TOKENS_KEY)
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 0
+
+
 def _run_stream(
     *,
     prompt: str,
@@ -747,7 +1175,7 @@ def _run_stream(
     history: list[dict] | None,
     context: ModeContext,
     tracker: RunStats,
-) -> Iterator[str | ReasoningDelta | ToolStep | Notice]:
+) -> Iterator[str | ReasoningDelta | ToolStep | Notice | Usage | SummaryMade]:
     """run_agent_stream 的真实实现。
 
     单独拆出来只是为了能用 try/finally 统一收尾：生成器里有好几处 return，
@@ -757,9 +1185,19 @@ def _run_stream(
         yield Notice("请先选择模型；若还没有模型，请到「模型管理」页面添加。")
         return
 
-    if choice.config.protocol is not Protocol.OPENAI:
+    if not choice.config.protocol.openai_compatible:
         yield Notice(f"暂未实现「{choice.config.protocol.label}」的调用。")
         return
+
+    # 客户端先建好：下面的压缩要用它调一次模型生成摘要（见 _compact_if_needed）
+    client = OpenAI(
+        # 地址交给协议自己补全：留空时用默认地址（本机 Ollama 就是它），
+        # 少写 http:// 或 /v1 也认 —— 见 Protocol.resolve_base_url
+        base_url=choice.config.protocol.resolve_base_url(choice.config.base_url) or None,
+        api_key=choice.config.api_key or "EMPTY",  # 本地服务通常不校验
+        timeout=REQUEST_TIMEOUT,
+        max_retries=1,
+    )
 
     # ── ① 组装上下文 ──────────────────────────────────────────────
     # 模式已经由 run_agent_stream 解析好了（解析只做一次），这里只管按固定顺序拼装
@@ -783,8 +1221,21 @@ def _run_stream(
     if catalog:
         messages.append({"role": "system", "content": catalog})
 
-    # 历史是「会话记录」口径（带 ts / steps 等展示字段），这里统一还原成 API 口径
-    messages.extend(build_history_messages(history))
+    # 历史是「会话记录」口径（带 ts / steps 等展示字段），这里统一还原成 API 口径。
+    #
+    # 组装之前先看要不要把早期历史压成摘要：压完再组装，模型拿到的是
+    # 「摘要 + 最近若干条原文」。压缩和截断用的是同一把尺子（超预算的那部分），
+    # 所以不会出现「明明超了却没压」。窗口没配时预算为 0，两件事都不做。
+    window = choice.config.context_windows.get(choice.model, 0)
+    budget = int(window * HISTORY_BUDGET_RATIO)
+
+    compacted = yield from _compact_if_needed(
+        history=list(history or []),
+        budget=budget,
+        client=client,
+        model=choice.model,
+    )
+    messages.extend(build_history_messages(compacted, context_window=window))
 
     # 附件先落盘再组装消息：模型要的是「工作目录里的路径」，
     # 而不是一个它根本访问不到的内存对象
@@ -802,13 +1253,6 @@ def _run_stream(
     # 空列表是合法结果 —— 纯问答模式就是一个工具都不给。
     tools = registry.schemas(only=context.tools)
 
-    client = OpenAI(
-        base_url=choice.config.base_url or None,
-        api_key=choice.config.api_key or "EMPTY",  # 本地服务通常不校验
-        timeout=REQUEST_TIMEOUT,
-        max_retries=1,
-    )
-
     # ── ③ 循环 ────────────────────────────────────────────────────
     # 整轮下来模型是否真的输出过文本。用于兜底：一个字都没说时给个提示，
     # 否则界面上会是一个空气泡 —— 推理模型把输出预算全花在思考上时就会这样。
@@ -818,12 +1262,15 @@ def _run_stream(
     # 模型只能基于已有信息收尾 —— 不会出现「工具执行了、副作用发生了，
     # 结果却没机会被模型看到」的浪费。
     tool_budget = MAX_ITERATIONS
+    # 开销上限也在这里读一次：这一轮开始时的值说了算，
+    # 中途改偏好文件不该影响正在跑的对话
+    limit = run_token_limit()
 
     # 循环一定终止：每次迭代要么直接 return（拿到回答 / 预算已耗尽），
     # 要么把 tool_budget 减一。所以最多请求 MAX_ITERATIONS + 1 次。
     while True:
         # 用户按了停止。检查点放在循环顶部：这样「模型正在生成的这一次」也会被掐掉，
-        # 而不是等它把这一轮跑完。没有通道（Streamlit / 测试）时永远是 False
+        # 而不是等它把这一轮跑完。没有通道（CLI / 单元测试）时永远是 False
         if interaction.cancelled():
             yield Notice("已取消这一轮。")
             return
@@ -855,7 +1302,13 @@ def _run_stream(
         try:
             for chunk in stream:
                 # 用量在流末尾单独一个 chunk 里，它通常是不带 choices 的
-                tracker.add_usage(getattr(chunk, "usage", None))
+                usage = getattr(chunk, "usage", None)
+                tracker.add_usage(usage)
+
+                # 拿到就播报（见 Usage）：这一轮里上下文是在**长**的，攒到最后才给的话，
+                # 界面整个过程都停在上一轮的读数上，跑完才跳一下
+                if usage is not None and tracker.context_tokens:
+                    yield Usage(context_tokens=tracker.context_tokens)
 
                 if not chunk.choices:  # 有些服务会额外发一个只带用量的 chunk
                     continue
@@ -927,6 +1380,19 @@ def _run_stream(
             yield Notice(f"已达到 {MAX_ITERATIONS} 轮工具调用上限，模型仍未给出最终回答。")
             return
 
+        # 开销上限：每次模型请求之后查一次（用量只在流末尾才有，没法中途拦）。
+        #
+        # 检查点放在**这一批工具执行之前**：超了就别再去动文件、跑命令了 ——
+        # 那些副作用没人再消化。这里和 MAX_ITERATIONS 用尽时的做法**故意不同**：
+        # 那边会再发一次「不带工具的收尾请求」（别浪费已经执行的工具结果），
+        # 这边是直接停（别再花钱了）—— 目的相反，行为也就该相反。
+        if limit and tracker.total_tokens > limit:
+            yield Notice(
+                f"本轮已用 {tracker.total_tokens} tokens，超过上限 {limit}，已停止。"
+                "要放开的话去「偏好设置」里改「单轮开销上限」。"
+            )
+            return
+
         # 有工具调用：把这一轮的 assistant 消息回填（含模型已说出的文本和 tool_calls）
         messages.append(
             {
@@ -965,7 +1431,10 @@ def _run_stream(
                 {
                     "role": "tool",
                     "tool_call_id": slot["id"],  # 必须与请求里的 id 对应
-                    "content": result,
+                    # 回放给模型的这一份要截断，和 `build_history_messages` 用同一个上限。
+                    # 不截的话，本轮读一个大文件（动辄上万字符）当场就把上下文撑大几倍 ——
+                    # 而完整结果已经随上面的 `ToolStep` 交给界面了，这里丢的只是模型那一份
+                    "content": _clip(result, MAX_TOOL_RESULT_CHARS),
                 }
             )
 

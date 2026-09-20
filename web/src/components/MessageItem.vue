@@ -3,6 +3,7 @@ import { computed } from 'vue'
 
 import type { Message, ToolStep } from '../api/types'
 import { renderMarkdown } from '../utils/markdown'
+import TodoList from './TodoList.vue'
 
 const props = defineProps<{ message: Message }>()
 
@@ -67,6 +68,19 @@ const statsText = computed(() => {
 
 <template>
   <div class="message" :class="message.role">
+    <!-- 压缩卡片：更早的对话被压成了摘要。
+         它是「说明」而不是「替代」—— 原文一条都没删，只是不再发给模型了，
+         所以文案必须把这一点讲清楚，否则用户会以为前面的记录丢了。
+         默认收起：摘要是给模型看的主线，用户要找我直接翻原文或搜历史 -->
+    <el-collapse v-if="message.role === 'summary'" class="folds">
+      <el-collapse-item
+        name="summary"
+        :title="`📦 更早的 ${message.covers ?? 0} 条对话已压缩为摘要（原文仍在会话记录里）`"
+      >
+        <div class="md reasoning" v-html="html"></div>
+      </el-collapse-item>
+    </el-collapse>
+
     <!-- 系统提示不是模型说的话，单独标黄，也不会进入下一轮上下文 -->
     <el-alert
       v-for="(notice, index) in message.notices"
@@ -89,6 +103,13 @@ const statsText = computed(() => {
       </el-collapse-item>
     </el-collapse>
 
+    <!-- 这一轮的任务清单（跑完落盘的定稿）。排在正文之前，和「思考过程」归为一组：
+         它们都是「这条回答背后的过程」，正文才是结论。
+
+         运行中那份不在这里 —— 它走 ChatView 末尾的实时卡片（同一个组件）。
+         老记录没有这个字段，所以判空是必须的 -->
+    <TodoList v-if="message.todos?.length" :items="message.todos" />
+
     <!-- 这条消息带的附件。只记了文件名（内容已经落到工作目录），
          所以只做展示，点不开 -->
     <div v-if="message.files?.length" class="files">
@@ -97,7 +118,12 @@ const statsText = computed(() => {
       </el-tag>
     </div>
 
-    <div v-if="message.content" class="md content" v-html="html"></div>
+    <!-- 摘要的正文已经在上面那张卡片里了，这里跳过 —— 否则同一段显示两遍 -->
+    <div
+      v-if="message.content && message.role !== 'summary'"
+      class="md content"
+      v-html="html"
+    ></div>
 
     <span v-if="statsText" class="stats muted">⏱ {{ statsText }}</span>
   </div>

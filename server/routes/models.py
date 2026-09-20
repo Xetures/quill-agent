@@ -14,6 +14,7 @@ from quill_agent.models import (
     ModelConfig,
     check_api_key,
     model_choice_key,
+    protocol_options,
 )
 from quill_agent.prompts import PROMPT_CATEGORIES
 from server import stores
@@ -21,7 +22,6 @@ from server.schemas import (
     CatalogLookupPayload,
     ModelPayload,
     ModePayload,
-    PromptContentPayload,
     PromptGroupPayload,
     PromptPayload,
     TestConnectionPayload,
@@ -53,6 +53,17 @@ def list_models() -> dict:
         for name in config.models
     ]
     return {"configs": configs, "options": options}
+
+
+@router.get("/protocols")
+def list_protocols() -> dict:
+    """可选的接口协议清单（含各自的默认地址与 Key 提示）。
+
+    由后端下发而不是前端硬编码一份：加协议只需改业务层的 `Protocol` 枚举，
+    界面自动多出一项。前端拿到 `default_base_url` 后可以在用户选协议时
+    顺手把地址填好 —— Ollama 的 `http://localhost:11434/v1` 没人愿意背。
+    """
+    return {"protocols": protocol_options()}
 
 
 def _validate_key(payload: ModelPayload) -> None:
@@ -238,7 +249,7 @@ def add_prompt_group(payload: PromptGroupPayload) -> dict:
     item = stores.prompt_groups().add(
         name=payload.name,
         description=payload.description,
-        settings=payload.settings,
+        prompts=payload.prompts,
     )
     return item.model_dump()
 
@@ -262,60 +273,89 @@ def delete_prompt_group(group_id: str) -> dict[str, bool]:
 
 # ---------------------------------------------------------------------------
 # 提示词库
+#
+# 一条提示词 = 一个 `.md` 文件，**文件名是稳定 id，名字与分类在文件头的元信息里**
+# （见 `quill_agent.prompts`）。所以这里只认 id：URL 里没有中文、没有分类，
+# 分类只是元信息里的一个字段，名字改起来不影响任何引用。
 # ---------------------------------------------------------------------------
 @router.get("/prompts")
 def list_prompts() -> dict:
-    """每个类别下有哪些可选提示词。
+    """分类清单 + 全部提示词的元信息。
 
-    只给名字、不给正文：界面填下拉框只需要名字，而正文可能很长。
+    只给元信息、不给正文：列表与下拉只需要这些，而正文可能很长。
     """
     library = stores.prompts()
     return {
         "categories": list(PROMPT_CATEGORIES),
-        "names": {category: library.list_names(category) for category in PROMPT_CATEGORIES},
+        "items": [
+            {"id": item.id, "name": item.name, "category": item.category}
+            for item in library.list_items()
+        ],
     }
-
-
-@router.get("/prompts/{category}/{name}")
-def read_prompt(category: str, name: str) -> dict:
-    """某条提示词的正文。"""
-    content = stores.prompts().read(category, name)
-    if content is None:
-        raise HTTPException(status_code=404, detail=f"提示词不存在：{category}/{name}")
-    return {"category": category, "name": name, "content": content}
 
 
 @router.post("/prompts")
 def create_prompt(payload: PromptPayload) -> dict:
-    """新建一条提示词。
+    """新建一条提示词；id 由后端生成并返回。
 
-    同名文件已存在时报 400 而不是覆盖：提示词名是提示词组里的引用标识，而
-    「AI助手」这种名字很容易撞上，悄悄盖掉一份写了很久的正文代价太大。
+    不再有「同名就报错」这回事：名字不再是标识，两条提示词重名完全合法
+    （表格里并排显示，用户自己看得见）。真正的标识是返回的 id。
     """
     try:
-        name = stores.prompts().save(
-            payload.category,
-            payload.name,
-            payload.content,
-            create_only=True,
+        item = stores.prompts().create(
+            name=payload.name, category=payload.category, content=payload.content
         )
     except ValueError as exc:
-        # 名字不合法 / 类别不存在 / 重名，文案都是给用户看的，原样转 400
+        # 名字为空 / 超长、分类不在六类里 —— 文案都是给用户看的，原样转 400
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    return {"category": payload.category, "name": name}
+    return {"id": item.id, "name": item.name, "category": item.category}
 
 
-@router.put("/prompts/{category}/{name}")
-def update_prompt(category: str, name: str, payload: PromptContentPayload) -> dict:
-    """覆盖一条提示词的正文。
+@router.get("/prompts/{prompt_id}")
+def read_prompt(prompt_id: str) -> dict:
+    """某条提示词的元信息与正文。"""
+    try:
+        item = stores.prompts().detail(prompt_id)
+    except ValueError as exc:
+        # id 格式不合法（它是路径的一环，业务层会把关）
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    路径上的名字就是目标文件，不改名 —— 名字是提示词组里的引用标识，
-    改掉它会让引用静默失效（见 `PromptContentPayload`）。
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"提示词不存在：{prompt_id}")
+
+    return {"id": item.id, "name": item.name, "category": item.category, "content": item.content}
+
+
+@router.put("/prompts/{prompt_id}")
+def update_prompt(prompt_id: str, payload: PromptPayload) -> dict:
+    """覆盖一条提示词：**名字与分类都可以改**。
+
+    引用用的是 id，所以改名不会再让提示词组失效 —— 这是换成 id 标识顺带解决的
+    （从前名字就是文件名，改个名等于换了个标识，所有引用一起静默失效）。
     """
     try:
-        stores.prompts().save(category, name, payload.content)
+        item = stores.prompts().save(
+            prompt_id, name=payload.name, category=payload.category, content=payload.content
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    return {"category": category, "name": name}
+    return {"id": item.id, "name": item.name, "category": item.category}
+
+
+@router.delete("/prompts/{prompt_id}")
+def delete_prompt(prompt_id: str) -> dict:
+    """删除一条提示词，并回报「还有哪些提示词组引用它」。
+
+    引用按 id 存，删掉之后那些组里会少一条。把组名一起返回，界面就能当场提醒用户
+    去修 —— 否则他只会在某个模式跑得不对劲时才发现。
+    """
+    try:
+        removed = stores.prompts().delete(prompt_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    used_by = [group.name for group in stores.prompt_groups().list() if removed in group.prompts]
+
+    return {"removed": True, "used_by": used_by}

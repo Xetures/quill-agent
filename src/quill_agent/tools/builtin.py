@@ -12,7 +12,9 @@ from __future__ import annotations
 from quill_agent import interaction
 from quill_agent.config import get_settings
 from quill_agent.memory import MemoryStore
+from quill_agent.naming import safe_name
 from quill_agent.skills import SkillLibrary
+from quill_agent.store import SkillGroupStore
 from quill_agent.tools.base import registry
 
 
@@ -44,7 +46,15 @@ def read_skill(name: str) -> str:
     """
     settings = get_settings()
 
-    content = SkillLibrary(settings.skills_dir).read(name)
+    # 和新建 / 删除一样先过 `safe_name`：技能名会被拼进文件路径，
+    # 不校验的话「../..」这种东西就能读到技能目录外面的文件。
+    # 之前只有「读」这条路漏了校验 —— 而它恰恰是模型能自由传参的那个
+    try:
+        target = safe_name(name)
+    except ValueError as exc:
+        return f"读不了技能：{exc}"
+
+    content = SkillLibrary(settings.skills_dir).read(target)
 
     if content is None:
         return f"没有找到技能「{name}」。可用技能以系统提示里的清单为准。"
@@ -52,6 +62,193 @@ def read_skill(name: str) -> str:
         return f"技能「{name}」还没有写内容，请按常规做法处理。"
 
     return content
+
+
+def _skill_group_hint(skill_name: str) -> str:
+    """告诉模型这个新技能**现在**能不能用；不能用时说清该让用户去哪儿开。
+
+    技能给不给由模式的技能组决定，这里不能替用户改配置（理由见 create_skill），
+    所以必须把话说清楚：否则技能库里多出来一个谁也不认识的文件，而模型还以为
+    自己已经「学到」了 —— 下一轮它照样读不到，看起来就像技能凭空消失。
+    """
+    # 延迟导入：`quill_agent.agent` 在模块级 import 了 `quill_agent.tools`（取 registry），
+    # 而本模块又是在 tools/__init__ 里被导入的 —— 模块级写 import 会拿到一个只执行了
+    # 一半的 agent 模块。subagent.spawn_agent 出于同样的原因也是延迟导入
+    from quill_agent import agent
+
+    environment = agent.current_environment()
+    group_id = environment.context.skill_group_id if environment is not None else ""
+
+    if not group_id:
+        return (
+            "但**当前模式没有配技能组，它现在不会生效**。"
+            "请在回答的最后提醒用户：到「模式」页给这个模式选一个技能组，"
+            "再到「技能组」页把这个技能勾上。"
+        )
+
+    group = SkillGroupStore(get_settings().skill_groups_path).get(group_id)
+    if group is None:
+        return (
+            "但**当前模式引用的技能组已经不存在了，它现在不会生效**。"
+            "请提醒用户重新给这个模式选一个技能组。"
+        )
+
+    if skill_name in group.skills:
+        return f"它已经在当前模式的技能组「{group.name}」里，下一轮就会出现在「可用技能」清单里。"
+
+    return (
+        f"但它**现在不会生效** —— 它还没被加进任何技能组。"
+        f"请在回答的最后用一句话提醒用户：到「技能组」页把「{skill_name}」加进「{group.name}」"
+        f"（当前模式用的就是这个组），下次遇到同类任务就能自动用上。"
+    )
+
+
+@registry.tool(
+    description=(
+        "把一套值得复用的做法总结成技能存进技能库，以后遇到同类任务可以直接照着做。"
+        "**什么时候用**：用户明确说「把刚才这套做法记下来」，"
+        "或者你刚做完一件事、而这类事以后还会反复遇到（某个项目的构建步骤、"
+        "某种固定格式的整理流程）。"
+        "只写真正能复用的：一次性的任务细节、只对某一个文件成立的结论不要写成技能。"
+        "name 要短、具体、望文生义。"
+        "description 是以后判断「什么时候该用这个技能」的**唯一依据**，"
+        "必须写成使用场景（例如「当需要把一批 Excel 汇总成一张表时使用」），"
+        "而不是技能内容的摘要 —— 摘要没法让任何人知道何时该用它。"
+        "body 写清步骤、命令和注意事项，可以写长：正文平时不进上下文，只在被读取时才占空间。"
+        "同名技能已存在会失败，那是提醒你换个更具体的名字，不要试图覆盖已有的技能。"
+    ),
+    category="技能",
+    parameters={
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "技能名，也是它在技能库里的目录名；短、具体、望文生义",
+            },
+            "description": {
+                "type": "string",
+                "description": "什么时候该用这个技能（一句话，写成使用场景而不是内容摘要）",
+            },
+            "body": {
+                "type": "string",
+                "description": "技能正文，Markdown：步骤、命令、注意事项",
+            },
+        },
+        "required": ["name", "description", "body"],
+    },
+)
+def create_skill(name: str, description: str, body: str) -> str:
+    """新建一个技能，写进 skills/<名字>/SKILL.md。
+
+    **不覆盖已有技能**（create_only）：重名时宁可失败。模型看不到技能的现有正文，
+    让它「更新」等于让它照着记忆重写一遍 —— 那多半会把原来写好的东西弄丢。
+    要改已有技能，那是用户在技能页里做的事。
+
+    **也不替用户加进技能组**：技能给不给由模式的技能组决定（和工具一个道理，
+    见 agent.resolve_mode）。工具偷偷改用户的组配置，等于绕开了「谁来决定这个模式
+    有哪些能力」这件事 —— 模型可以建技能，但「下次这类任务用它吗」仍然得用户点头。
+    所以这里只负责把「去哪儿勾」说清楚（见 _skill_group_hint）。
+    """
+    if not (name or "").strip():
+        return "技能名是空的。请给一个短、具体、望文生义的名字。"
+
+    if not (description or "").strip():
+        return (
+            "description 是空的 —— 它以后是判断「什么时候该用这个技能」的唯一依据，"
+            "不能省。请写成使用场景，例如「当需要……时使用」，而不是技能内容的摘要。"
+        )
+
+    if not (body or "").strip():
+        return "技能正文是空的。请把步骤、命令和注意事项写清楚。"
+
+    library = SkillLibrary(get_settings().skills_dir)
+
+    try:
+        saved = library.save(name, description, body, create_only=True)
+    except ValueError as exc:
+        # 名字不合法（带路径分隔符等）和重名都走这里。
+        # 异常文案本身就是给模型看的说明，它会据此决定是换个名字还是就此打住
+        return str(exc)
+
+    return f"已创建技能「{saved}」（{library.path_of(saved)}）。{_skill_group_hint(saved)}"
+
+
+@registry.tool(
+    description=(
+        "删除一个技能，连同它的整个目录。"
+        "**只有当用户明确要求删掉某个技能时才用** —— "
+        "不要因为你自己觉得它过时、重复、或者和当前任务无关就删掉它，那是用户的东西。"
+        "name 必须与「可用技能」清单里的名称完全一致，差一个字就会失败，这是为了防止误删。"
+        "删除不可撤销：技能目录里的所有内容都会一起消失。"
+        "如果它还在某个技能组里，那个组会多出一条读不到的名字，"
+        "需要用户自己去技能组页把它移除。"
+    ),
+    category="技能",
+    parameters={
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "要删除的技能名，必须是「可用技能」清单里的原名",
+            }
+        },
+        "required": ["name"],
+    },
+)
+def delete_skill(name: str) -> str:
+    """删除一个技能。
+
+    **动手前先问用户**：删除不可逆（整个目录连里面的东西一起没），而技能是用户
+    自己维护的资产。做法照抄 `run_command` 对危险命令的处理 —— 没问到就按拒绝
+    处理，绝不在没人点头的时候删。
+
+    **不校验「技能是否启用」**：给不给由模式的技能组决定（见 read_skill），
+    这里只管技能库里到底有没有这个东西。
+    """
+    cleaned = (name or "").strip()
+    if not cleaned:
+        return "技能名是空的。请给出要删除的技能名。"
+
+    try:
+        target = safe_name(cleaned)
+    except ValueError as exc:
+        return str(exc)
+
+    library = SkillLibrary(get_settings().skills_dir)
+
+    # 名字先对上再弹确认：打错字时直接说「没这个技能」，而不是让用户对着一道
+    # 莫名其妙的确认题点头（那种题点完才发现根本没这个技能，最容易被顺手点掉）
+    if not library.exists(target):
+        return f"没有找到技能「{target}」。要删的目标以「可用技能」清单里的名称为准。"
+
+    approved = interaction.confirm(
+        text=f"是否删除技能「{target}」？",
+        detail=(
+            f"技能目录：{library.skill_dir(target)}\n\n"
+            "删除后无法恢复，目录里的所有内容都会一并移除。"
+        ),
+    )
+
+    if approved is False:
+        return (
+            f"用户拒绝删除技能「{target}」。"
+            "**不要换个名字或换个说法再试一次** —— 那是在规避用户刚刚做出的决定。"
+        )
+
+    if approved is None:
+        # 没有通道（CLI / 单元测试）或等待超时。**按拒绝处理**：删除不可逆，
+        # 没人点头就删，是这个机制最坏的失败方式
+        return (
+            f"没能问到用户（等待超时，或当前界面不支持确认），因此没有删除技能「{target}」。"
+            "请告诉用户你想删除它，由他自己在技能页删除，或让他确认后再试一次。"
+        )
+
+    try:
+        removed = library.delete(target)
+    except ValueError as exc:
+        return str(exc)
+
+    return f"已删除技能「{removed}」（它的目录已从技能库移除）。"
 
 
 @registry.tool(
@@ -156,8 +353,8 @@ def ask_user(question: str, options: list[str] | None = None) -> str:
     """
     channel = interaction.current()
 
-    # 「没有通道」和「问了没人答」要分开说：前者是当前界面根本没法问（Streamlit 版
-    # 就没有这条通道），后者是人不在。模型据此决定要不要再问，用户也才知道去哪儿改
+    # 「没有通道」和「问了没人答」要分开说：前者是当前调用根本没法问（单元测试、
+    # 纯脚本调用都没有这条通道），后者是人不在。模型据此决定要不要再问，用户也才知道去哪儿改
     if channel is None:
         return (
             "当前界面没有可用的提问通道，问不到用户。"
@@ -269,7 +466,7 @@ def submit_plan(plan: str, summary: str = "") -> str:
     channel = interaction.current()
 
     if channel is None:
-        # 没有通道就没法审批（Streamlit 版就是这样）。**不能因此默许它动手** ——
+        # 没有通道就没法审批。**不能因此默许它动手** ——
         # 那等于把「先问再动」变成「不问就动」，正是这个工具要防的事。
         # 退一步：把计划当成本轮回答交出去，用户回一句「做吧」下一轮再执行
         return (
@@ -306,3 +503,136 @@ def submit_plan(plan: str, summary: str = "") -> str:
         return f"用户驳回了计划，他的意见是：\n{feedback}\n请按这个意见改完再提交一次。"
 
     return "用户驳回了计划，但没有说明原因。请先问清楚他希望改什么，再重新提交。"
+
+
+# ---------------------------------------------------------------------------
+# 检索更早的对话
+# ---------------------------------------------------------------------------
+
+# 每段原文的字符上限。太短看不出上下文，太长又把刚省下来的预算花回去了 ——
+# 这个工具是「精准取回」，不是「把历史重新灌一遍」。
+RECALL_SNIPPET_CHARS = 300
+
+# 一次返回的总字符上限
+RECALL_MAX_CHARS = 3000
+
+# 一次最多返回几条
+RECALL_MAX_LIMIT = 10
+
+
+def _flatten(record: dict) -> str:
+    """把一条记录拍平成可检索的文本：正文 + 工具调用的名字 / 参数 / 结果。
+
+    工具结果也要算进去：模型要找的常常是「上次读到的那个报错」，
+    而那东西只存在于工具的返回里，正文一个字都没提。
+    """
+    parts = [str(record.get("content") or "")]
+    for step in record.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        parts.append(str(step.get("name") or ""))
+        parts.append(str(step.get("arguments") or ""))
+        parts.append(str(step.get("result") or ""))
+
+    return "\n".join(part for part in parts if part)
+
+
+def _snippet(text: str, keyword: str, limit: int = RECALL_SNIPPET_CHARS) -> str:
+    """截取关键词**周围**的一段，而不是从开头截。
+
+    命中点通常在正文中间（「认证中间件在 src/auth.py:42」）—— 从头截的话，
+    真正要找的那一句往往刚好被切掉。
+    """
+    # 换行和连续空白压掉：片段是拿来看的，不需要保留原来的版式
+    flat = " ".join(text.split())
+    position = flat.lower().find(keyword.lower())
+    if position < 0:
+        return flat[:limit]
+
+    half = max(0, (limit - len(keyword)) // 2)
+    start = max(0, position - half)
+    end = min(len(flat), start + limit)
+
+    head = "…" if start > 0 else ""
+    tail = "…" if end < len(flat) else ""
+    return f"{head}{flat[start:end]}{tail}"
+
+
+@registry.tool(
+    description=(
+        "在本次会话**更早的对话**里按关键词搜索原文，返回命中的片段。"
+        "需要回忆之前讨论过的具体细节（文件路径、报错原文、参数值、某个决定）时用它；"
+        "如果上下文里缺少更早的内容，也该先来这里查，而不是凭猜测作答。"
+        "查工作目录里的文件用 search_content，不是这个。"
+    ),
+    category="对话",
+    parameters={
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "关键词，空格分隔多个（要全部命中）。例如「认证 中间件」",
+            },
+            "limit": {
+                "type": "integer",
+                "description": f"最多返回几条，默认 5，上限 {RECALL_MAX_LIMIT}",
+            },
+        },
+        "required": ["query"],
+    },
+)
+def recall_history(query: str, limit: int = 5) -> str:
+    """按关键词检索本次会话的历史原文。
+
+    检索的是**全量**历史，包括已经被上下文预算截掉的那部分 —— 这正是它存在的意义：
+    截断只影响「发给模型多少」，不影响「能取回多少」，原文一直躺在会话文件里。
+    """
+    # 延迟导入：`quill_agent.agent` 在模块级就 import 了 `quill_agent.tools`（取 registry），
+    # 而本模块是在 `tools/__init__` 里被导入的 —— 两边都写模块级 import，会拿到一个
+    # 只执行了一半的 agent 模块。理由同 tools/subagent.py
+    from quill_agent import agent
+
+    environment = agent.current_environment()
+    if environment is None:
+        return "当前不在一次对话运行里（可能是被直接调用），没有可检索的历史。"
+
+    keywords = [word for word in query.split() if word]
+    if not keywords:
+        return "query 是空的。请给出一个或几个关键词。"
+
+    # 每条只拍平一次：关键词可能有好几个，逐个重算是白费
+    flattened = [(index, record, _flatten(record).lower()) for index, record in enumerate(
+        environment.history, start=1
+    )]
+    hits = [
+        (index, record)
+        for index, record, text in flattened
+        if all(word.lower() in text for word in keywords)
+    ]
+
+    if not hits:
+        return (
+            f"没有找到同时包含「{'、'.join(keywords)}」的记录。"
+            "换更短、更具体的关键词再试（只留一个词，或者用文件名的一个片段）—— "
+            "关键词要**全部命中**才会返回。"
+        )
+
+    # 取最近的几处：要找的东西多半在近期
+    hits.reverse()
+    chosen = hits[: max(1, min(limit, RECALL_MAX_LIMIT))]
+
+    lines = [
+        f"在更早的对话里找到 {len(hits)} 处包含「{'、'.join(keywords)}」的记录，"
+        f"以下是最近的 {len(chosen)} 处（编号是会话记录里的序号，越小越早）："
+    ]
+    for index, record in chosen:
+        role = "用户" if record.get("role") == "user" else "助手"
+        lines.append(f"\n【第 {index} 条 · {role}】\n{_snippet(_flatten(record), keywords[0])}")
+
+    result = "\n".join(lines)
+
+    # 总长兜底：一次召回塞回去的东西，不该比截断省下来的还多
+    if len(result) > RECALL_MAX_CHARS:
+        result = f"{result[:RECALL_MAX_CHARS]}…（结果较长已截断）"
+
+    return result

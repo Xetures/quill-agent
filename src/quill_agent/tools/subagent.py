@@ -32,7 +32,11 @@ from quill_agent.tools.base import registry
 # 全是「和用户打交道」的那几个：子代理的职责是干活并汇报，不是替父代理和用户对话。
 # 让它去提问、去交计划，用户会看到两张卡片同时挂着，而他根本不知道子任务在干什么 ——
 # 而父代理自己也在等，两边谁都说不清楚。
-SUBAGENT_EXCLUDED = frozenset({"spawn_agent", "ask_user", "submit_plan"})
+#
+# todo_write 是同一类：它唯一的产出是**给用户看的**进度条，而子代理那份没地方显示 ——
+# 父级只汇报它的结论。留着它，子代理会认真列一份清单，然后被默默丢掉，白花 token；
+# 而它中途 publish 出去的那几条还可能和父级自己的计划打架，界面上的进度就乱了。
+SUBAGENT_EXCLUDED = frozenset({"spawn_agent", "ask_user", "submit_plan", "todo_write"})
 
 # 嵌套深度。只允许一层。
 _depth: ContextVar[int] = ContextVar("quill_subagent_depth", default=0)
@@ -63,7 +67,7 @@ def _publish(payload: dict[str, Any]) -> None:
     """把子代理的动静转告给外面。
 
     走的还是那条交互通道 —— 它本来就是「运行内部往外说话」的路子。没有通道
-    （测试 / Streamlit）时静默丢弃：子代理照样跑，只是外面看不到过程。
+    （单元测试、纯脚本调用）时静默丢弃：子代理照样跑，只是外面看不到过程。
     """
     channel = interaction.current()
     if channel is not None:
@@ -126,6 +130,8 @@ def spawn_agent(task: str) -> str:
         skills=parent.skills,
         memory_enabled=parent.memory_enabled,
         confirm=parent.confirm,
+        # 技能组照搬：子代理和父级用的是同一套技能，新建技能时要提醒勾的就是这个组
+        skill_group_id=parent.skill_group_id,
     )
 
     # 子代理有自己的账本，跑完并回父级（见下面的 finally）

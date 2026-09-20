@@ -12,6 +12,7 @@ import pytest
 
 from quill_agent import agent, interaction
 from quill_agent.tools import subagent
+from quill_agent.tools.todo import TodoBoard
 
 
 class FakeRun:
@@ -36,12 +37,21 @@ def in_run():
     """
     context = agent.ModeContext(
         prompts={"身份": "你是 quill"},
-        tools=["read_file", "write_file", "spawn_agent", "ask_user", "submit_plan"],
+        tools=[
+            "read_file",
+            "write_file",
+            "spawn_agent",
+            "ask_user",
+            "submit_plan",
+            "todo_write",
+        ],
         skills=["查代码"],
         memory_enabled=True,
         confirm=frozenset({"write_file"}),
     )
-    environment = agent.RunEnvironment(context=context, choice=None, stats=agent.RunStats())
+    environment = agent.RunEnvironment(
+        context=context, choice=None, stats=agent.RunStats(), todos=TodoBoard()
+    )
     token = agent._environment.set(environment)
     try:
         yield environment
@@ -57,10 +67,13 @@ def in_run():
 def test_subagent_drops_the_tools_that_talk_to_the_user(
     monkeypatch: pytest.MonkeyPatch, in_run
 ) -> None:
-    """交互类工具不给子代理。
+    """「和用户打交道」的工具一律不给子代理。
 
     它该干活并汇报，而不是替父代理和用户对话：让它去提问、去交计划，用户会看到两张
     卡片同时挂着，而父代理自己也在等 —— 两边谁都说不清在等谁。
+
+    `todo_write` 是同一类：它唯一的产出是给用户看的进度条，而子代理那份没地方显示
+    （父级只汇报它的结论），留着它只会白花 token、还可能和父级自己的计划打架。
     """
     fake = FakeRun(["结论"])
     monkeypatch.setattr(agent, "run_agent_stream", fake)
@@ -72,6 +85,7 @@ def test_subagent_drops_the_tools_that_talk_to_the_user(
     assert "spawn_agent" not in nested.tools
     assert "ask_user" not in nested.tools
     assert "submit_plan" not in nested.tools
+    assert "todo_write" not in nested.tools
 
 
 def test_subagent_inherits_everything_else(monkeypatch: pytest.MonkeyPatch, in_run) -> None:
@@ -187,6 +201,20 @@ def test_merge_leaves_elapsed_alone() -> None:
 
     assert parent.total_tokens == 3
     assert parent.elapsed == 9.0
+
+
+def test_merge_leaves_context_tokens_alone() -> None:
+    """`context_tokens` 也不并：子代理的上下文是它自己那一份，不是父级的。
+
+    并进来只会让父级的仪表盘显示成子代理的占用。父级下一次请求会覆盖成正确的值。
+    """
+    parent = agent.RunStats(context_tokens=8000)
+    child = agent.RunStats(prompt_tokens=1, completion_tokens=2, total_tokens=3, context_tokens=500)
+
+    parent.merge(child)
+
+    assert parent.total_tokens == 3
+    assert parent.context_tokens == 8000
 
 
 # ---------------------------------------------------------------------------

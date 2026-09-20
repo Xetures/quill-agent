@@ -8,30 +8,88 @@ from __future__ import annotations
 import re
 from enum import Enum
 from typing import Any
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, model_validator
 
 
 class Protocol(str, Enum):
-    """接口协议类型，决定 API Key 采用哪种格式校验。"""
+    """接口协议类型，决定 API Key 采用哪种格式校验、以及用哪套客户端去调。"""
 
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
+    OLLAMA = "ollama"
 
     @property
     def label(self) -> str:
-        """界面展示用的名称：用两家官方对自家接口的正式叫法。
+        """界面展示用的名称：用各家对自家接口的正式叫法。
 
         笼统的「OpenAI 协议」并不标准：OpenAI 的对话接口正式名叫
         **Chat Completions API**（`POST /v1/chat/completions`），
         Anthropic 的叫 **Messages API**（`POST /v1/messages`）。
         第三方中转站/本地服务凡是兼容这套请求体，业界统称「OpenAI 兼容」，
         但做枚举项时还是写全称更清楚。
+
+        Ollama 是个特例：它有自己的一套原生接口（`/api/chat`），但**同时**
+        提供了 OpenAI 兼容层（`/v1/chat/completions`）。这里接的是后者 ——
+        单独为它写一套协议适配不值得，兼容层能覆盖全部功能。
         """
         return {
             Protocol.OPENAI: "OpenAI Chat Completions",
             Protocol.ANTHROPIC: "Anthropic Messages",
+            Protocol.OLLAMA: "Ollama（本地）",
         }[self]
+
+    @property
+    def openai_compatible(self) -> bool:
+        """是否走 OpenAI SDK 的 Chat Completions 接口。
+
+        这个判断原先散在 `core.fetch_models` 和 `agent._run_stream` 里各写一遍
+        （都是 `is not Protocol.OPENAI` 就报「暂未实现」）。收拢到这里是因为
+        加一个兼容协议要改的地方越少越好 —— 否则漏改一处，界面能选、调用却报
+        「暂未实现」，这种不一致比不支持更让人困惑。
+        """
+        return self in (Protocol.OPENAI, Protocol.OLLAMA)
+
+    def resolve_base_url(self, raw: str) -> str:
+        """把用户填的地址补成可直接交给 HTTP 客户端的完整 URL（空串 = 用 SDK 默认）。
+
+        为什么要这一层：界面上填地址时写「192.168.2.165:11434」很自然，但 HTTP
+        客户端要带协议的完整 URL；而 Ollama 的兼容层又固定在 `/v1` 下 —— 两处都靠
+        用户记住太苛刻，何况**连不上时的报错根本不会提这两件事**。
+
+        补全规则：
+
+            留空                     -> 协议默认地址（本机 Ollama 就是它）
+            host:port                -> 补 `http://`
+            http://host:port         -> 补 `/v1`（**仅 Ollama**，且路径为空时）
+            http://host:port/v1      -> 原样
+            http://host/custom/path  -> 原样（用户挂了反代/网关，不要乱动）
+
+        为什么只给 Ollama 补 `/v1`：远端协议的 base_url 本来就不带它，SDK 自己会拼
+        `/chat/completions`；只有本地兼容层把路径固定成了 `/v1`。
+        """
+        text = (raw or "").strip().rstrip("/")
+        if not text:
+            return self.default_base_url
+
+        if "://" not in text:
+            text = f"http://{text}"
+
+        if self is Protocol.OLLAMA and urlparse(text).path in ("", "/"):
+            text = f"{text}/v1"
+
+        return text
+
+    @property
+    def default_base_url(self) -> str:
+        """地址留空时用的默认值；空串表示「交给 SDK 用它自己的官方地址」。
+
+        只有本地服务才有这个待遇：Ollama 默认就监听 `11434`，且 OpenAI 兼容层
+        挂在 `/v1` 下。远端服务没有这种「人人如此」的地址，硬给一个默认值只会
+        让人对着一个连不上的地址排查半天。
+        """
+        return {Protocol.OLLAMA: "http://localhost:11434/v1"}.get(self, "")
 
 
 # 各协议对应的 API Key 格式
@@ -40,13 +98,35 @@ API_KEY_PATTERNS: dict[Protocol, re.Pattern[str]] = {
     Protocol.OPENAI: re.compile(r"^sk-(?!ant-)[A-Za-z0-9_\-]{20,}$"),
     # 形如 sk-ant-api03-xxx
     Protocol.ANTHROPIC: re.compile(r"^sk-ant-[A-Za-z0-9_\-]{20,}$"),
+    # Ollama 不校验 Key，所以这里没有可依据的格式。只拦「明显填错」的输入
+    # （带空格、中文、换行之类），而不是真的按某种前缀去卡 —— 卡错了就会
+    # 把一个本来能用的本地服务拦在门外。留空是正常用法，见 check_api_key。
+    Protocol.OLLAMA: re.compile(r"^\S+$"),
 }
 
 # 校验失败时给用户看的格式示例
 API_KEY_HINTS: dict[Protocol, str] = {
     Protocol.OPENAI: "以 sk- 开头，例如 sk-proj-Ab12…（后续至少 20 位字母数字）",
     Protocol.ANTHROPIC: "以 sk-ant- 开头，例如 sk-ant-api03-Ab12…（后续至少 20 位字母数字）",
+    Protocol.OLLAMA: "本地服务一般不校验 Key，留空即可",
 }
+
+
+def protocol_options() -> list[dict[str, str]]:
+    """协议清单，供界面渲染下拉框。
+
+    由业务层下发而不是让前端自己硬编码一份：加协议时只改这里有多的枚举，
+    界面自动出现那一项（和联网搜索的后端清单一个思路，见 `SearchBackend`）。
+    """
+    return [
+        {
+            "value": item.value,
+            "label": item.label,
+            "default_base_url": item.default_base_url,
+            "hint": API_KEY_HINTS[item],
+        }
+        for item in Protocol
+    ]
 
 
 def check_api_key(protocol: Protocol, api_key: str) -> str | None:
@@ -221,16 +301,22 @@ class PromptGroup(BaseModel):
         id: 唯一标识，用于删除时定位记录（对用户不可见）。
         name: 组名，例如「严谨分析」。
         description: 功能简介，模式编辑界面用它帮用户想起这组是什么。
-        settings: {类别: 提示词名}，只包含用户实际选择的那几类；
-            例如 {"身份": "AI助手", "约束": "合规红线"}。
-            **允许为空** —— 那就退化成「不带任何系统提示词」的纯问答，
-            不是每个任务都需要一整套提示词。
+        prompts: 组内提示词的 **id 列表**。**允许为空** —— 那就退化成「不带任何
+            系统提示词」的纯问答，不是每个任务都需要一整套提示词。
+
+            为什么是 id 列表而不是 `{分类: 名字}`：后者等于「每个分类只能选一条」，
+            于是同一类里想同时用两段内容时，只能把它们合并进一个文件。按 id 引用
+            之后这个限制自然消失；而且**改名不再破坏引用**（名字是展示用的，id 才是标识）。
+
+            顺序不在这里表达：拼接时按提示词自己的分类与名字排序
+            （见 `agent.build_system_prompt`），这样同一套提示词在哪台机器、哪次运行
+            拼出来的顺序都一致，前缀缓存才有意义。
     """
 
     id: str = Field(description="唯一标识")
     name: str = Field(min_length=1, description="组名")
     description: str = Field(default="", description="功能简介")
-    settings: dict[str, str] = Field(default_factory=dict, description="类别 -> 提示词名")
+    prompts: list[str] = Field(default_factory=list, description="提示词 id 列表")
 
 
 class Mode(BaseModel):

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import threading
 from collections.abc import AsyncIterator, Iterator, Sequence
 from dataclasses import asdict
@@ -35,12 +36,24 @@ from fastapi import APIRouter, File, Form, UploadFile
 from fastapi.responses import StreamingResponse
 
 from quill_agent import interaction
-from quill_agent.agent import Notice, ReasoningDelta, RunStats, ToolStep, run_agent_stream
+from quill_agent.agent import (
+    Notice,
+    ReasoningDelta,
+    RunStats,
+    SummaryMade,
+    ToolStep,
+    Usage,
+    run_agent_stream,
+)
 from quill_agent.history import ConversationStore
 from quill_agent.interaction import Interaction
 from quill_agent.models import Mode, ModelChoice
+from quill_agent.tools.todo import TodoBoard
 from server import stores
 from server.schemas import AnswerPayload, CancelPayload, ChatRequest
+
+# 外围异常（落盘失败之类）写进日志，详情留在本机；界面只收到一句能行动的说明
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["chat"])
 
@@ -49,8 +62,7 @@ class Attachment:
     """上传附件的适配壳。
 
     业务层的 `save_attachments()` 按鸭子类型写（有 `name`、能 `read()` 就行），
-    它原本适配的是 Streamlit 的 `UploadedFile`。这里补一个同样形状的壳，业务层
-    一行都不用改 —— 附件怎么落盘只有一份实现，两个界面共用。
+    这里补一个同样形状的壳，业务层一行都不用改 —— 附件怎么落盘只有一份实现。
 
     用 `UploadFile.file`（底层的同步文件对象）而不是 `UploadFile.read()`：
     后者是 async，而本端点是同步 `def`（跑在线程池里），没有 await 可用。
@@ -99,8 +111,8 @@ def _resolve_mode(request: ChatRequest) -> Mode | None:
 def _remember(store: ConversationStore, conversation_id: str, message: dict) -> None:
     """写进会话文件，并补上时间戳。
 
-    这里不像 Streamlit 版那样同时维护一份内存副本 —— 前端自己持有消息列表，
-    刷新时重新拉。少一份需要同步的状态就少一类 bug。
+    服务端不维护内存副本 —— 前端自己持有消息列表，刷新时重新拉。
+    少一份需要同步的状态就少一类 bug。
     """
     message["ts"] = datetime.now().isoformat(timespec="seconds")
     store.append(conversation_id, message)
@@ -141,6 +153,8 @@ def stream_round(request: ChatRequest, files: list) -> Iterator[tuple[str, dict[
     history = store.load(conversation_id)[:-1]
 
     stats = RunStats()
+    # 清单板走的是和账本同一条路：在这里创建、交给运行就地填、跑完再读
+    board = TodoBoard()
     text_parts: list[str] = []
     steps: list[ToolStep] = []
     notices: list[str] = []
@@ -153,6 +167,7 @@ def stream_round(request: ChatRequest, files: list) -> Iterator[tuple[str, dict[
         choice=_resolve_choice(request),
         history=history,
         stats=stats,
+        board=board,
     ):
         if isinstance(item, Notice):
             notices.append(item.text)
@@ -160,15 +175,34 @@ def stream_round(request: ChatRequest, files: list) -> Iterator[tuple[str, dict[
         elif isinstance(item, ReasoningDelta):
             reasoning_parts.append(item.text)
             yield "reasoning", {"text": item.text}
+        elif isinstance(item, Usage):
+            # 运行中的用量播报：界面拿它在跑的过程中实时刷新上下文仪表盘。
+            # **只推不存** —— 它是过程数据，这一轮的最终读数仍然随下面的 stats 落盘。
+            # 必须在 else 之前接住：那个分支把剩下的一律当正文，一个 Usage 对象
+            # 序列化出去会直接报错
+            yield "usage", {"context_tokens": item.context_tokens}
         elif isinstance(item, ToolStep):
             steps.append(item)
             yield "tool", asdict(item)
+        elif isinstance(item, SummaryMade):
+            # 摘要要**落盘**：它得活过这一轮，下一轮组装上下文时才能直接用上，
+            # 否则每次都从头压一遍 —— 每轮白花一次模型调用。
+            # 界面上它是一条记录（刷新后仍看得到），所以和助手消息一样写进会话文件
+            _remember(
+                store,
+                conversation_id,
+                {"role": "summary", "content": item.content, "covers": item.covers},
+            )
+            yield "summary", {
+                "content": item.content,
+                "covers": item.covers,
+                "saved": item.saved,
+            }
         else:
             text_parts.append(item)
             yield "text", {"text": item}
 
-    # 助手消息落盘。字段和 Streamlit 版完全一致 —— 会话文件是两边共用的，
-    # 换界面不该让历史记录变成两种格式
+    # 助手消息落盘。字段只有一份固定定义 —— 换界面不该让历史记录变成两种格式
     answer = {
         "role": "assistant",
         "content": "".join(text_parts),
@@ -176,6 +210,9 @@ def stream_round(request: ChatRequest, files: list) -> Iterator[tuple[str, dict[
         "notices": notices,
         "reasoning": "".join(reasoning_parts),
         "stats": asdict(stats),
+        # 这一轮列过的任务清单（模型没列过就是空数组）。落盘是为了**回看时还在** ——
+        # 只在运行中显示的话，一条长任务跑完，它当初打算做哪几步就再也看不到了
+        "todos": board.to_payload(),
         # 用量统计按模型分组靠它。`stats` 里只有 token 数，认不出是哪个模型花的，
         # 事后也没法反推（会话里可以中途换模型），所以必须在落盘时就记下
         "model": request.model,
@@ -242,10 +279,15 @@ def _pump(run: Run, events: Iterator[tuple[str, dict[str, Any]]]) -> None:
 
         for event in events:
             run.channel.publish(event)
-    except Exception as exc:  # noqa: BLE001 —— 兜住任何漏出来的异常
+    except Exception:  # noqa: BLE001 —— 兜住任何漏出来的异常
         # 生成器内部已经把「模型调用失败」之类转成了 Notice，这里兜的是外围异常
-        # （落盘失败之类）。不兜的话线程会静默死掉，前端一直转圈等一个永远不来的 done
-        run.channel.publish(("notice", {"text": f"运行中断：{exc}"}))
+        # （落盘失败之类）。不兜的话线程会静默死掉，前端一直转圈等一个永远不来的 done。
+        #
+        # **异常原文不发给浏览器**：`str(exc)` 里常带着内部文件路径、配置片段，
+        # 而这条 Notice 会原样渲染在对话里。详情写日志（那是本机），界面只给一句
+        # 能行动的话
+        logger.exception("这一轮运行中断")
+        run.channel.publish(("notice", {"text": "运行中断：服务端出错了，详情见终端日志。"}))
     finally:
         run.channel.close()
         # 必须解绑：线程池会复用线程，留着会串到下一轮
@@ -259,13 +301,25 @@ async def _sse(run: Run) -> AsyncIterator[str]:
     用 async 生成器而不是同步的：取值本来就是等待，`await queue.get()` 不占线程；
     写成同步生成器的话，starlette 得再开一个线程池线程来跑它。
     """
-    while True:
-        item = await run.channel.queue.get()
-        if item is None:  # 通道关闭，这一轮结束
-            return
+    finished = False
 
-        name, payload = item
-        yield _event(name, payload)
+    try:
+        while True:
+            item = await run.channel.queue.get()
+            if item is None:  # 通道关闭，这一轮结束
+                finished = True
+                return
+
+            name, payload = item
+            yield _event(name, payload)
+    finally:
+        # 客户端断开（关掉页面、断网、切走会话）时 starlette 会取消这个生成器，
+        # 但真正干活的 `_pump` 跑在**另一条线程**上，完全不受影响 —— 不主动取消的话，
+        # 它会一直跑下去；正卡在确认题上时更是要等到超时（10 分钟）才结束。
+        #
+        # 正常结束（收到通道关闭）不用取消：那一轮的收尾已经做完了
+        if not finished:
+            run.channel.cancel()
 
 
 @router.post("/chat")

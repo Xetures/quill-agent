@@ -51,7 +51,10 @@ def safe_name(name: str) -> str:
         raise ValueError("名称不能以点结尾。")
     if INVALID_CHARS.search(cleaned):
         raise ValueError('名称不能包含 / \\ : * ? " < > | 这些字符。')
-    if cleaned.upper() in RESERVED_NAMES:
+    # 带扩展名也要拦：Windows 判定设备名时不看扩展名，`CON.txt` 一样建不出来。
+    # 而提示词的文件名正是「用户输入的名字 + .md」，所以这一步不能只看整体
+    stem = cleaned.split(".")[0]
+    if cleaned.upper() in RESERVED_NAMES or stem.upper() in RESERVED_NAMES:
         raise ValueError(f"「{cleaned}」是系统保留名，换一个吧。")
 
     return cleaned

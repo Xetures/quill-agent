@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+import json
 
-from quill_agent.history import ConversationMeta
+from fastapi import APIRouter, HTTPException, Response
+
+from quill_agent.history import ConversationMeta, render_markdown
 from quill_agent.preferences import draft_key, mode_key
 from server import stores
 
@@ -44,6 +46,33 @@ def get_messages(conversation_id: str) -> dict[str, list[dict]]:
     原样透传 —— 前端渲染时需要哪个就用哪个。
     """
     return {"messages": stores.conversations().load(conversation_id)}
+
+
+@router.get("/conversations/{conversation_id}/export")
+def export_conversation(conversation_id: str, format: str = "markdown") -> Response:
+    """导出会话：Markdown（给人读）或 JSON（给程序用）。
+
+    会话是这个应用的产出物，得有办法拿出去 —— 换机器、备份、当笔记存档。
+    """
+    messages = stores.conversations().load(conversation_id)
+    if not messages:
+        raise HTTPException(status_code=404, detail="这个会话不存在，或者还没有内容。")
+
+    if format == "json":
+        body = json.dumps(messages, ensure_ascii=False, indent=2)
+        media, suffix = "application/json", "json"
+    else:
+        body = render_markdown(messages, title=f"会话 {conversation_id}")
+        media, suffix = "text/markdown; charset=utf-8", "md"
+
+    return Response(
+        content=body,
+        media_type=media,
+        # 让浏览器直接存成文件：导出本来就是「拿走」，不是「在页面上看」
+        headers={
+            "Content-Disposition": f'attachment; filename="quill-{conversation_id}.{suffix}"'
+        },
+    )
 
 
 @router.post("/conversations/{conversation_id}/archive")

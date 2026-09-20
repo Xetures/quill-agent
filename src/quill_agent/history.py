@@ -283,3 +283,55 @@ class ConversationStore:
             return "（读取失败）"
 
         return "（空会话）"
+
+
+def render_markdown(messages: list[dict], *, title: str = "") -> str:
+    """把会话记录渲染成 Markdown —— 导出的「给人读」格式。
+
+    原则是**正文照抄、过程收起**：对话本身要能直接读；工具调用是过程（回看时通常
+    不关心，但删掉就丢了信息），所以收进折叠块。
+
+    放在这里而不是服务层：它是纯数据渲染，和界面无关 —— 以后 TUI 想导出也用同一个。
+    """
+    lines = [f"# {title or '会话记录'}", "", f"> 共 {len(messages)} 条记录", ""]
+
+    for record in messages:
+        role = record.get("role")
+        content = str(record.get("content") or "").strip()
+        steps = [item for item in (record.get("steps") or []) if isinstance(item, dict)]
+
+        if role == "summary":
+            lines += ["## 已压缩的早期对话", "", content or "（空）", ""]
+            continue
+
+        if role not in {"user", "assistant"}:
+            continue
+
+        lines += ["## 用户" if role == "user" else "## 助手", ""]
+        if content:
+            lines += [content, ""]
+
+        if steps:
+            lines += [f"<details><summary>工具调用（{len(steps)} 次）</summary>", ""]
+            for step in steps:
+                lines += [
+                    f"**{step.get('name') or '?'}**",
+                    "",
+                    "```",
+                    str(step.get("arguments") or ""),
+                    "```",
+                    "",
+                    "```",
+                    str(step.get("result") or ""),
+                    "```",
+                    "",
+                ]
+            lines += ["</details>", ""]
+
+        stats = record.get("stats")
+        if isinstance(stats, dict) and stats.get("total_tokens"):
+            elapsed = float(stats.get("elapsed") or 0)
+            model = record.get("model") or ""
+            lines += [f"*{elapsed:.1f}s · {stats['total_tokens']} tokens · {model}*", ""]
+
+    return "\n".join(lines).rstrip() + "\n"

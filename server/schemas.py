@@ -9,6 +9,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from quill_agent.models import Protocol
+from quill_agent.search import DEFAULT_MAX_RESULTS, MAX_RESULTS_LIMIT, SearchBackend
 
 
 class ChatRequest(BaseModel):
@@ -80,24 +81,15 @@ class CatalogLookupPayload(BaseModel):
 
 
 class PromptPayload(BaseModel):
-    """新建一条提示词。
+    """新建 / 修改一条提示词。
 
-    名字合法性（不能是路径、不能含非法字符）由业务层的 `naming.safe_name` 校验 ——
-    schema 层不知道什么是合法的文件名，硬编码一套规则只会和那边对不上。
+    名字与分类都只是**元信息**（文件用后端生成的 id 命名，见 `quill_agent.prompts`），
+    所以这里不做文件名规则校验 —— 业务层的 `clean_name` 只要求非空、能压成单行、
+    长度合理。也正因为名字不再是标识，**改名与换分类都是安全操作**，不会让引用失效。
     """
 
+    name: str = Field(min_length=1, description="展示名")
     category: str = Field(min_length=1, description="六类提示词之一")
-    name: str = Field(min_length=1, description="提示词名，也就是文件名")
-    content: str = Field(default="", description="正文（.md 原文）")
-
-
-class PromptContentPayload(BaseModel):
-    """覆盖一条已有提示词的正文。
-
-    不带名字和类别：改名等于换了一个引用标识，会让提示词组里的引用静默失效，
-    所以这一版不支持改名（要改就是新建一个，再把引用改过去）。
-    """
-
     content: str = Field(default="", description="正文（.md 原文）")
 
 
@@ -114,7 +106,10 @@ class SkillPayload(BaseModel):
 
 
 class SkillContentPayload(BaseModel):
-    """覆盖一个已有技能的使用场景与正文。名字同 `PromptContentPayload`，不可改。"""
+    """覆盖一个已有技能的使用场景与正文。
+
+    名字不可改：技能目录名就是技能的标识（提示词已经换成 id 标识，技能还没有）。
+    """
 
     description: str = Field(default="", description="使用场景")
     content: str = Field(default="", description="正文（不含元信息块）")
@@ -159,7 +154,10 @@ class PromptGroupPayload(BaseModel):
 
     name: str = Field(min_length=1, description="组名")
     description: str = Field(default="", description="功能简介")
-    settings: dict[str, str] = Field(default_factory=dict, description="类别 -> 提示词名")
+    prompts: list[str] = Field(
+        default_factory=list,
+        description="提示词 id 列表；同一个分类可以选多条",
+    )
 
 
 class ModePayload(BaseModel):
@@ -188,6 +186,31 @@ class PreferencePayload(BaseModel):
     """批量写入界面偏好。"""
 
     values: dict[str, str]
+
+
+class SearchConfigPayload(BaseModel):
+    """保存联网搜索的配置。
+
+    `keys` 是**后端 -> Key** 的字典而不是单个字段：Tavily 和博查之间切来切去是
+    常事，只留一个字段的话，切一次就把另一边填过的 Key 抹掉了。
+    """
+
+    backend: SearchBackend = SearchBackend.TAVILY
+    keys: dict[str, str] = Field(default_factory=dict, description="后端 -> API Key")
+    base_url: str = Field(default="", description="覆盖默认端点；留空用内置地址")
+    max_results: int = Field(
+        default=DEFAULT_MAX_RESULTS, ge=1, le=MAX_RESULTS_LIMIT, description="默认返回条数"
+    )
+
+
+class SearchTestPayload(SearchConfigPayload):
+    """用**界面上当前填的**配置试搜一次，不必先保存。
+
+    先测后存能省掉一轮「存了个错的、又得改回来」，所以测试走的是请求体里的配置，
+    而不是已保存的那份。
+    """
+
+    query: str = Field(default="", description="测试用的搜索词；留空用一句默认词")
 
 
 class WorkDirPayload(BaseModel):

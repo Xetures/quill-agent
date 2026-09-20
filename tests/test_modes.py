@@ -32,7 +32,16 @@ def _seed(tmp_path: Path) -> None:
     """造三组数据：id 写死，模式按 id 引用。"""
     _write(
         tmp_path / "prompt_groups.json",
-        [{"id": "pg", "name": "标准提示词", "description": "", "settings": {"身份": "Agent助手"}}],
+        [
+            {
+                "id": "pg",
+                "name": "标准提示词",
+                "description": "",
+                # 提示词按 id 引用（引用的是哪条不重要 —— resolve_mode 只负责把
+                # 组的成员原样搬出来，正文由 build_system_prompt 去读）
+                "prompts": ["aaaa1111", "bbbb2222"],
+            }
+        ],
     )
     _write(
         tmp_path / "tool_groups.json",
@@ -60,7 +69,7 @@ def test_resolve_collects_group_members(monkeypatch, tmp_path: Path) -> None:
         )
     )
 
-    assert context.prompts == {"身份": "Agent助手"}
+    assert context.prompts == ["aaaa1111", "bbbb2222"]
     assert context.skills == ["写周报"]
     assert context.memory_enabled is True
     # 组里的两个 + 自动补上的 read_skill（理由见 test_resolve_adds_skill_reader）
@@ -87,7 +96,7 @@ def test_resolve_without_mode_gives_nothing(monkeypatch, tmp_path: Path) -> None
 
     context = agent.resolve_mode(None)
 
-    assert context.prompts == {}
+    assert context.prompts == []
     assert context.tools == []
     assert context.skills == []
     assert context.memory_enabled is False
@@ -101,7 +110,7 @@ def test_resolve_ignores_deleted_groups(monkeypatch, tmp_path: Path) -> None:
         Mode(id="m1", name="空引用", description="", prompt_group_id="早已删除")
     )
 
-    assert context.prompts == {}
+    assert context.prompts == []
 
 
 def test_migrate_moves_prompt_groups(tmp_path: Path) -> None:

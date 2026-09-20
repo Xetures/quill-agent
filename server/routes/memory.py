@@ -14,6 +14,7 @@ from quill_agent.tools.files import (
     pick_dir_with_system_dialog,
     set_work_dir,
     system_dir_picker_command,
+    work_dir_change_error,
 )
 from server import stores
 from server.schemas import MemoryPayload, PreferencePayload, TogglePayload, WorkDirPayload
@@ -108,10 +109,13 @@ def change_workdir(payload: WorkDirPayload) -> dict[str, str]:
     模型脑子里「我读过哪些文件」和实际边界就对不上了（历史里还留着旧目录的
     文件内容，而新目录下同名文件是另一个东西）。
     """
-    if payload.conversation_id and stores.conversations().load(payload.conversation_id):
-        raise HTTPException(status_code=400, detail="会话已经开始，不能再改工作目录。")
+    # 「空会话才能换」这条规则本身在业务层（见 `files.work_dir_change_error`）——
+    # 路由只负责告诉它「这个会话有没有消息」。规则留在这里的话，下一个界面就会漏掉
+    has_messages = bool(
+        payload.conversation_id and stores.conversations().load(payload.conversation_id)
+    )
 
-    error = set_work_dir(payload.path)
+    error = work_dir_change_error(has_messages) or set_work_dir(payload.path)
     if error:
         raise HTTPException(status_code=400, detail=error)
     return {"path": str(current_work_dir())}

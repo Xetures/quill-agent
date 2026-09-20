@@ -1,0 +1,17 @@
+# 换行符规矩。
+#
+# Windows 的 cmd.exe 解析批处理文件时依赖 CRLF：LF 换行的 .bat 里，
+# `if ... (` 多行块和 `goto 标签` 会解析失败 —— 表现是双击后窗口一闪就关，
+# 连错误都看不到。macOS / Linux 上编辑这个文件时很容易顺手存成 LF，
+# 所以在这里钉死。
+
+*.bat text eol=crlf
+
+# 其余脚本用 LF（shebang + POSIX 语义）
+*.sh text eol=lf
+*.command text eol=lf
+
+*.py text eol=lf
+*.md text eol=lf
+*.toml text eol=lf
+*.json text eol=lf

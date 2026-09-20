@@ -1,7 +1,7 @@
 [project]
 name = "quill-agent"
 version = "0.1.0"
-description = "本地优先的 Agent 应用：提示词、工具、会话都可配可改，业务层与 Streamlit UI 完全分离"
+description = "本地优先的 Agent 应用：提示词、工具、会话都可配可改，业务层与界面完全分离"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -10,7 +10,14 @@ requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
-    "streamlit>=1.40",
+    # 附件上传走 multipart（server/routes/chat.py 里的 Form / File）。**必须显式声明**：
+    # 它不是 fastapi 的强制依赖，而 starlette 在注册带 Form/File 的路由时会检查它 ——
+    # 少了它，服务在启动阶段就抛 RuntimeError，连页面都打不开。
+    #
+    # 它原先一直是「借」别的包带进来的，所以本地一直没暴露；那个包被拆掉之后，
+    # 新环境里就没有了。教训：**任何直接用到的东西都要自己声明**，
+    # 借来的依赖会在某次无关的改动里突然消失。
+    "python-multipart>=0.0.9",
     "pydantic>=2.9",
     "pydantic-settings>=2.5",
     "python-dotenv>=1.0",

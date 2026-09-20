@@ -28,6 +28,7 @@ read_skill 工具把正文取回来。所以技能可以又长又专，而不会
 
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -187,6 +188,32 @@ class SkillLibrary:
 
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(compose_skill(description, body), encoding="utf-8")
+        return clean
+
+    def delete(self, name: str) -> str:
+        """删除一个技能，连同它的整个目录，返回被删的名字。
+
+        删的是**整个目录**而不是只删 SKILL.md：技能目录里可能还有作者放进去的
+        附件、示例文件，留一个半空的目录只会让人以为技能还在。
+
+        Args:
+            name: 技能名（目录名）。
+
+        Returns:
+            去掉首尾空白后的技能名。
+
+        Raises:
+            ValueError: 名字不合法，或技能不存在（文案可直接展示）。
+        """
+        clean = safe_name(name)
+        directory = self.skill_dir(clean)
+
+        # 用 SKILL.md 判断存在性，和 list_names 一个口径 —— 一个没有 SKILL.md 的
+        # 目录本来就不算技能，不能因为「目录恰好同名」就把用户的无关目录删掉
+        if not (directory / SKILL_FILENAME).is_file():
+            raise ValueError(f"没有找到技能「{clean}」，没有删除任何东西。")
+
+        shutil.rmtree(directory)
         return clean
 
     def meta(self, name: str) -> SkillMeta | None:

@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="alternate icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+
+    <title>quill</title>
+
+    <script>
+      // 在样式表生效之前把主题挂到 <html> 上，避免深色用户看到一闪的白屏。
+      // 必须内联：外链模块要等下载 + 解析完才执行，那时页面已经白过了
+      ;(function () {
+        try {
+          var saved = localStorage.getItem('quill:theme') || 'auto'
+          var dark =
+            saved === 'dark' ||
+            (saved === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+          document.documentElement.classList.toggle('dark', dark)
+          document.documentElement.dataset.theme = dark ? 'dark' : 'light'
+        } catch (e) {
+          // localStorage 不可用（隐私模式）时按浅色走，不影响其它功能
+        }
+      })()
+    </script>
+    <script type="module" crossorigin src="/assets/index-DvPhqaio.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-BxQ9S7SQ.css">
+  </head>
+  <body>
+    <div id="app"></div>
+  </body>
+</html>

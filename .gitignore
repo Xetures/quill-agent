@@ -17,9 +17,6 @@ env/
 .env.*
 !.env.example
 
-# Streamlit 密钥文件（务必不要提交）
-.streamlit/secrets.toml
-
 # ---------------- 测试与工具缓存 ----------------
 .pytest_cache/
 .ruff_cache/
@@ -32,8 +29,17 @@ node_modules/
 dist/
 .vite/
 
+# 例外：前端构建产物**要进版本库**。
+# release 让用户 clone 下来就能直接跑（`make api` 会一并托管它，见 server/main.py），
+# 不必先装 Node 再构建。两条都得写：先放行目录本身，再放行目录里的文件
+!web/dist/
+!web/dist/**
+
 # ---------------- 本地运行时数据 ----------------
 data/
+
+# 打包产物（发布用，不进仓库；web/dist 是例外，见上面「前端」那段）
+release/
 
 # 上传附件的落脚处（默认落在工作目录内，可能含敏感内容）
 .attachments/

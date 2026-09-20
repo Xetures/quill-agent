@@ -3,23 +3,28 @@ import { Plus } from '@element-plus/icons-vue'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 
 import { api } from '../api/client'
-import type { ModelConfig, RemoteModel } from '../api/types'
+import type { ModelConfig, ProtocolOption, RemoteModel } from '../api/types'
 import { loadOptions } from '../stores/session'
 import { errorText } from '../utils/error'
 
 /**
- * 协议枚举 -> 展示名。
+ * 可选协议：由后端下发（`GET /protocols`），前端不再硬编码一份。
  *
- * 用两家官方对自家接口的正式叫法（后端 `Protocol.label` 是同一份口径）：
- * OpenAI 的对话接口叫 Chat Completions API，Anthropic 的叫 Messages API。
- * 「OpenAI 协议」并不是标准叫法。
+ * 展示名用各家对自家接口的正式叫法：OpenAI 的对话接口叫 Chat Completions API，
+ * Anthropic 的叫 Messages API，「OpenAI 协议」并不是标准叫法；Ollama 走的是它
+ * 自带的 OpenAI 兼容层（`/v1/chat/completions`）。
  */
-const PROTOCOL_LABELS: Record<string, string> = {
-  openai: 'OpenAI Chat Completions',
-  anthropic: 'Anthropic Messages',
-}
+const protocols = ref<ProtocolOption[]>([])
 
-const PROTOCOLS = Object.entries(PROTOCOL_LABELS).map(([value, label]) => ({ value, label }))
+/** 协议 value -> 展示名；表格与下拉共用（后端加协议时这里自动跟上）。 */
+const protocolLabels = computed<Record<string, string>>(() =>
+  Object.fromEntries(protocols.value.map((item) => [item.value, item.label])),
+)
+
+/** 某个协议的默认地址；没配默认值（远端服务）就给空串。 */
+function defaultBaseUrl(protocol: string): string {
+  return protocols.value.find((item) => item.value === protocol)?.default_base_url ?? ''
+}
 
 const configs = ref<ModelConfig[]>([])
 const testing = ref(false)
@@ -56,10 +61,32 @@ const form = ref({
   context_windows: {} as Record<string, number>,
 })
 
+/** 当前所选协议的 Key 提示；直接拿来做输入框的 placeholder。 */
+const apiKeyHint = computed(
+  () => protocols.value.find((item) => item.value === form.value.protocol)?.hint ?? '',
+)
+
 async function load(): Promise<void> {
-  const data = await api.get<{ configs: ModelConfig[] }>('/models')
+  const [data, options] = await Promise.all([
+    api.get<{ configs: ModelConfig[] }>('/models'),
+    api.get<{ protocols: ProtocolOption[] }>('/protocols'),
+  ])
   configs.value = data.configs
+  protocols.value = options.protocols
 }
+
+// 换协议时顺手把地址填好 —— 但只在「地址为空」或「还留着上一个协议的默认地址」时动手，
+// 用户自己填过的地址绝不覆盖。场景很具体：选了 Ollama，没人愿意去背
+// http://localhost:11434/v1 这个地址
+watch(
+  () => form.value.protocol,
+  (current, previous) => {
+    const shown = form.value.base_url.trim()
+    if (!shown || shown === defaultBaseUrl(previous)) {
+      form.value.base_url = defaultBaseUrl(current)
+    }
+  },
+)
 
 /** 连通测试 / 拉列表共用同一份请求体。 */
 function connectionPayload(): { base_url: string; api_key: string; protocol: string } {
@@ -383,13 +410,15 @@ onMounted(() => {
 
       <el-table-column label="接口地址">
         <template #default="{ row }">
-          <span class="mono">{{ row.base_url || '（默认地址）' }}</span>
+          <span class="mono">
+            {{ row.base_url || defaultBaseUrl(row.protocol) || '（默认地址）' }}
+          </span>
         </template>
       </el-table-column>
 
       <el-table-column label="协议" width="180">
         <template #default="{ row }">
-          {{ PROTOCOL_LABELS[row.protocol] ?? row.protocol }}
+          {{ protocolLabels[row.protocol] ?? row.protocol }}
         </template>
       </el-table-column>
 
@@ -426,7 +455,7 @@ onMounted(() => {
         <el-form-item label="协议">
           <el-select v-model="form.protocol" class="protocol-select">
             <el-option
-              v-for="item in PROTOCOLS"
+              v-for="item in protocols"
               :key="item.value"
               :label="item.label"
               :value="item.value"
@@ -435,11 +464,19 @@ onMounted(() => {
         </el-form-item>
 
         <el-form-item label="接口地址">
-          <el-input v-model="form.base_url" placeholder="例如 https://api.deepseek.com" />
+          <el-input
+            v-model="form.base_url"
+            :placeholder="defaultBaseUrl(form.protocol) || '例如 https://api.deepseek.com'"
+          />
         </el-form-item>
 
         <el-form-item label="API Key">
-          <el-input v-model="form.api_key" type="password" show-password />
+          <el-input
+            v-model="form.api_key"
+            type="password"
+            show-password
+            :placeholder="apiKeyHint"
+          />
         </el-form-item>
 
         <el-form-item label="模型名">
