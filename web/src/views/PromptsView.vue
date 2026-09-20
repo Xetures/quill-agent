@@ -259,9 +259,9 @@ async function submitPrompt(): Promise<void> {
 /**
  * 删除一条提示词。
  *
- * 删之前先把「还有哪些提示词组在引用它」写进确认框：引用按 id 存，删掉之后那些组里
- * 会少一条（表格里显示成「已删除」）。先告诉用户比让他事后自己发现好 ——
- * 那个缺失标签要等他打开组表格才看得见。
+ * 删之前先把「还有哪些提示词组在引用它」写进确认框：引用按 id 存，删掉之后后端会
+ * 顺手把它从那些组里摘掉（级联，见 `delete_prompt`）。先告诉用户比让他事后自己
+ * 发现好 —— 那个组少了一条，他是不会立刻注意到的。
  */
 async function removePrompt(item: { id: string; name: string }): Promise<void> {
   const usedBy = groups.value
@@ -282,8 +282,14 @@ async function removePrompt(item: { id: string; name: string }): Promise<void> {
     return // 用户按了取消
   }
 
+  let touched: string[] = []
   try {
-    await api.del(`/prompts/${encodeURIComponent(item.id)}`)
+    // 后端会把它从引用它的组里摘掉，并把动过的组名回传 —— 顺手告诉用户动了哪几个，
+    // 不然他只知道「删了」，不知道某个组的提示词少了一条
+    const result = await api.del<{ removed: boolean; used_by: string[] }>(
+      `/prompts/${encodeURIComponent(item.id)}`,
+    )
+    touched = result.used_by ?? []
   } catch (exc) {
     ElMessage.error(errorText(exc))
     return
@@ -294,7 +300,11 @@ async function removePrompt(item: { id: string; name: string }): Promise<void> {
 
   await load()
   await loadOptions()
-  ElMessage.success('已删除')
+  ElMessage.success(
+    touched.length
+      ? `已删除，并从 ${touched.length} 个提示词组中移除：${touched.join('、')}`
+      : '已删除',
+  )
 }
 
 /**

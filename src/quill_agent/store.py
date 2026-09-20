@@ -363,6 +363,49 @@ class PromptGroupStore:
         with file_lock(self._path):
             self._save_all([item for item in self.list() if item.id != group_id])
 
+    def drop_prompt(self, prompt_id: str) -> list[str]:
+        """把某条提示词从所有引用它的组里摘掉，返回被改动的组名。
+
+        删提示词时必须走这一步：引用是按 **id** 存的，只删正文会在组里留下一个指向
+        空处的 id —— 界面上它连名字都显示不出来，可每次保存又被原样写回去，想删都
+        删不掉。这正是「已删除的提示词在提示词组里去不掉」的成因。
+
+        Returns:
+            被改动的组名（供界面告诉用户动了哪几个组）；没有任何组引用它就返回空列表。
+        """
+        with file_lock(self._path):
+            items = self.list()
+            touched = [group for group in items if prompt_id in group.prompts]
+            if not touched:
+                return []
+
+            for group in touched:
+                group.prompts = [pid for pid in group.prompts if pid != prompt_id]
+            self._save_all(items)
+
+        return [group.name for group in touched]
+
+    def prune_missing(self, valid_ids: set[str]) -> list[str]:
+        """清掉组里所有指向已不存在提示词的 id，返回被改动的组名。
+
+        `drop_prompt` 管的是「这一次删除」，它管的是**已经躺在文件里的**悬空引用 ——
+        更早的删除没做级联，那些 id 会一直留着。无变化时不写盘，重复调用无副作用。
+        """
+        with file_lock(self._path):
+            items = self.list()
+            touched: list[PromptGroup] = []
+            for group in items:
+                kept = [pid for pid in group.prompts if pid in valid_ids]
+                if len(kept) != len(group.prompts):
+                    group.prompts = kept
+                    touched.append(group)
+
+            if not touched:
+                return []
+            self._save_all(items)
+
+        return [group.name for group in touched]
+
     def _save_all(self, items: list[PromptGroup]) -> None:
         """整体覆写（须由调用方持锁进入，见 `file_lock`）。"""
         atomic_write_text(

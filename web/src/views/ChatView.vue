@@ -169,6 +169,32 @@ const recentSubagentEvents = computed(() =>
   session.subagentEvents.slice(-SUBAGENT_TAIL),
 )
 
+/**
+ * 这一轮现在卡在哪一步的提示文案；没在跑就是空串。
+ *
+ * 存在的意义是回答「是不是卡了」：请求发出到模型吐第一个字、工具执行中，事件流
+ * 都会静默十几秒甚至更久。没有这行字，用户只能盯着不动的界面猜。
+ */
+const runPhaseText = computed(() => {
+  const phase = session.phase
+  if (!phase) return ''
+
+  switch (phase.kind) {
+    case 'connecting':
+      return '正在连接…'
+    case 'waiting':
+      return '等待模型响应…'
+    case 'thinking':
+      return '正在思考…'
+    case 'generating':
+      return '正在生成…'
+    case 'tool':
+      return `正在执行 ${phase.name}…`
+    case 'asking':
+      return '等待你的回答…'
+  }
+})
+
 /** 浮层里有没有东西；它同时决定消息区要不要留白。 */
 const hasFloater = computed(
   () =>
@@ -480,6 +506,14 @@ function onKeydown(event: Event | KeyboardEvent): void {
         </el-tag>
       </div>
 
+      <!-- 这一轮现在卡在哪一步（见 runPhaseText）。
+           放在输入框正上方：它就是「我现在为什么不能打字」的答案，
+           也是「慢」和「卡住」之间的区别 -->
+      <div v-if="runPhaseText" class="run-phase">
+        <el-icon class="spin"><Loading /></el-icon>
+        <span>{{ runPhaseText }}</span>
+      </div>
+
       <div class="box">
         <el-input
           v-model="draft"
@@ -552,6 +586,16 @@ function onKeydown(event: Event | KeyboardEvent): void {
   flex-direction: column;
   gap: 14px;
   padding: 16px 20px;
+}
+
+/* 这一轮现在卡在哪一步（见 runPhaseText）。淡色小字，不抢输入框的注意力 */
+.run-phase {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 2px 6px;
+  font-size: 12px;
+  color: var(--text-soft);
 }
 
 /* ---------- 浮层：子代理看板 + 待确认卡片 ----------

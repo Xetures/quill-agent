@@ -422,6 +422,14 @@ export type ChatEvent =
   | { type: 'start'; runId: string }
   | { type: 'text'; text: string }
   | { type: 'reasoning'; text: string }
+  /**
+   * 某个工具即将开始执行。
+   *
+   * 和 `tool`（执行完之后的记录）不同，它只带名字、不落盘 —— 存在的意义是填补
+   * 「工具跑起来」到「它返回」之间的静默：那段时间可能几秒到几十秒（联网搜索、
+   * 扫大目录），界面不显示点什么的话，用户分不清是在跑还是卡住了。
+   */
+  | { type: 'tool_start'; name: string }
   | { type: 'tool'; step: ToolStep }
   | { type: 'notice'; text: string }
   | { type: 'question'; question: Question }

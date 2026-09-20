@@ -124,6 +124,8 @@ function parseBlock(block: string): ChatEvent | null {
       return { type: 'reasoning', text: String(payload.text ?? '') }
     case 'notice':
       return { type: 'notice', text: String(payload.text ?? '') }
+    case 'tool_start':
+      return { type: 'tool_start', name: String(payload.name ?? '') }
     case 'tool':
       return { type: 'tool', step: payload as unknown as ToolStep }
     case 'question':

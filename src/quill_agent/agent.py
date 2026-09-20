@@ -165,6 +165,21 @@ def _leak_index(text: str) -> int:
 
 
 @dataclass(frozen=True)
+class ToolStart:
+    """一个工具即将开始执行。
+
+    存在的唯一理由是**填补那段静默**：`ToolStep` 是执行完之后才产的，而中间那几秒到
+    几十秒（联网搜索、扫大目录、跑命令）事件流一个字都不吐 —— 界面只能干等，用户
+    分不清是在跑还是卡住了。
+
+    它不带结果，也不该被界面当成一条记录存下来：真正的记录是随后的 `ToolStep`。
+    """
+
+    name: str
+    arguments: str
+
+
+@dataclass(frozen=True)
 class ToolStep:
     """一次工具调用的记录，供界面展示。
 
@@ -1087,7 +1102,7 @@ def run_agent_stream(
     stats: RunStats | None = None,
     board: TodoBoard | None = None,
     context: ModeContext | None = None,
-) -> Iterator[str | ReasoningDelta | ToolStep | Notice | Usage | SummaryMade]:
+) -> Iterator[str | ReasoningDelta | ToolStart | ToolStep | Notice | Usage | SummaryMade]:
     """以流式方式跑一轮 Agent 对话。
 
     Args:
@@ -1175,7 +1190,7 @@ def _run_stream(
     history: list[dict] | None,
     context: ModeContext,
     tracker: RunStats,
-) -> Iterator[str | ReasoningDelta | ToolStep | Notice | Usage | SummaryMade]:
+) -> Iterator[str | ReasoningDelta | ToolStart | ToolStep | Notice | Usage | SummaryMade]:
     """run_agent_stream 的真实实现。
 
     单独拆出来只是为了能用 try/finally 统一收尾：生成器里有好几处 return，
@@ -1416,6 +1431,11 @@ def _run_stream(
             if interaction.cancelled():
                 yield Notice("已取消这一轮，剩下的工具调用没有执行。")
                 return
+
+            # 先播「要跑什么」再跑：工具本身可能几秒到几十秒（联网搜索、扫目录），
+            # 那段时间事件流是静默的。界面拿它显示「正在执行 xxx」，用户才知道
+            # 现在在等的是工具、不是卡住了
+            yield ToolStart(name=slot["name"], arguments=slot["arguments"])
 
             call_started = time.monotonic()
             result = _execute(slot, context.confirm)

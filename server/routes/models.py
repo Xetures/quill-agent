@@ -346,16 +346,19 @@ def update_prompt(prompt_id: str, payload: PromptPayload) -> dict:
 
 @router.delete("/prompts/{prompt_id}")
 def delete_prompt(prompt_id: str) -> dict:
-    """删除一条提示词，并回报「还有哪些提示词组引用它」。
+    """删除一条提示词，并把它从所有引用它的提示词组里摘掉。
 
-    引用按 id 存，删掉之后那些组里会少一条。把组名一起返回，界面就能当场提醒用户
-    去修 —— 否则他只会在某个模式跑得不对劲时才发现。
+    **级联是必须的，不是顺手做的**：引用按 id 存，只删正文会在组里留下一个指向空处的
+    id —— 界面上它连名字都显示不出来，却每次保存都被原样写回去，用户根本删不掉它
+    （见 `PromptGroupStore.drop_prompt`）。
+
+    返回被改动的组名：让界面能说清「顺手动了哪几个组」，而不是让用户自己去猜。
     """
     try:
         removed = stores.prompts().delete(prompt_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    used_by = [group.name for group in stores.prompt_groups().list() if removed in group.prompts]
+    used_by = stores.prompt_groups().drop_prompt(removed)
 
     return {"removed": True, "used_by": used_by}

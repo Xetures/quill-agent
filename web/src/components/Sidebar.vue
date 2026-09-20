@@ -7,6 +7,7 @@ import {
   DataLine,
   Document,
   Link,
+  Loading,
   MagicStick,
   Plus,
   Setting,
@@ -124,6 +125,16 @@ async function onArchive(id: string, title: string): Promise<void> {
             :title="`最后更新：${formatTime(item.updated_at)}`"
             @click="onOpen(item.id)"
           >
+            <!-- 正在跑的会话转个圈：切走之后它还在后台跑着（运行跟着会话走，不跟着
+                 界面走）。没有这个标记，用户没法知道那个任务是还在跑还是早停了 -->
+            <el-icon
+              v-if="session.runningIds.includes(item.id)"
+              class="conv-running spin"
+              title="正在运行"
+            >
+              <Loading />
+            </el-icon>
+
             <span class="conv-title">{{ item.title }}</span>
             <el-button
               size="small"
@@ -291,6 +302,23 @@ async function onArchive(id: string, title: string): Promise<void> {
 .conv.active {
   background: var(--accent);
   color: var(--on-accent);
+}
+
+/* 正在跑的标记。跟着行文本色走（currentColor）：选中行是主色底，
+ * 写死颜色的话在那里就会糊掉看不见 */
+.conv-running {
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
+.spin {
+  animation: conv-spin 0.8s linear infinite;
+}
+
+@keyframes conv-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .conv-title {

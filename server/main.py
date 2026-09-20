@@ -22,6 +22,7 @@ from fastapi.responses import FileResponse
 
 from quill_agent import __version__, bootstrap, sandbox
 from quill_agent.config import get_settings
+from server import stores
 from server.routes import chat, conversations, memory, models, search, tools, usage
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,23 @@ logger = logging.getLogger(__name__)
 # 接口不受任何影响。这条路径也是「release 里该不该带 dist」的答案：
 # 带上就能一键跑，不带也不影响开发。
 WEB_DIST = Path(__file__).resolve().parent.parent / "web" / "dist"
+
+
+def _prune_dangling_prompt_refs() -> None:
+    """清掉提示词组里指向**已删除**提示词的 id。
+
+    现在的删除会级联（见 `routes.models.delete_prompt`），但更早删掉的那批没做过 ——
+    那些 id 会一直躺在组里：界面显示不出名字，保存时又被原样写回，用户删不掉。
+    启动自检里跑一次，老数据就自己好了，不用人去动 JSON。
+
+    无变化时不动盘；真动了就在日志里点名，那是「我明明删了，怎么组里还有」的答案。
+    """
+    valid = {item.id for item in stores.prompts().list_items()}
+    touched = stores.prompt_groups().prune_missing(valid)
+    if touched:
+        # 用 print 而不是 logger：这个进程没配 logging（uvicorn 只管自己那套），
+        # logger.info 是不显示的。启动自检本来就都走 print —— 见 cli.serve
+        print(f"已清理提示词组中的悬空引用：{'、'.join(touched)}", flush=True)
 
 
 @asynccontextmanager
@@ -48,6 +66,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     """
     logger.info(bootstrap.startup_note(get_settings()))
     logger.info(sandbox.startup_note())
+    _prune_dangling_prompt_refs()
     yield
 
 

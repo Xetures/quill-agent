@@ -90,6 +90,24 @@ export const session = reactive({
   activeRunId: '',
 
   /**
+   * 当前会话跑到哪一步了；没在跑就是 null（见 `RunPhase`）。
+   *
+   * 它回答的是「是不是卡了」：事件流在几处会静默（等模型吐第一个字、工具执行中），
+   * 没有它的话，用户只能盯着不动的界面猜。
+   */
+  phase: null as RunPhase | null,
+
+  /**
+   * 哪些会话正在跑（会话 id 列表）。侧边栏拿它在会话名旁边转个圈 ——
+   * 否则切走之后，用户根本不知道那个任务还在不在跑。
+   *
+   * 数据源是模块级的 `runs` Map，但它不是响应式的（里面装着 AbortController 这类
+   * 东西，不该被 Vue 代理一层）。所以每次增删都同步一份 id 过来 —— 界面上要渲染的
+   * 本来也就只是这几个 id。
+   */
+  runningIds: [] as string[],
+
+  /**
    * 子代理的实时动静（它调了哪些工具）。
    *
    * 子代理的中间过程**不进这条消息**（那正是它存在的意义），所以单独播一份出来；
@@ -132,9 +150,32 @@ function modeKey(conversationId: string): string {
  */
 let prefs: Record<string, string> = {}
 
+/**
+ * 这一轮现在卡在哪一步。
+ *
+ * 存在的意义就是回答「它是不是卡了」。事件流有几处是静默的：从请求发出到模型吐第一个字
+ * （首字延迟十几秒很常见）、工具执行中（联网搜索、扫大目录）。没有这个，用户只能盯着
+ * 不动的界面猜自己该不该刷新。
+ */
+export type RunPhase =
+  /** 刚发出请求，还没连上。 */
+  | { kind: 'connecting' }
+  /** 连上了，在等模型吐第一块。 */
+  | { kind: 'waiting' }
+  /** 推理模型的思维链在往外走。 */
+  | { kind: 'thinking' }
+  /** 正文在往外走。 */
+  | { kind: 'generating' }
+  /** 某个工具正在执行（带名字）。 */
+  | { kind: 'tool'; name: string }
+  /** 停在等用户回答（确认 / 提问 / 计划审批）。 */
+  | { kind: 'asking' }
+
 /** 一次正在跑的运行的完整状态。 */
 interface ActiveRun {
   conversationId: string
+  /** 当前跑到哪一步（见 `RunPhase`）。 */
+  phase: RunPhase
   /** 运行 id，要等流开头的 `start` 事件才拿得到；拿到之前是空串。 */
   runId: string
   /** 正在生成的那条助手消息。切回来时要重新挂回 `session.messages`。 */
@@ -162,6 +203,16 @@ interface ActiveRun {
 const runs = new Map<string, ActiveRun>()
 
 /**
+ * 把「哪些会话在跑」同步给响应式状态（侧边栏拿它转圈）。
+ *
+ * 每次 `runs` 增删之后都要调：忘了的话，跑起来的会话旁边不会出现转圈图标 ——
+ * 而这个图标正是「我切走了，那个任务还在跑」的唯一提示。
+ */
+function syncRunningIds(): void {
+  session.runningIds = [...runs.keys()]
+}
+
+/**
  * 「加载某个会话」的请求序号，用来丢弃过期响应。
  *
  * 没有它就会有这个 bug：连着点会话 A、B，若 A 的响应比 B 晚回来，
@@ -181,6 +232,7 @@ function attachRun(conversationId: string): void {
 
   session.busy = Boolean(run)
   session.activeRunId = run?.runId ?? ''
+  session.phase = run?.phase ?? null
   session.liveUsage = run?.usage ?? 0
   session.liveTodos = run?.todos ?? []
   session.subagentEvents = run?.subagentEvents ?? []
@@ -198,10 +250,25 @@ function attachRun(conversationId: string): void {
 function syncRunState(run: ActiveRun): void {
   if (run.conversationId !== session.currentId) return
 
+  session.phase = run.phase
   session.liveUsage = run.usage
   session.liveTodos = run.todos
   session.subagentEvents = run.subagentEvents
   session.pendingQuestion = run.question
+}
+
+/**
+ * 换一个阶段。
+ *
+ * 同一种阶段不重复写：`text` 事件每个分片来一次，而 `generating` → `generating`
+ * 这种无谓的赋值会白白触发一轮重渲染（phase 是个新对象，Vue 认不出它们相等）。
+ * `tool` 例外 —— 连着两个工具时名字要跟着换。
+ */
+function setPhase(run: ActiveRun, phase: RunPhase): void {
+  if (run.phase.kind === phase.kind && phase.kind !== 'tool') return
+
+  run.phase = phase
+  syncRunState(run)
 }
 
 // ---------------------------------------------------------------------------
@@ -417,6 +484,8 @@ export async function sendMessage(options: {
   // 留下来，切回来时再挂回界面（见 attachRun）
   const run: ActiveRun = {
     conversationId,
+    // 起点是「还没连上」：请求刚发出去，`start` 事件还没回来
+    phase: { kind: 'connecting' },
     runId: '',
     reply,
     controller: new AbortController(),
@@ -426,11 +495,14 @@ export async function sendMessage(options: {
     question: null,
   }
   runs.set(conversationId, run)
+  // 侧边栏立刻就能在这个会话旁边转圈 —— 不用等第一个事件回来
+  syncRunningIds()
 
   // 上一轮的清单可能还挂着（被取消的那轮会刻意留着），这一轮重新开始，收掉它
   session.liveTodos = []
 
   session.busy = true
+  syncRunState(run)
 
   try {
     for await (const event of streamChat(
@@ -447,19 +519,26 @@ export async function sendMessage(options: {
       if (event.type === 'start') {
         run.runId = event.runId
         if (run.conversationId === session.currentId) session.activeRunId = event.runId
+        setPhase(run, { kind: 'waiting' })
       } else if (event.type === 'text') {
         // 正文直接写进 reply：它是个 reactive 对象，挂回消息列表时自然会渲染。
         // 注意这里**不看当前是哪个会话** —— 用户切走了也要照常累积，
         // 切回来时才能看到完整的这一轮（见 attachRun）
         reply.content += event.text
+        setPhase(run, { kind: 'generating' })
       } else if (event.type === 'reasoning') {
         reply.reasoning = (reply.reasoning ?? '') + event.text
+        setPhase(run, { kind: 'thinking' })
       } else if (event.type === 'usage') {
         // 运行中的实时读数：先记进这一轮，再（在当前会话时）同步给仪表盘
         run.usage = event.contextTokens
         syncRunState(run)
+      } else if (event.type === 'tool_start') {
+        setPhase(run, { kind: 'tool', name: event.name })
       } else if (event.type === 'tool') {
         reply.steps?.push(event.step)
+        // 工具跑完了：下一步是「把结果发回模型、等它接着想」—— 阶段回到等待
+        setPhase(run, { kind: 'waiting' })
         // 子代理那一步到了 = 它跑完了，实时看板收掉（成品已经在这个步骤里）
         if (event.step.name === 'spawn_agent') {
           run.subagentEvents = []
@@ -488,7 +567,7 @@ export async function sendMessage(options: {
       } else if (event.type === 'question') {
         // 这一轮会在服务端**卡在这里等答案**，流不会继续往下走
         run.question = event.question
-        syncRunState(run)
+        setPhase(run, { kind: 'asking' })
       } else if (event.type === 'done') {
         // 以后端落盘的那份为准：字段更全，也和之后从历史里读出来的一致
         Object.assign(reply, event.message)
@@ -504,11 +583,14 @@ export async function sendMessage(options: {
     if (!run.controller.signal.aborted) reply.notices?.push(`请求失败：${errorText(exc)}`)
   } finally {
     runs.delete(conversationId)
+    // 转圈图标随这一轮的结束消失（也可能它早就不在当前会话上了）
+    syncRunningIds()
 
     // 只有界面正看着这个会话时才收拾实时状态。用户切到别的会话去了的话，
     // 就不该动那一边的界面 —— 那边自有它自己的一份（见 attachRun）
     if (session.currentId === conversationId) {
       session.busy = false
+      session.phase = null
       // 流都结束了还留着一张卡片，用户会以为还能点 —— 点了也没人接
       session.pendingQuestion = null
       // 运行已经收尾，再留着这个 id 只会让「停止」按钮指向一个不存在的运行
