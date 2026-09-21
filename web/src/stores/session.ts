@@ -56,6 +56,16 @@ export const session = reactive({
   modelKey: '',
   modeId: '',
 
+  /**
+   * 要不要让模型思考（推理模型的思维链）。
+   *
+   * 关掉它是给小模型用的：它们常常一思考就把输出预算花光，正文一个字都给不出来。
+   * 关闭时后端会带上 `reasoning_effort="none"`（见 `agent._open_stream`）。
+   *
+   * 是**全局偏好**而不是按会话记：它跟着「你在用哪一类模型」走，而不是某一个任务的属性。
+   */
+  thinking: true,
+
   /** 正在跑一轮对话；期间禁用输入。 */
   busy: false,
 
@@ -136,6 +146,9 @@ export const session = reactive({
 
 /** 后端偏好文件里的键。 */
 const PREF_MODEL = 'model'
+
+/** 全局偏好：要不要让模型思考（"1"/"0"）。缺省 / 坏值一律当**开**，与历史行为一致。 */
+const PREF_THINKING = 'thinking'
 
 /** 某个会话记住的模式 id 的键，与后端 `preferences.mode_key` 是同一口径。 */
 function modeKey(conversationId: string): string {
@@ -329,6 +342,8 @@ export async function loadOptions(): Promise<void> {
 export async function loadPreferences(): Promise<void> {
   prefs = await api.get<Record<string, string>>('/preferences')
   session.modelKey = prefs[PREF_MODEL] ?? ''
+  // 只有明确写了 "0" 才算关 —— 缺省、空串、手滑写坏的值都当开
+  session.thinking = prefs[PREF_THINKING] !== '0'
   // 这里不解析模式：它是按会话记的，而此刻还不知道会落到哪个会话。
   // `loadMessages` 会负责把它取回来
 }
@@ -350,6 +365,11 @@ export async function bootstrap(): Promise<void> {
 export function persistModel(): void {
   // 不 await：偏好是「顺手存一下」，失败了也不该打断对话
   void api.put('/preferences', { values: { [PREF_MODEL]: session.modelKey } })
+}
+
+/** 记下思考开关。和 `persistModel` 一样是全局偏好。 */
+export function persistThinking(): void {
+  void api.put('/preferences', { values: { [PREF_THINKING]: session.thinking ? '1' : '0' } })
 }
 
 /** 把模式记在某个会话名下；不碰模型选择。 */
@@ -520,6 +540,7 @@ export async function sendMessage(options: {
         model_config_id: choice.config_id,
         model: choice.model,
         mode_id: session.modeId,
+        thinking: session.thinking,
         files,
       },
       run.controller.signal,

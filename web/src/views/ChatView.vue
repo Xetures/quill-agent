@@ -19,6 +19,7 @@ import {
   loadDraft,
   persistMode,
   persistModel,
+  persistThinking,
   saveDraft,
   sendMessage,
   session,
@@ -481,6 +482,24 @@ function onKeydown(event: Event | KeyboardEvent): void {
           />
         </el-select>
 
+        <!-- 思考开关。放在模型选择旁边，因为「要不要思考」是跟着模型走的：
+             小模型常常一思考就把输出预算花光、正文一个字都给不出来，这时把它关掉。
+             大模型不需要关它 —— 所以默认是开的 -->
+        <el-tooltip
+          placement="top"
+          content="关闭后不带思维链。小模型常因思考耗尽输出预算，这时该关掉它"
+        >
+          <div class="think-toggle">
+            <span>思考</span>
+            <el-switch
+              v-model="session.thinking"
+              size="small"
+              :disabled="session.busy"
+              @change="persistThinking"
+            />
+          </div>
+        </el-tooltip>
+
         <WorkDirPicker />
 
         <el-button size="small" :icon="Plus" title="上传文件" @click="pickFiles">附件</el-button>
@@ -743,6 +762,17 @@ function onKeydown(event: Event | KeyboardEvent): void {
   gap: 8px;
   /* 窗口压窄时换行，而不是把工作目录挤没 */
   flex-wrap: wrap;
+}
+
+/* 思考开关（见模板）。做成「小字 + 小开关」的样子融入这一排，
+   而不是一个抢眼的表单控件 —— 它多数时候是开着的，不需要被注意到 */
+.think-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-soft);
+  cursor: pointer;
 }
 
 .mode-select {

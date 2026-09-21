@@ -23,6 +23,9 @@ class ChatRequest(BaseModel):
     model: str = Field(default="", description="模型名")
     # 空表示不用模式（界面上不允许，但接口不强求 —— 由调用方保证必须选一个）
     mode_id: str = Field(default="", description="模式 id；空表示不带模式")
+    # 关掉思考：小模型常常一思考就把输出预算花光、正文一个字都给不出来。
+    # 默认开 —— 与「不传这个字段」的历史行为保持一致
+    thinking: bool = Field(default=True, description="是否让模型思考")
 
 
 class AnswerPayload(BaseModel):

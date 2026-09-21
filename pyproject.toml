@@ -1,6 +1,6 @@
 [project]
 name = "quill-agent"
-version = "0.1.5"
+version = "0.1.6"
 description = "本地优先的 Agent 应用：提示词、工具、会话都可配可改，业务层与界面完全分离"
 readme = "README.md"
 license = "MIT"

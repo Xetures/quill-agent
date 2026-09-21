@@ -169,6 +169,7 @@ def stream_round(request: ChatRequest, files: list) -> Iterator[tuple[str, dict[
         history=history,
         stats=stats,
         board=board,
+        thinking=request.thinking,
     ):
         if isinstance(item, Notice):
             notices.append(item.text)
@@ -334,6 +335,8 @@ async def chat(
     model_config_id: Annotated[str, Form()] = "",
     model: Annotated[str, Form()] = "",
     mode_id: Annotated[str, Form()] = "",
+    # FastAPI 会把表单里的 "true"/"false"/"1"/"0" 解析成 bool；缺省是开（与历史行为一致）
+    thinking: Annotated[bool, Form()] = True,
     files: Annotated[Sequence[UploadFile], File()] = (),
 ) -> StreamingResponse:
     """发一条消息，用 SSE 推回整轮过程。
@@ -362,6 +365,7 @@ async def chat(
         model_config_id=model_config_id,
         model=model,
         mode_id=mode_id,
+        thinking=thinking,
     )
 
     uploads = [

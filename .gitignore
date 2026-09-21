@@ -56,3 +56,6 @@ quill-source/
 
 # ---------------- 操作系统 ----------------
 .DS_Store
+
+# playwright-cli（手工排查时的命令行浏览器）留下的快照
+.playwright-cli/

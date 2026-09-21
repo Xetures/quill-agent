@@ -35,6 +35,7 @@ declare module 'vue' {
     ElTable: typeof import('element-plus/es')['ElTable']
     ElTableColumn: typeof import('element-plus/es')['ElTableColumn']
     ElTag: typeof import('element-plus/es')['ElTag']
+    ElTooltip: typeof import('element-plus/es')['ElTooltip']
     HelpButton: typeof import('./src/components/HelpButton.vue')['default']
     LineChart: typeof import('./src/components/LineChart.vue')['default']
     MarkdownEditor: typeof import('./src/components/MarkdownEditor.vue')['default']

@@ -17,6 +17,8 @@ export interface ChatPayload {
   model_config_id: string
   model: string
   mode_id: string
+  /** 要不要让模型思考；关掉时后端会带 `reasoning_effort="none"`。 */
+  thinking: boolean
   /** 本轮附件；后端会落盘到工作目录，再把路径告诉模型。 */
   files: File[]
 }
@@ -92,6 +94,8 @@ export async function* streamChat(
   body.append('model_config_id', payload.model_config_id)
   body.append('model', payload.model)
   body.append('mode_id', payload.mode_id)
+  // 表单字段只能是字符串；FastAPI 那边按 bool 解析 "true"/"false"
+  body.append('thinking', payload.thinking ? 'true' : 'false')
   for (const file of payload.files) body.append('files', file)
 
   const response = await fetch(`${BASE}/chat`, { method: 'POST', body, signal })

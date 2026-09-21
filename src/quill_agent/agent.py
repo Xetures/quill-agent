@@ -986,17 +986,47 @@ def build_history_messages(
 # 一个不支持的网关会把所有连接一起拖下水 —— 之后切回支持的服务也拿不到用量统计。
 _stream_usage_cache: dict[str, bool] = {}
 
+# 哪些接口地址认 `reasoning_effort`（用来关思考）。判定口径和上面那个缓存一样：
+# 失败过一次就不再对这个地址尝试 —— 免得每轮都白试一次注定失败的请求。
+#
+# 和它分开而不是共用一个布尔：这两件事的失败原因完全不同。混在一起的话，
+# 「这家不认关思考」会被记成「这家不认用量统计」，反过来一样。
+_reasoning_cache: dict[str, bool] = {}
 
-def _open_stream(client, *, base_url: str, model: str, messages: list, tools):
-    """发起一次流式请求，尽量让它带上用量统计。
+
+def _open_stream(
+    client,
+    *,
+    base_url: str,
+    model: str,
+    messages: list,
+    tools,
+    thinking: bool = True,
+):
+    """发起一次流式请求：尽量带上用量统计，并按需关掉思考。
 
     include_usage 不是所有 OpenAI 兼容服务都认。探测失败之后就**对这个地址**
     永久退回普通请求：用量统计是锦上添花，不能因为它让对话本身不可用。
+
+    **关思考**走的是 `reasoning_effort="none"` —— 它是 OpenAI 的标准字段，
+    Ollama 的兼容层认（实测能把思考真的关掉，见 README 7.27），但换一家服务可能就不认了。
+    所以这里是**三级降级**，最差也能照样把话说完：
+
+        ① 带用量统计 + 关思考   →  ② 只带关思考  →  ③ 什么都不带（普通请求）
+
+    关不掉思考只是小事，因为它让整轮对话失败才是大事。
 
     并发说明：chat 端点跑在线程池里，可能有两个请求同时探测同一个地址 ——
     它们会各发一次请求、写同一个结果。无害（最坏情况是多探测一次），
     所以没有加锁。
     """
+    # 只在「确实要关思考」且「这个地址还没被判定为不认」时才带
+    extra = (
+        {"reasoning_effort": "none"}
+        if not thinking and _reasoning_cache.get(base_url) is not False
+        else {}
+    )
+
     if _stream_usage_cache.get(base_url) is not False:
         try:
             stream = client.chat.completions.create(
@@ -1005,6 +1035,7 @@ def _open_stream(client, *, base_url: str, model: str, messages: list, tools):
                 tools=tools,
                 stream=True,
                 stream_options={"include_usage": True},
+                **extra,
             )
         except Exception:
             # 这里吞掉异常是故意的：真正的错误（鉴权、网络、模型名）会在下面那次
@@ -1014,12 +1045,27 @@ def _open_stream(client, *, base_url: str, model: str, messages: list, tools):
             _stream_usage_cache[base_url] = True
             return stream
 
-    return client.chat.completions.create(
-        model=model,
-        messages=messages,
-        tools=tools,
-        stream=True,
-    )
+    try:
+        return client.chat.completions.create(
+            model=model,
+            messages=messages,
+            tools=tools,
+            stream=True,
+            **extra,
+        )
+    except Exception:
+        if not extra:
+            raise
+
+        # 这个地址不认 reasoning_effort：记下来，退回普通请求。
+        # 后果只是「思考关不掉」，比整轮跑不起来轻得多
+        _reasoning_cache[base_url] = False
+        return client.chat.completions.create(
+            model=model,
+            messages=messages,
+            tools=tools,
+            stream=True,
+        )
 
 
 def _accumulate_tool_calls(store: dict[int, dict], delta_calls) -> None:
@@ -1125,6 +1171,7 @@ def run_agent_stream(
     stats: RunStats | None = None,
     board: TodoBoard | None = None,
     context: ModeContext | None = None,
+    thinking: bool = True,
 ) -> Iterator[str | ReasoningDelta | ToolStart | ToolStep | Notice | Usage | SummaryMade]:
     """以流式方式跑一轮 Agent 对话。
 
@@ -1144,6 +1191,10 @@ def run_agent_stream(
             它要照搬父级的提示词和技能，但工具集要去掉几样（见 tools/subagent.py）。
             没有这个参数的话，「给谁用哪些工具」就只能靠运行时的拒绝来兜，
             而一个「看得见却永远调不通」的工具比不给它更让人困惑。
+        thinking: 要不要让模型思考（推理模型的思维链）。**关闭**会带上
+            `reasoning_effort="none"`（见 `_open_stream`）—— 小模型常常一思考就把
+            输出预算花光、正文一个字都给不出来，这时候该关。有些服务不认这个参数，
+            那会退回普通请求（思考关不掉，但对话照常）。
 
     Yields:
         文本增量（str）/ 思维链增量（ReasoningDelta）/ 工具调用记录（ToolStep）/
@@ -1182,6 +1233,7 @@ def run_agent_stream(
             history=history,
             context=resolved,
             tracker=tracker,
+            thinking=thinking,
         )
     finally:
         _environment.reset(token)
@@ -1213,6 +1265,7 @@ def _run_stream(
     history: list[dict] | None,
     context: ModeContext,
     tracker: RunStats,
+    thinking: bool = True,
 ) -> Iterator[str | ReasoningDelta | ToolStart | ToolStep | Notice | Usage | SummaryMade]:
     """run_agent_stream 的真实实现。
 
@@ -1323,6 +1376,7 @@ def _run_stream(
                 model=choice.model,
                 messages=messages,
                 tools=available_tools or None,
+                thinking=thinking,
             )
         except Exception as exc:  # 网络、鉴权、模型名错误都归到这里
             yield Notice(f"调用模型失败：{exc}")

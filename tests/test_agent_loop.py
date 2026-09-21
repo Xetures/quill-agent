@@ -58,10 +58,13 @@ def _make_choice(base_url: str = "") -> ModelChoice:
     return ModelChoice(config=config, model="m")
 
 
-def _run(monkeypatch, responses: list[list], stats=None) -> tuple[list, list[dict]]:
-    """跑一轮对话，返回（事件流, 每次请求的参数）。"""
+def _run(monkeypatch, responses: list[list], stats=None, **kwargs) -> tuple[list, list[dict]]:
+    """跑一轮对话，返回（事件流, 每次请求的参数）。
+
+    额外的关键字参数透传给 `run_agent_stream`（比如 `thinking=False`）。
+    """
     requests: list[dict] = []
-    monkeypatch.setattr(agent, "OpenAI", lambda **kwargs: _FakeClient(responses, requests))
+    monkeypatch.setattr(agent, "OpenAI", lambda **_kw: _FakeClient(responses, requests))
     # 工具菜单固定为非空，免得测试结果受本机工具注册表的影响
     # （mode=None 时本来一个工具都不给，这里要的就是「有工具」这个前提）
     monkeypatch.setattr(
@@ -76,6 +79,7 @@ def _run(monkeypatch, responses: list[list], stats=None) -> tuple[list, list[dic
             choice=_make_choice(),
             history=[],
             stats=stats,
+            **kwargs,
         )
     )
     return events, requests
@@ -114,6 +118,20 @@ class _StrictClient(_FakeClient):
         if "stream_options" in kwargs:
             raise TypeError("unexpected keyword argument 'stream_options'")
         return iter(self._responses.pop(0))
+
+
+class _RejectReasoningClient(_FakeClient):
+    """模拟不认 `reasoning_effort` 的服务：带上这个参数就直接报错。
+
+    关思考用的是这个字段 —— 它是 OpenAI 的标准字段，但不是所有兼容服务都实现了。
+    不认的时候必须退回普通请求：**关不掉思考是小事，让整轮对话失败才是大事**。
+    """
+
+    def _create(self, **kwargs):
+        if "reasoning_effort" in kwargs:
+            self._requests.append(kwargs)
+            raise TypeError("unexpected keyword argument 'reasoning_effort'")
+        return super()._create(**kwargs)
 
 
 def test_plain_answer_finishes_in_one_request(monkeypatch) -> None:
@@ -236,6 +254,58 @@ def test_looks_like_tool_call_heuristic() -> None:
     assert not agent._looks_like_tool_call('{"answer": 42}')
     assert not agent._looks_like_tool_call("名字叫 name，参数是 arguments")
     assert not agent._looks_like_tool_call("")
+
+
+def test_thinking_off_sends_reasoning_effort(monkeypatch) -> None:
+    """关掉思考时，请求要带上 `reasoning_effort="none"`。
+
+    小模型常常一思考就把输出预算花光、正文一个字都给不出来 —— 关掉它才正常出答案。
+    """
+    monkeypatch.setattr(agent, "_reasoning_cache", {})
+
+    events, requests = _run(monkeypatch, [[_text_chunk("好")]], thinking=False)
+
+    assert requests[0]["reasoning_effort"] == "none"
+    assert _texts(events) == "好"
+
+
+def test_thinking_on_keeps_request_unchanged(monkeypatch) -> None:
+    """默认（思考开着）**不带**这个参数 —— 与加这个开关之前的请求一字不差。"""
+    monkeypatch.setattr(agent, "_reasoning_cache", {})
+
+    _events, requests = _run(monkeypatch, [[_text_chunk("好")]])
+
+    assert "reasoning_effort" not in requests[0]
+
+
+def test_thinking_off_falls_back_when_service_rejects_it(monkeypatch) -> None:
+    """服务不认 `reasoning_effort` 时退回普通请求：思考关不掉，但对话不能挂。"""
+    requests: list[dict] = []
+    monkeypatch.setattr(agent, "_stream_usage_cache", {})
+    monkeypatch.setattr(agent, "_reasoning_cache", {})
+    monkeypatch.setattr(
+        agent,
+        "OpenAI",
+        lambda **_kw: _RejectReasoningClient([[_text_chunk("好")]], requests),
+    )
+    monkeypatch.setattr(agent.registry, "schemas", lambda *a, **k: [{"type": "function"}])
+
+    events = list(
+        agent.run_agent_stream(
+            prompt="继续",
+            files=[],
+            mode=None,
+            choice=_make_choice(),
+            history=[],
+            thinking=False,
+        )
+    )
+
+    # 照样答出来了
+    assert _texts(events) == "好"
+    # 最后一次请求不带它；并且这个地址被记下来，之后不再白试
+    assert "reasoning_effort" not in requests[-1]
+    assert agent._reasoning_cache == {"": False}
 
 
 def test_reasoning_content_is_yielded_separately(monkeypatch) -> None:
