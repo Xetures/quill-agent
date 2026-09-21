@@ -405,6 +405,25 @@ class Usage:
 
 
 @dataclass(frozen=True)
+class Round:
+    """这一轮跑到第几圈了，以及上限是多少。
+
+    为什么要播报它：一次运行可能跑十几分钟、几十轮工具调用，而界面上能看到的只有
+    「正在执行 xxx」「等待模型响应」这类**当下状态** —— 跑了多久、还剩多少余地，
+    全靠猜。尤其卡住的时候，「它已经跑了 9 圈」和「它刚开始」是完全不同的两件事，
+    用户据此决定接着等还是按停止。
+
+    只在**每轮请求之前**播报一次，不是增量。`index > total` 表示这是预算用尽后的
+    **强制收尾那一轮**（它不带工具，不属于工具轮次）。
+    """
+
+    index: int
+    """第几圈（从 1 开始）。"""
+    total: int
+    """这一轮的上限（`round_limit`）。"""
+
+
+@dataclass(frozen=True)
 class AgentResult:
     """一轮 Agent 对话的结果。
 
@@ -1242,7 +1261,7 @@ def run_agent_stream(
     board: TodoBoard | None = None,
     context: ModeContext | None = None,
     thinking: bool = True,
-) -> Iterator[str | ReasoningDelta | ToolStart | ToolStep | Notice | Usage | SummaryMade]:
+) -> Iterator[str | ReasoningDelta | ToolStart | ToolStep | Notice | Usage | Round | SummaryMade]:
     """以流式方式跑一轮 Agent 对话。
 
     Args:
@@ -1354,7 +1373,7 @@ def _run_stream(
     context: ModeContext,
     tracker: RunStats,
     thinking: bool = True,
-) -> Iterator[str | ReasoningDelta | ToolStart | ToolStep | Notice | Usage | SummaryMade]:
+) -> Iterator[str | ReasoningDelta | ToolStart | ToolStep | Notice | Usage | Round | SummaryMade]:
     """run_agent_stream 的真实实现。
 
     单独拆出来只是为了能用 try/finally 统一收尾：生成器里有好几处 return，
@@ -1462,6 +1481,10 @@ def _run_stream(
         if interaction.cancelled():
             yield Notice("已取消这一轮。")
             return
+
+        # 报一下「现在跑第几圈」。放在请求之前 —— 这一行是对这次请求的说明，
+        # 而且就算请求失败，用户也已经知道它走到哪了
+        yield Round(index=round_limit - tool_budget + 1, total=round_limit)
 
         # 快撞上预算就提醒模型收尾（见 BUDGET_WARNING）。检查点必须在**发出这次请求
         # 之前** —— 提醒要赶在这一轮送出去，模型才来得及把剩下的活收拢到预算之内。

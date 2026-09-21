@@ -897,6 +897,46 @@ def test_run_max_iterations_reads_the_preference(monkeypatch, tmp_path: Path) ->
         assert agent.run_max_iterations() == agent.MAX_ITERATIONS
 
 
+def test_every_round_is_announced(monkeypatch) -> None:
+    """每轮请求前播报一次「跑到第几圈 / 上限多少」。
+
+    一次运行可能十几分钟、几十轮，而界面上能看到的只有「正在执行 xxx」这类**当下状态** ——
+    跑了多少、还剩多少余地，没有这个事件就只能靠猜。尤其卡住的时候，「它已经跑了 9 圈」
+    和「它刚开始」是完全不同的两件事，用户据此决定接着等还是按停止。
+    """
+    events, _ = _run(
+        monkeypatch,
+        [
+            [_tool_chunk("c1", "no_such_tool")],
+            [_tool_chunk("c2", "no_such_tool")],
+            [_text_chunk("好了")],
+        ],
+    )
+
+    rounds = [item for item in events if isinstance(item, agent.Round)]
+    total = agent.MAX_ITERATIONS
+    assert [(item.index, item.total) for item in rounds] == [(1, total), (2, total), (3, total)]
+
+
+def test_the_final_round_goes_past_the_total(monkeypatch) -> None:
+    """预算用尽后的收尾轮：`index > total` —— 界面据此显示「收尾中」。
+
+    那一轮不带工具，不属于工具轮次。直说会变成「第 2/1 轮」，只会让人困惑。
+    """
+    events, requests = _run(
+        monkeypatch,
+        [
+            [_tool_chunk("c1", "no_such_tool")],
+            [_text_chunk("好了")],
+        ],
+        max_iterations=1,
+    )
+
+    rounds = [item for item in events if isinstance(item, agent.Round)]
+    assert [(item.index, item.total) for item in rounds] == [(1, 1), (2, 1)]
+    assert len(requests) == 2  # 一轮工具 + 一次收尾
+
+
 def test_max_iterations_can_be_raised_from_preferences(monkeypatch) -> None:
     """上限改了之后循环按新值停，提示语也要报那个值。
 

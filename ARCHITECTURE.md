@@ -279,12 +279,30 @@ Mode.skill_group_id  → SkillGroupStore  → skills（非空则强制加 read_s
 **三档**：`off`（不隔离）/ `read-only`（全盘只读）/ `workspace-write`（只有工作目录可写）。
 另有 `sandbox_network` 控制能否联网（默认断网）。
 
-**机制**：Linux 上的 **bubblewrap**（用户命名空间，不需要 root）。参数序列的关键顺序是
-「先 `--ro-bind / /` 整个文件系统只读 → 再用 `--tmpfs` 盖住 `.ssh` 等敏感目录 →
-最后才 `--bind work_dir work_dir`」。
+**机制**：按平台选后端，都不用 root。
+
+- **Linux — bubblewrap**。参数序列的关键顺序是「先 `--ro-bind / /` 整个文件系统只读 →
+  再用 `--tmpfs` 盖住 `.ssh` 等敏感目录 → 最后才 `--bind work_dir work_dir`」。
+- **macOS — Seatbelt（`sandbox-exec`）**。一样是「先 `(deny default)`，再逐条开口子」。
+  有一条规则语义必须记住：**后写的覆盖先写的** —— 「读盘放开、再关掉 `~/.ssh`」只能
+  按这个顺序写，反过来等于没关。
+
+**两个后端的语义差异是有意保留的**，都写在 `sandbox.py` 的注释里：bwrap 能给沙箱一个
+干净空的 `/tmp`，Seatbelt 只能「允许 / 拒绝某个路径」，做不到「换一个」。所以 macOS 那边
+是**放行** `$TMPDIR` 和 `/tmp` 而不是隔离它们 —— 不这么做 python 会直接报「没有可用的
+临时目录」。**假装两边一样，比承认差异更糟**。
+
+**两个后端都带探针**：`bwrap` 在 PATH 里不等于跑得起来（AppArmor 会挡 user namespace），
+`sandbox-exec` 躺着也不等于这套 profile 语法在当前系统版本上还认（它被 Apple 长期标为
+deprecated）。**装了 ≠ 能用**，所以探一次、把失败翻译成人话。
 
 **没有后端时会怎样**：**拒绝执行，绝不裸跑**。配置了沙箱却悄悄降级成无沙箱，
-比根本没配更危险。macOS / Windows 上 `startup_note()` 会明说这一点。
+比根本没配更危险。Windows 上 `startup_note()` 会明说这一点。
+
+**所以默认档位是按平台给的**（`config._default_sandbox_mode`）：Linux / macOS 默认
+`workspace-write`（两个后端都真能拦），Windows 默认 `off`。原因是一句话 ——
+**默认值对所有人生效，而"配了沙箱却没后端"在这里等于拒绝执行**；全局翻会让没配过沙箱的
+Windows 用户每条命令都失败。
 
 **`off` 模式的定位**：默认值，保持既有行为；此时 `run_command` 里那套危险命令识别
 （`CATASTROPHIC_PATTERNS`）**只是防手滑，不是安全边界**。
@@ -385,7 +403,7 @@ Mode.skill_group_id  → SkillGroupStore  → skills（非空则强制加 read_s
 
 | 层 | 输入 → 输出 | 关键点 |
 |---|---|---|
-| `agent` | 模型响应 → 事件对象 | `str` / `ReasoningDelta` / `ToolStart` / `ToolStep` / `Notice` / `Usage` / `SummaryMade` |
+| `agent` | 模型响应 → 事件对象 | `str` / `ReasoningDelta` / `ToolStart` / `ToolStep` / `Notice` / `Usage` / `Round` / `SummaryMade` |
 | `stream_round` | 事件对象 → `(name, payload)` | **不拼 SSE 文本** —— 因为队列还要接纳 interaction 塞进来的事件 |
 | `_pump` | `(name, payload)` → 队列 | 跑在 runner 线程 |
 | `_sse` | 队列 → SSE 文本 | `_event()` 统一序列化 |
@@ -460,6 +478,12 @@ ask() ──publish─┘      （生成器被阻塞时，这一路照样通）
 
 **边界与代价**：`DEFAULT_TIMEOUT = 600` 秒 —— 用户关掉页面走人时，这一轮不能把 runner 线程
 永久占住。但 600 秒内它是**真的阻塞着**的，这也是为什么必须有 SSE 心跳（见 §2.4）。
+
+**这条通道的软肋是「不可见」**：阻塞期间没有任何新事件，界面上看不出「它在等谁」。
+实测里一次 `spawn_agent` 的确认卡片躺在浮层里没被注意到，白等了十分钟，最后按超时判成
+「拒绝」。所以界面侧做了两件事：`asking` 阶段那行提示高亮、标签页标题改成
+「⚠ 等待你的确认」；时间轴上那行「跑了多久」也在持续走字 —— 一个人等了十分钟，
+和刚等十秒，看起来必须不一样。
 
 ---
 
@@ -656,7 +680,7 @@ connecting → waiting → thinking / generating → tool{name} → waiting → 
 |---|---|---|
 | **工作目录** | `PathGuard.resolve()` → 必须 `is_relative_to(root)` | 防误操作 |
 | **命令白名单 / 黑名单** | `CATASTROPHIC_PATTERNS` + 确认弹窗 | **防手滑，不是安全边界**（注释里明说） |
-| **沙箱** | bubblewrap 命名空间 | **真边界**（交给内核） |
+| **沙箱** | Linux 用 bubblewrap 命名空间，macOS 用 Seatbelt 策略 | **真边界**（交给内核） |
 
 **几个容易忽略的细节**：
 
@@ -725,3 +749,5 @@ web/(Vue)  ──HTTP/SSE──▶  server/(FastAPI)  ──▶  src/quill_agent
 | 模型把调用写进正文会怎样 | `agent` 的 `leaked` / `forged` / `FINAL_ROUND_INSTRUCTION` |
 | 上下文快满了会怎样 | `agent._compact_if_needed` |
 | 切走会话再回来会怎样 | `session.attachRun` |
+| 这一轮跑了多久、跑到第几圈 | `agent.Round` + `ChatView.runMetaText` |
+| 为什么确认卡片要闹出动静 | `ChatView` 的 `asking` 高亮 + 标签页标题 |

@@ -39,6 +39,7 @@ from quill_agent import interaction
 from quill_agent.agent import (
     Notice,
     ReasoningDelta,
+    Round,
     RunStats,
     SummaryMade,
     ToolStart,
@@ -186,6 +187,10 @@ def stream_round(request: ChatRequest, files: list) -> Iterator[tuple[str, dict[
                 "context_tokens": item.context_tokens,
                 "cached_tokens": item.cached_tokens,
             }
+        elif isinstance(item, Round):
+            # 跑到第几圈了 —— 纯过程信号，不落盘。界面拿它显示进度，
+            # 用户据此判断该继续等还是按停止
+            yield "round", {"index": item.index, "total": item.total}
         elif isinstance(item, ToolStart):
             # 只是「现在开始跑这个工具」，不落盘也不进 steps —— 它是过程信号，
             # 成品是随后的 ToolStep

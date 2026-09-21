@@ -196,6 +196,89 @@ const runPhaseText = computed(() => {
   }
 })
 
+/**
+ * 让上面那行的用时**走字**。
+ *
+ * 时间得每秒重算 —— 只在事件到达时更新是不够的：长时间静默（等模型吐第一个字、
+ * 等一个慢工具、等子代理）恰恰是最需要看到「它还在跑」的时候，而那时候事件流是断的。
+ *
+ * 只在忙的时候起定时器：空闲时每秒触发一次重渲染没有意义。
+ */
+const now = ref(Date.now())
+let clockTimer: ReturnType<typeof setInterval> | undefined
+
+function stopClock(): void {
+  if (clockTimer !== undefined) {
+    clearInterval(clockTimer)
+    clockTimer = undefined
+  }
+}
+
+watch(
+  () => session.busy,
+  (busy) => {
+    stopClock()
+    if (!busy) return
+    now.value = Date.now()
+    // 1 秒一跳就够 —— 这行字只精确到秒
+    clockTimer = setInterval(() => (now.value = Date.now()), 1000)
+  },
+  { immediate: true },
+)
+
+onUnmounted(stopClock)
+
+/** 把毫秒差格式化成 `12:04` / `1:02:33`。小时不补零：目标是「一眼看出跑了多久」。 */
+function formatElapsed(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000))
+  const seconds = total % 60
+  const minutes = Math.floor(total / 60) % 60
+  const hours = Math.floor(total / 3600)
+
+  const mm = String(minutes).padStart(2, '0')
+  const ss = String(seconds).padStart(2, '0')
+  return hours > 0 ? `${hours}:${mm}:${ss}` : `${minutes}:${ss}`
+}
+
+/**
+ * 阶段提示下面那行小字：跑了多久、跑到第几圈；没在跑就是空串。
+ *
+ * 为什么不并进 `runPhaseText`：那行回答「现在在干嘛」，这行回答「还要多久」。
+ * 只有前者的话，一个十几分钟的任务从头到尾都是同一句话。
+ */
+const runMetaText = computed(() => {
+  if (!session.busy) return ''
+
+  const parts: string[] = []
+
+  if (session.liveStartedAt) {
+    parts.push(formatElapsed(now.value - session.liveStartedAt))
+  }
+
+  const round = session.liveRound
+  if (round) {
+    // 收尾轮不占工具预算（它不带工具），报「第 31/30 轮」只会让人困惑
+    parts.push(round.index > round.total ? '收尾中' : `第 ${round.index}/${round.total} 轮`)
+  }
+
+  return parts.join(' · ')
+})
+
+/**
+ * 在等你回答时，把浏览器标签页的标题也改掉。
+ *
+ * 实测教训：确认卡片静静躺在浮层里，人（包括我自己）盯着上面那行「正在思考…」
+ * 看了十分钟都没注意到它 —— 而模型一直在等，最后等到超时被判成「拒绝」。
+ * 阶段行做了高亮，但那要求视线正好在这个页面上；改标题是为了**切到别的标签时**
+ * 也能看见。
+ */
+watch(
+  () => session.pendingQuestion,
+  (question) => {
+    document.title = question ? '⚠ 等待你的确认 · quill' : 'quill'
+  },
+)
+
 /** 浮层里有没有东西；它同时决定消息区要不要留白。 */
 const hasFloater = computed(
   () =>
@@ -525,12 +608,18 @@ function onKeydown(event: Event | KeyboardEvent): void {
         </el-tag>
       </div>
 
-      <!-- 这一轮现在卡在哪一步（见 runPhaseText）。
+      <!-- 这一轮现在卡在哪一步（见 runPhaseText），以及跑了多久 / 跑到第几圈
+           （见 runMetaText）。
            放在输入框正上方：它就是「我现在为什么不能打字」的答案，
            也是「慢」和「卡住」之间的区别 -->
-      <div v-if="runPhaseText" class="run-phase">
+      <div
+        v-if="runPhaseText"
+        class="run-phase"
+        :class="{ asking: session.phase?.kind === 'asking' }"
+      >
         <el-icon class="spin"><Loading /></el-icon>
         <span>{{ runPhaseText }}</span>
+        <span v-if="runMetaText" class="run-meta">{{ runMetaText }}</span>
       </div>
 
       <div class="box">
@@ -615,6 +704,24 @@ function onKeydown(event: Event | KeyboardEvent): void {
   padding: 0 2px 6px;
   font-size: 12px;
   color: var(--text-soft);
+}
+
+/* 用时与轮次：比阶段文案再淡一档。
+ * 数字用等宽（tabular-nums）—— 它每秒都在变，不等宽的话整行会跟着左右抖。
+ * 和前面阶段文案之间靠 `.run-phase` 的 gap 分开，不再另加分隔符
+ * （`runMetaText` 内部已经用 `·` 分隔「用时」和「轮次」了） */
+.run-meta {
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 在等你回答时把这一行做亮。
+ * 实测教训：确认卡片静静躺在浮层里，人盯着上面那行「正在思考…」看了十分钟都没
+ * 注意到它 —— 而模型一直在等，最后等到超时被当成「拒绝」。这一行是页面上离
+ * 输入框最近的地方，把「在等你」放在这里最不容易被漏掉。 */
+.run-phase.asking {
+  color: var(--accent);
+  font-weight: 600;
 }
 
 /* ---------- 浮层：子代理看板 + 待确认卡片 ----------

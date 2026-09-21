@@ -14,6 +14,7 @@ cwd 不可控（可能是安装目录、也可能是用户主目录），数据�
 from __future__ import annotations
 
 import os
+import sys
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -41,6 +42,21 @@ _PATH_FIELDS = (
     "skills_dir",
     "work_dir",
 )
+
+
+def _default_sandbox_mode() -> str:
+    """沙箱的默认档位 —— 按平台给。
+
+    为什么分平台：默认值对**所有人**生效，而「配了沙箱却没有后端」在本项目里是
+    **拒绝执行**。全局默认 workspace-write 的话，没有后端的平台（目前是 Windows）
+    会每条命令都失败 —— 而用户根本没配过沙箱，只会觉得程序坏了。
+
+    这不是「Windows 懒得做」：那边确实没有能对标 bwrap / Seatbelt 的现成原语，
+    要拼受限 Token + 合成 SID 才够用，是个独立工程。见 `sandbox.py`。
+    """
+    if sys.platform == "win32":
+        return "off"
+    return "workspace-write"
 
 
 def _default_home() -> Path:
@@ -169,11 +185,17 @@ class Settings(BaseSettings):
     #   read-only        工作区只读、默认断网
     #   workspace-write  工作区可写、默认断网
     #
-    # 默认 off 的原因：Phase 1 只实现了 Linux 的 bubblewrap 后端，别的平台没有可用后端。
-    # 而「配了沙箱却没有后端」在本项目里的处理是**拒绝执行**（不静默裸跑）——
-    # 默认开着会让 macOS / Windows 上的开发和测试当场不可用。等补上 macOS 后端再翻默认值。
+    # 默认值**按平台给**（见 `_default_sandbox_mode`）：
+    #
+    #   Linux / macOS    workspace-write —— 两个后端都真能拦住，这是最实用的一档
+    #   Windows          off —— 那边没有可用后端，而「配了沙箱却没有后端」在本项目里
+    #                    是**拒绝执行**（不静默裸跑）；全局默认开着会让开箱即用变成
+    #                    开箱不可用，而用户根本没配过沙箱，只会觉得程序坏了
+    #
+    # Windows 那档不是「懒得做」：那边确实没有能对标 bwrap / Seatbelt 的现成原语，
+    # 要拼受限 Token + 合成 SID 才够用，是个独立工程（见 `sandbox.py` 的说明）。
     sandbox_mode: Literal["off", "read-only", "workspace-write"] = Field(
-        default="off",
+        default_factory=_default_sandbox_mode,
         description="执行类工具的沙箱档位：off / read-only / workspace-write",
     )
 

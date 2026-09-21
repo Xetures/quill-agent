@@ -25,15 +25,23 @@ shell.py 里那两道闸（危险命令先问用户、交互式程序直接拒�
 
 为什么默认是 off
 ----------------
-Phase 1 只有 Linux 后端（bubblewrap）。开发机若是 macOS，就没有可用后端 ——
-默认开着的话每条命令都会落到「无后端 → 拒绝执行」，开发和测试当场不可用。
-等 Phase 2 补上 macOS 的 Seatbelt 后端，再把默认值翻成 workspace-write。
-**无后端时不静默放行**：用户既然显式要了沙箱，偷偷裸跑是这里最坏的失败方式。
+默认值仍是 off：开着的话，**没有可用后端的平台**上每条命令都会落到「无后端 → 拒绝执行」，
+开发和测试当场不可用。**无后端时不静默放行** —— 用户既然显式要了沙箱，偷偷裸跑是这里
+最坏的失败方式。
 
-为什么是 bubblewrap 而不是自己写 seccomp
+两个后端（按平台自动选，不用配）
+-------------------------------
+    Linux    bubblewrap —— 非特权 user namespace，一条命令表达完整的隔离视图
+    macOS    Seatbelt（sandbox-exec）—— 系统自带的策略引擎
+
+两者语义上有几处**有意的不对齐**（做不到完全一致，见 `_seatbelt_profile` 里的说明）：
+bubblewrap 能给沙箱一个干净空的 `/tmp`，Seatbelt 只能「允许 / 拒绝某个路径」，
+所以那边的临时目录是**放行**而不是隔离。写清楚这一点，比假装两边一样有用。
+
+为什么用现成的沙箱，而不是自己写 seccomp
 ----------------------------------------
-bubblewrap 是「非特权 + 走 user namespace」的现成实现，一条命令就能表达完整的隔离视图，
-而且它已经在无数发行版里被验证过。自己拼 seccomp-bpf 规则，写错的代价是把沙箱写成筛子。
+bubblewrap 与 Seatbelt 都是**已经被验证过**的实现，一条命令就能表达完整的隔离视图。
+自己拼 seccomp-bpf 规则，写错的代价是把沙箱写成筛子。
 """
 
 from __future__ import annotations
@@ -42,6 +50,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache
@@ -157,6 +166,8 @@ def build_argv(command: str, policy: SandboxPolicy) -> list[str]:
 
     if sys.platform.startswith("linux"):
         return _bwrap_argv(command, policy)
+    if sys.platform == "darwin":
+        return _seatbelt_argv(command, policy)
 
     raise SandboxUnavailable(_no_backend_reason())
 
@@ -165,8 +176,8 @@ def _no_backend_reason() -> str:
     """没有后端时的说明，要能让用户自己修好。"""
     if sys.platform == "darwin":
         return (
-            "本机是 macOS，而 Phase 1 只带了 Linux 的 bubblewrap 后端（macOS 的 Seatbelt "
-            "后端计划在 Phase 2 提供）。"
+            "本机是 macOS，但 sandbox-exec 用不了（系统被裁剪过，或该工具已被移除）。"
+            "可以先用 SANDBOX_MODE=off 显式关掉隔离。"
         )
     if sys.platform == "win32":
         return (
@@ -261,12 +272,138 @@ def _bwrap_probe() -> tuple[bool, str]:
     return True, ""
 
 
+def _seatbelt_argv(command: str, policy: SandboxPolicy) -> list[str]:
+    """用 macOS 的 Seatbelt（sandbox-exec）把命令关进策略里。
+
+    Raises:
+        SandboxUnavailable: sandbox-exec 不在，或这套 profile 语法在当前系统上不认。
+    """
+    ok, reason = _seatbelt_probe()
+    if not ok:
+        raise SandboxUnavailable(f"{reason}（{_no_backend_reason()}）")
+
+    return [
+        "sandbox-exec",
+        # profile 直接写在命令行里、不落盘：它是**按策略实时算出来的**，落盘就得管
+        # 生命周期（什么时候清、并发时谁覆盖谁），而它只活这一条命令
+        "-p",
+        _seatbelt_profile(policy),
+        "--",
+        *_shell_for_platform(),
+        command,
+    ]
+
+
+def _seatbelt_profile(policy: SandboxPolicy) -> str:
+    """把策略翻译成 Seatbelt 的 profile（Scheme 语法）。
+
+    **规则语义是「后写的覆盖先写的」** —— 所以顺序整个是刻意的：
+    先铺一个「能跑起来」的底子，再用更具体的规则往里收（读全盘 → 再关掉密钥目录）。
+
+    和 bubblewrap 那版有几处**有意的不一致**，都是为了「能用」：
+
+    1. **临时目录是放行，不是隔离。** bwrap 能 `--tmpfs /tmp` 给一个干净的空目录；
+       Seatbelt 只能「允许 / 拒绝某个路径」，做不到「换一个」。不给写的话 python 会
+       直接报「没有可用的临时目录」，构建和跑测试全线失败 —— 而临时文件本来也不是秘密。
+    2. **`/dev/null` 这类要单独开口子。** `2>/dev/null` 到处都是，而它属于「写设备文件」，
+       不在 `file-write*` 的通配范围里。
+    3. **`mach-lookup` 必须放行。** 那是 macOS 的进程间服务，不给的话大半个系统调用
+       都起不来。这是平台差异，不是放松。
+
+    `work_dir` 是 `/` 时不放开写 —— 那等于全盘可写，沙箱直接失效。错配置退化成只读。
+    """
+    lines = [
+        "(version 1)",
+        # 白名单思维：先全关，再逐条开口子（和 bwrap 的 `--ro-bind / /` 一个路子）
+        "(deny default)",
+        # —— 跑起一条命令的最低需求 ——
+        "(allow process-exec*)",
+        "(allow process-fork)",
+        "(allow sysctl-read)",  # 不少程序启动时会读系统信息
+        "(allow mach-lookup)",  # macOS 的进程间服务，不给的话大半个系统调用起不来
+        "(allow ipc-posix-shm)",  # 共享内存，python / node 之类要用
+        "(allow signal (target self))",
+        # 读盘整个放开 —— 隔离的是「写」和「网」；读代码本来就是它的正经用途
+        "(allow file-read*)",
+    ]
+
+    # 设备文件：`2>/dev/null` 这类重定向太常见，不给的话大量命令直接失败
+    lines.append(
+        '(allow file-write-data (literal "/dev/null") (literal "/dev/stdout") '
+        '(literal "/dev/stderr") (literal "/dev/zero"))'
+    )
+
+    # 临时目录（理由见 docstring 第 1 条）
+    writable = ["/private/tmp", "/var/tmp", str(Path(tempfile.gettempdir()).resolve())]
+    for target in dict.fromkeys(writable):  # 去重，且保持顺序
+        lines.append(f'(allow file-write* (subpath "{target}"))')
+
+    # 家目录里的密钥 / 凭据：排在 `file-read*` **之后**，靠「后写覆盖先写」把它们收回去。
+    # 不是靠权限位，是让它们在这个进程的视野里读不到。
+    for name in SENSITIVE_HOME_DIRS:
+        secret = Path.home() / name
+        if not secret.exists():
+            continue
+        # 工作目录恰好落在里面时跳过 —— 否则会把用户要改的东西一起封掉
+        if policy.work_dir == secret or policy.work_dir.is_relative_to(secret):
+            continue
+        lines.append(f'(deny file-read* (subpath "{secret}"))')
+
+    if policy.mode is SandboxMode.WORKSPACE_WRITE and policy.work_dir != Path("/"):
+        lines.append(f'(allow file-write* (subpath "{policy.work_dir}"))')
+
+    if policy.allow_network:
+        lines.append("(allow network*)")
+
+    return "\n".join(lines)
+
+
+# 探针用的 profile：能起一个进程就算通过。
+# 刻意**不用** `(allow default)` —— 那样连语法写错都能跑通，探针就白探了。
+_SEATBELT_PROBE_PROFILE = "(version 1)(deny default)(allow process-exec*)(allow file-read*)"
+
+
+@lru_cache(maxsize=1)
+def _seatbelt_probe() -> tuple[bool, str]:
+    """真跑一次 sandbox-exec 看它能不能落地。
+
+    和 bwrap 那边同一个道理：**在系统里躺着不等于能用**。`sandbox-exec` 是 Apple
+    长期标记为 deprecated 的工具，profile 认的语法也随系统版本变过；探一次、把失败
+    翻译成人话，比让每条命令各自失败一次强。
+
+    Returns:
+        (是否可用, 不可用的原因)。结果缓存 —— 运行环境不会中途改变。
+    """
+    executable = shutil.which("sandbox-exec")
+    if executable is None:
+        return False, "没有找到 sandbox-exec（macOS 自带；缺失说明系统被裁剪过）"
+
+    try:
+        result = subprocess.run(
+            [executable, "-p", _SEATBELT_PROBE_PROFILE, "--", "/usr/bin/true"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"sandbox-exec 执行失败：{exc}"
+
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip().splitlines()
+        hint = detail[0] if detail else f"退出码 {result.returncode}"
+        return False, f"sandbox-exec 无法落地：{hint}"
+
+    return True, ""
+
+
 def available() -> bool:
     """当前平台此刻有没有可用的沙箱后端。"""
-    # 先看平台再看探测：非 Linux 上根本不会用 bwrap，没必要真去跑一次探测
-    if not sys.platform.startswith("linux"):
-        return False
-    return _bwrap_probe()[0]
+    # 先看平台再看探测：别的平台上根本不会用这个后端，没必要真去跑一次探测
+    if sys.platform.startswith("linux"):
+        return _bwrap_probe()[0]
+    if sys.platform == "darwin":
+        return _seatbelt_probe()[0]
+    return False
 
 
 def startup_note() -> str:
@@ -280,7 +417,16 @@ def startup_note() -> str:
         return "沙箱未启用（SANDBOX_MODE=off），执行类命令不受工作目录限制。"
 
     if available():
-        return f"沙箱已启用：{policy.describe()}"
+        # 不复用 `describe()`：它自带「沙箱：」前缀（那是给工具回执用的），
+        # 套在这里会读成「沙箱已启用：沙箱：…」
+        network = "联网放行" if policy.allow_network else "断网"
+        # 顺带报一下用的是哪个后端：两个后端的隔离语义有几处不一样（见 `_seatbelt_profile`），
+        # 出问题时第一件事就是确认跑的是哪一个
+        backend = "bubblewrap" if sys.platform.startswith("linux") else "Seatbelt"
+        return (
+            f"沙箱已启用：{policy.mode.label}（{network}，仅有 {policy.work_dir} 可写，"
+            f"后端 {backend}）"
+        )
 
     return (
         f"沙箱配置为 {policy.mode.value}，但当前系统没有可用后端，"

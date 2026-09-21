@@ -450,6 +450,15 @@ export type ChatEvent =
    */
   | { type: 'usage'; contextTokens: number; cachedTokens: number }
   /**
+   * 跑到第几圈了（`index` / `total`），每轮请求前播报一次。
+   *
+   * 和 `usage` 回答的不是一回事：那个说「上下文有多大」，这个说「跑了多少、还剩多少余地」。
+   * 一次运行可能十几分钟、几十轮，没有它用户只能盯着不动的界面猜。
+   *
+   * `index > total` 表示这是预算用尽后的**收尾轮** —— 它不提供工具，不属于工具轮次。
+   */
+  | { type: 'round'; index: number; total: number }
+  /**
    * 任务清单更新：模型调用了 `todo_write`。
    *
    * 每次推的都是**完整清单**，前端直接覆盖即可；也**不落盘** —— 落盘的那份随

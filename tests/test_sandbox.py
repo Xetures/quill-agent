@@ -1,9 +1,10 @@
-"""沙箱：argv 拼得对、没后端时拒得干脆、有 bwrap 时真的关得住。
+"""沙箱：argv 拼得对、没后端时拒得干脆、有后端时真的关得住。
 
 分三层：
-    1. **纯 argv 断言** —— 不依赖本机装没装 bwrap，任何平台都能跑；
+    1. **纯 argv 断言** —— 不依赖本机装没装后端，任何平台都能跑；
+       两个后端的 profile / 参数各测一遍（拼错一个字母就是一个洞）；
     2. **拒绝路径** —— 配了沙箱却没有后端时必须拒绝执行，而不是偷偷裸跑；
-    3. **真实隔离** —— 只在装了可用 bubblewrap 的 Linux 上跑，其余平台 skip。
+    3. **真实隔离** —— 只在真有可用后端的机器上跑，其余平台 skip。
 """
 
 from __future__ import annotations
@@ -18,21 +19,32 @@ import pytest
 from quill_agent import config, sandbox
 from quill_agent.tools import shell
 
-# 本机能真跑沙箱吗？跑不了就让第三层用例整体跳过，而不是伪造一个通过
+# 本机能真跑沙箱吗？跑不了就让第三层用例整体跳过，而不是伪造一个通过。
+# 两个后端都算 —— Linux 的 bubblewrap、macOS 的 Seatbelt。
 _HAS_BWRAP = sys.platform.startswith("linux") and shutil.which("bwrap") is not None
+_HAS_SEATBELT = sys.platform == "darwin" and shutil.which("sandbox-exec") is not None
+_HAS_BACKEND = _HAS_BWRAP or _HAS_SEATBELT
 _needs_bwrap = pytest.mark.skipif(
     not _HAS_BWRAP, reason="需要 Linux + bubblewrap 才能验证真实的隔离效果"
+)
+_needs_sandbox = pytest.mark.skipif(
+    not _HAS_BACKEND, reason="需要可用的沙箱后端（Linux bubblewrap / macOS Seatbelt）"
+)
+_needs_seatbelt = pytest.mark.skipif(
+    not _HAS_SEATBELT, reason="需要 macOS 才能验证 Seatbelt 的探针"
 )
 
 
 @pytest.fixture(autouse=True)
 def _clear_caches():
-    """配置和 bwrap 探测都带缓存，每个用例前后清一次，免得互相串。"""
+    """配置和两个探测都带缓存，每个用例前后清一次，免得互相串。"""
     config.get_settings.cache_clear()
     sandbox._bwrap_probe.cache_clear()
+    sandbox._seatbelt_probe.cache_clear()
     yield
     config.get_settings.cache_clear()
     sandbox._bwrap_probe.cache_clear()
+    sandbox._seatbelt_probe.cache_clear()
 
 
 @pytest.fixture
@@ -44,6 +56,17 @@ def fake_bwrap(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(sandbox, "_bwrap_probe", lambda: (True, ""))
+
+
+@pytest.fixture
+def fake_seatbelt(monkeypatch: pytest.MonkeyPatch) -> None:
+    """假装「这是一台 macOS」，且 sandbox-exec 可用。
+
+    理由同 `fake_bwrap`：profile 里少一条 deny 就是一个洞，而它同样只在 macOS 上才
+    真跑得起来 —— 不能等到那时才第一次被人看。
+    """
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(sandbox, "_seatbelt_probe", lambda: (True, ""))
 
 
 @pytest.fixture
@@ -167,6 +190,96 @@ def test_command_is_handed_to_a_shell_after_the_separator(
     assert argv[argv.index("/bin/sh") + 1] == "-c"
 
 
+def test_seatbelt_denies_by_default(tmp_path: Path, fake_seatbelt: None) -> None:
+    """从「全关」起步，再逐条开口子 —— 和 bwrap 的 `--ro-bind / /` 一个思路。
+
+    反过来的写法（先 `allow default` 再 deny 几条）一旦漏掉哪条就是个洞，
+    而漏掉的是哪条没人看得出来。
+    """
+    argv = sandbox.build_argv("echo hi", _policy("read-only", tmp_path))
+    profile = _value_of(argv, "-p")
+
+    assert argv[0] == "sandbox-exec"
+    assert "(deny default)" in profile
+    assert "(allow file-read*)" in profile
+    # 只读档绝不能出现「工作目录可写」那条
+    assert f'(allow file-write* (subpath "{tmp_path}"))' not in profile
+
+
+def test_seatbelt_grants_only_the_work_dir(tmp_path: Path, fake_seatbelt: None) -> None:
+    """工作区可写档：只多出「`work_dir` 可写」这一条。"""
+    argv = sandbox.build_argv("echo hi", _policy("workspace-write", tmp_path))
+
+    assert f'(allow file-write* (subpath "{tmp_path}"))' in _value_of(argv, "-p")
+
+
+def test_seatbelt_masks_home_secrets(
+    tmp_path: Path, fake_seatbelt: None, fake_home: Path
+) -> None:
+    """密钥目录排在 `file-read*` 之后 —— 靠「后写覆盖先写」把它们收回去。
+
+    顺序是这段的关键：Seatbelt 是**后写的规则生效**，把 deny 写在前面等于没写。
+    """
+    profile = _value_of(sandbox.build_argv("echo hi", _policy("read-only", tmp_path)), "-p")
+
+    assert f'(deny file-read* (subpath "{fake_home / ".ssh"}"))' in profile
+    assert profile.index("(allow file-read*)") < profile.index(str(fake_home / ".ssh"))
+
+
+def test_seatbelt_work_dir_inside_a_secret_dir_is_not_masked(
+    tmp_path: Path, fake_seatbelt: None, fake_home: Path
+) -> None:
+    """工作目录恰好落在密钥目录里时不要盖它 —— 那会把用户要改的东西一起封掉。"""
+    inside = fake_home / ".ssh"
+    profile = _value_of(sandbox.build_argv("echo hi", _policy("read-only", inside)), "-p")
+
+    assert f'(deny file-read* (subpath "{inside}"))' not in profile
+
+
+def test_seatbelt_cuts_network_by_default(tmp_path: Path, fake_seatbelt: None) -> None:
+    assert "(allow network*)" not in _value_of(
+        sandbox.build_argv("echo hi", _policy("read-only", tmp_path)), "-p"
+    )
+
+
+def test_seatbelt_allows_network_on_request(tmp_path: Path, fake_seatbelt: None) -> None:
+    profile = _value_of(
+        sandbox.build_argv("echo hi", _policy("read-only", tmp_path, network=True)), "-p"
+    )
+
+    assert "(allow network*)" in profile
+
+
+def test_seatbelt_keeps_the_devices_writable(tmp_path: Path, fake_seatbelt: None) -> None:
+    """`2>/dev/null` 到处都是，不给的话大量命令直接失败。
+
+    它属于「写设备文件」，不在 `file-write*` 的通配范围里 —— 必须单独开口子。
+    """
+    profile = _value_of(sandbox.build_argv("echo hi", _policy("read-only", tmp_path)), "-p")
+
+    assert "file-write-data" in profile
+    assert '"/dev/null"' in profile
+
+
+def test_seatbelt_root_work_dir_does_not_unlock_everything(fake_seatbelt: None) -> None:
+    """`WORK_DIR=/` 是错配置：退化成只读，而不是「全盘可写」。
+
+    和 bwrap 那条同一个判断 —— 出错时倒向安全的方向。
+    """
+    profile = _value_of(
+        sandbox.build_argv("echo hi", _policy("workspace-write", Path("/"))), "-p"
+    )
+
+    assert '(allow file-write* (subpath "/"))' not in profile
+
+
+def test_seatbelt_command_goes_through_a_shell(tmp_path: Path, fake_seatbelt: None) -> None:
+    """`--` 之后才是执行壳和命令本身。"""
+    argv = sandbox.build_argv("echo hi", _policy("read-only", tmp_path))
+
+    assert argv[-4:] == ["--", "/bin/sh", "-c", "echo hi"]
+
+
 def test_pid_namespace_is_isolated(tmp_path: Path, fake_bwrap: None) -> None:
     """看不见也就杀不掉外面别的进程。"""
     argv = sandbox.build_argv("echo hi", _policy("workspace-write", tmp_path))
@@ -180,21 +293,31 @@ def test_pid_namespace_is_isolated(tmp_path: Path, fake_bwrap: None) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_missing_backend_raises(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(sandbox, "_bwrap_probe", lambda: (False, "没有找到 bubblewrap（bwrap）"))
+@pytest.fixture
+def no_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    """假装这台机器**一个沙箱后端都没有**。
 
+    两个探测都要改：只改 bwrap 的话，在 macOS 上会落到 Seatbelt 分支 —— 而那条路在
+    这台机器上是真能用的，用例就验不到「没后端时拒绝」这件事了。
+    """
+    monkeypatch.setattr(sandbox, "_bwrap_probe", lambda: (False, "没有找到 bubblewrap（bwrap）"))
+    monkeypatch.setattr(
+        sandbox, "_seatbelt_probe", lambda: (False, "没有找到 sandbox-exec（macOS 自带）")
+    )
+
+
+def test_missing_backend_raises(no_backend: None, tmp_path: Path) -> None:
     with pytest.raises(sandbox.SandboxUnavailable):
         sandbox.build_argv("echo hi", _policy("workspace-write", tmp_path))
 
 
 def test_run_command_refuses_instead_of_running_unsandboxed(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, no_backend: None
 ) -> None:
     """**底线用例。** 配了沙箱却没有后端时，命令绝不能被执行 —— 那是最坏的失败方式。"""
     monkeypatch.setattr(shell, "current_work_dir", lambda: tmp_path)
     monkeypatch.setenv("SANDBOX_MODE", "workspace-write")
     config.get_settings.cache_clear()
-    monkeypatch.setattr(sandbox, "_bwrap_probe", lambda: (False, "没有找到 bubblewrap（bwrap）"))
 
     out = shell.run_command(f'"{sys.executable}" -c "print(\'ran\')"')
 
@@ -204,13 +327,12 @@ def test_run_command_refuses_instead_of_running_unsandboxed(
 
 
 def test_start_process_refuses_instead_of_running_unsandboxed(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, no_backend: None
 ) -> None:
     """后台进程活得比这一轮还长，漏掉它比漏掉一条普通命令更糟。"""
     monkeypatch.setattr(shell, "current_work_dir", lambda: tmp_path)
     monkeypatch.setenv("SANDBOX_MODE", "workspace-write")
     config.get_settings.cache_clear()
-    monkeypatch.setattr(sandbox, "_bwrap_probe", lambda: (False, "没有找到 bubblewrap（bwrap）"))
 
     out = shell.start_process("sleep 30")
 
@@ -223,14 +345,27 @@ def test_start_process_refuses_instead_of_running_unsandboxed(
 # ---------------------------------------------------------------------------
 
 
-def test_default_mode_is_off(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """默认必须是 off：Phase 1 只有 Linux 后端，默认开着会让别的平台当场不可用。"""
+def test_default_mode_depends_on_the_platform(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """默认档位**按平台给**：有后端的平台默认工作区可写，没有的默认关。
+
+    为什么不能一律默认开：默认值对**所有人**生效，而「配了沙箱却没有后端」在本项目里
+    是**拒绝执行**。全局默认 workspace-write 的话，没有后端的平台（目前是 Windows）
+    会每条命令都失败 —— 而用户根本没配过沙箱，只会觉得程序坏了。
+    """
     monkeypatch.delenv("SANDBOX_MODE", raising=False)
 
-    policy = sandbox.policy_for(tmp_path)
+    # 有后端的平台：默认就是最实用的那一档
+    for platform in ("darwin", "linux"):
+        monkeypatch.setattr(sys, "platform", platform)
+        config.get_settings.cache_clear()
+        assert sandbox.policy_for(tmp_path).mode is sandbox.SandboxMode.WORKSPACE_WRITE
 
-    assert policy.mode is sandbox.SandboxMode.OFF
-    assert not policy.active
+    # 没有后端的平台：默认关，否则开箱即用变成开箱不可用
+    monkeypatch.setattr(sys, "platform", "win32")
+    config.get_settings.cache_clear()
+    assert sandbox.policy_for(tmp_path).mode is sandbox.SandboxMode.OFF
 
 
 def test_mode_and_network_come_from_settings(
@@ -277,11 +412,14 @@ def test_describe_mentions_network_state(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 真实隔离（需要 Linux + bubblewrap）
+# 真实隔离（需要本机有可用后端：Linux bubblewrap / macOS Seatbelt）
+#
+# 这三个用例走的是**完整链路**（shell.run_command → sandbox.build_argv），
+# 所以两个后端共用同一份断言 —— 换后端不该换掉「沙箱该拦什么」这件事。
 # ---------------------------------------------------------------------------
 
 
-@_needs_bwrap
+@_needs_sandbox
 def test_writes_inside_the_work_dir_succeed(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -296,21 +434,25 @@ def test_writes_inside_the_work_dir_succeed(
     assert (tmp_path / "made.txt").is_file()
 
 
-@_needs_bwrap
+@_needs_sandbox
 def test_writes_outside_the_work_dir_fail(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """这就是沙箱要拦的东西：工作目录之外的写入在物理上失败。"""
     monkeypatch.setattr(shell, "current_work_dir", lambda: tmp_path)
     monkeypatch.setenv("SANDBOX_MODE", "workspace-write")
     config.get_settings.cache_clear()
 
-    victim = tmp_path.parent / "outside.txt"
+    # 目标要落在**真正的外面**：不能是工作目录，也不能是临时区 ——
+    # 后者在两个后端下都可写（bwrap 给一个干净的 /tmp；macOS 上 Seatbelt 只能
+    # 「放行 TMPDIR」，做不到「换一个」，见 sandbox.py 的说明），拿它当「外面」验不出东西。
+    # 而 pytest 的 tmp_path 恰好就住在 TMPDIR 里。
+    victim = Path("/_sbx_outside_probe.txt")
     out = shell.run_command(f"touch {victim}", timeout=20)
 
     assert "退出码：0" not in out
     assert not victim.exists()
 
 
-@_needs_bwrap
+@_needs_sandbox
 def test_network_is_unreachable(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(shell, "current_work_dir", lambda: tmp_path)
     monkeypatch.setenv("SANDBOX_MODE", "workspace-write")
@@ -334,3 +476,15 @@ def test_probe_actually_works_here() -> None:
 
     assert available, reason
     assert subprocess.run(["true"]).returncode == 0
+
+
+@_needs_seatbelt
+def test_seatbelt_probe_actually_works_here() -> None:
+    """`sandbox-exec` 躺在系统里，不等于这套 profile 语法在这个系统版本上还认。
+
+    它被 Apple 长期标为 deprecated，认的语法也变过 —— 探针正是为此存在的。
+    """
+    available, reason = sandbox._seatbelt_probe()
+
+    assert available, reason
+    assert sandbox.available() is True

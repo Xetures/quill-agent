@@ -185,6 +185,12 @@ function parseBlock(block: string): ChatEvent | null {
         contextTokens: Number(payload.context_tokens ?? 0),
         cachedTokens: Number(payload.cached_tokens ?? 0),
       }
+    case 'round':
+      return {
+        type: 'round',
+        index: Number(payload.index ?? 0),
+        total: Number(payload.total ?? 0),
+      }
     case 'todo':
       return { type: 'todo', items: (payload.items ?? []) as TodoItem[] }
     case 'summary':

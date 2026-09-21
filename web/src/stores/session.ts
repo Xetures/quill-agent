@@ -91,6 +91,25 @@ export const session = reactive({
   liveCached: 0,
 
   /**
+   * 运行中播报的**轮次进度**（来自流里的 `round` 事件）；没在跑就是 null。
+   *
+   * 为什么单独要它：上面两个读数都依赖服务端返回用量，而有些服务不返回；
+   * 轮次是**我们自己数的**，一定有。所以「跑了多少、还剩多少余地」这件事靠它 ——
+   * 一次运行可能十几分钟、几十轮，没有它只能盯着不动的界面猜。
+   *
+   * 跑完清掉（下一次跑是新的进度），换会话跟着 `attachRun` 走。
+   */
+  liveRound: null as { index: number; total: number } | null,
+
+  /**
+   * 这一轮开始跑的时刻（`Date.now()`），没在跑就是 0。
+   *
+   * 供界面算「已用时间」。刻意由状态持有而不是让组件自己记：切走会话再回来时，
+   * 组件是重挂的，自己记就会**从头计时**，而这一轮其实已经跑了一半。
+   */
+  liveStartedAt: 0,
+
+  /**
    * 运行中抛回来、还没回答的问题（目前只有执行前确认）。
    *
    * 挂在会话上而不是那条流式消息上：它要在消息列表**下方**渲染成一张卡片，
@@ -205,6 +224,15 @@ interface ActiveRun {
   usage: number
   /** 同一次请求里缓存命中的输入 token 数（缓存命中率的分子）。 */
   cached: number
+  /**
+   * 这一轮开始跑的时刻（`Date.now()`）。
+   *
+   * 只存起点、不存「已用多少秒」：用时得**每秒重算**才走字，那是展示层的事。
+   * 存成状态里的一个滚动数字反而要配定时器，还得处理切会话、跑完这些收尾。
+   */
+  startedAt: number
+  /** 跑到第几圈（来自 `round` 事件）；还没收到就是 null。 */
+  round: { index: number; total: number } | null
   todos: TodoItem[]
   subagentEvents: SubagentEvent[]
   question: Question | null
@@ -258,6 +286,8 @@ function attachRun(conversationId: string): void {
   session.phase = run?.phase ?? null
   session.liveUsage = run?.usage ?? 0
   session.liveCached = run?.cached ?? 0
+  session.liveRound = run?.round ?? null
+  session.liveStartedAt = run?.startedAt ?? 0
   session.liveTodos = run?.todos ?? []
   session.subagentEvents = run?.subagentEvents ?? []
   session.pendingQuestion = run?.question ?? null
@@ -277,6 +307,8 @@ function syncRunState(run: ActiveRun): void {
   session.phase = run.phase
   session.liveUsage = run.usage
   session.liveCached = run.cached
+  session.liveRound = run.round
+  session.liveStartedAt = run.startedAt
   session.liveTodos = run.todos
   session.subagentEvents = run.subagentEvents
   session.pendingQuestion = run.question
@@ -531,6 +563,8 @@ export async function sendMessage(options: {
     controller: new AbortController(),
     usage: 0,
     cached: 0,
+    startedAt: Date.now(),
+    round: null,
     todos: [],
     subagentEvents: [],
     question: null,
@@ -571,6 +605,11 @@ export async function sendMessage(options: {
       } else if (event.type === 'reasoning') {
         reply.reasoning = (reply.reasoning ?? '') + event.text
         setPhase(run, { kind: 'thinking' })
+      } else if (event.type === 'round') {
+        // 第几圈了。它是**我们自己数的** —— 不像 `usage` 要等服务端返回用量
+        // （有些服务根本不给），所以「跑了多少、还剩多少余地」这件事只能靠它
+        run.round = { index: event.index, total: event.total }
+        syncRunState(run)
       } else if (event.type === 'usage') {
         // 运行中的实时读数：先记进这一轮，再（在当前会话时）同步给仪表盘
         run.usage = event.contextTokens
@@ -649,6 +688,9 @@ export async function sendMessage(options: {
         session.pendingQuestion = null
         // 运行已经收尾，再留着这个 id 只会让「停止」按钮指向一个不存在的运行
         session.activeRunId = ''
+        // 轮次是这一轮的进度，跑完就作废（下一轮从头数）
+        session.liveRound = null
+        session.liveStartedAt = 0
         // 被取消 / 出错时子代理看板可能还在，一并收掉
         session.subagentEvents = []
         // liveUsage / liveTodos 刻意不清：那一轮已经长到多大，正是出错后想看的（见字段注释）
