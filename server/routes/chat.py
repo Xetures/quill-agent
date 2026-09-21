@@ -304,17 +304,41 @@ def _pump(run: Run, events: Iterator[tuple[str, dict[str, Any]]]) -> None:
         _close(run)
 
 
+# SSE 心跳间隔（秒）。
+#
+# `queue.get()` 在没事件时会一直挂着 —— 那是长连接的常态（等模型吐第一个字、等工具
+# 跑完、子代理在干活），所以不能把它当错误。但对**客户端**来说，「一直没有数据」和
+# 「连接死了」是分不清的：前端为此设了一条静默保护（见 `web/src/api/chat.ts` 的
+# `IDLE_TIMEOUT_MS`，360 秒），撞上就掐掉整条流 —— 服务端那一轮也跟着被取消。
+#
+# 心跳填的就是这段：发一行 SSE 注释，按协议会直接被忽略，但它让字节流不断。
+# 60 秒相对 360 秒有 6 倍余量，也不至于让空闲连接持续产生无用流量。
+SSE_HEARTBEAT_SECONDS = 60.0
+
+
 async def _sse(run: Run) -> AsyncIterator[str]:
     """把通道里的事件翻成 SSE 文本。
 
     用 async 生成器而不是同步的：取值本来就是等待，`await queue.get()` 不占线程；
     写成同步生成器的话，starlette 得再开一个线程池线程来跑它。
+
+    **取事件带超时**：一旦静默超过 `SSE_HEARTBEAT_SECONDS` 就补一行注释。
+    这不是为了传数据，是为了让对面知道这条连接还活着 —— 理由见那个常量的说明。
     """
     finished = False
 
     try:
         while True:
-            item = await run.channel.queue.get()
+            try:
+                item = await asyncio.wait_for(
+                    run.channel.queue.get(), timeout=SSE_HEARTBEAT_SECONDS
+                )
+            except asyncio.TimeoutError:
+                # `: ` 开头是 SSE 的注释行，客户端按协议应当忽略 —— 前端确实忽略了
+                # （`parseBlock` 认不出 `event:` / `data:` 就跳过），但它照样算「收到了字节」
+                yield ": keep-alive\n\n"
+                continue
+
             if item is None:  # 通道关闭，这一轮结束
                 finished = True
                 return

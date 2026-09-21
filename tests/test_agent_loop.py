@@ -13,7 +13,11 @@ from types import SimpleNamespace
 
 from quill_agent import agent, interaction
 from quill_agent.models import ModelChoice, ModelConfig
-from quill_agent.preferences import MAX_RUN_TOKENS_KEY, PreferenceStore
+from quill_agent.preferences import (
+    MAX_ITERATIONS_KEY,
+    MAX_RUN_TOKENS_KEY,
+    PreferenceStore,
+)
 
 
 def _text_chunk(text: str) -> SimpleNamespace:
@@ -48,6 +52,10 @@ class _FakeClient:
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
 
     def _create(self, **kwargs):
+        # messages 是整轮复用的同一个 list，会随着工具结果不断 append。
+        # 这里留一份当时的快照 —— 否则所有请求记录看到的都是最后一次的样子，
+        # 「哪一轮带了什么」就验不出来了（收尾提示只在最后一轮加，正是要验的）。
+        kwargs["messages"] = list(kwargs.get("messages") or [])
         self._requests.append(kwargs)
         return iter(self._responses.pop(0))
 
@@ -58,13 +66,22 @@ def _make_choice(base_url: str = "") -> ModelChoice:
     return ModelChoice(config=config, model="m")
 
 
-def _run(monkeypatch, responses: list[list], stats=None, **kwargs) -> tuple[list, list[dict]]:
+def _run(
+    monkeypatch, responses: list[list], stats=None, *, max_iterations=None, **kwargs
+) -> tuple[list, list[dict]]:
     """跑一轮对话，返回（事件流, 每次请求的参数）。
 
     额外的关键字参数透传给 `run_agent_stream`（比如 `thinking=False`）。
+
+    `max_iterations` 不传就按 `agent.MAX_ITERATIONS` 来 —— **绝不能让它去读真实的
+    偏好文件**：那是用户本机的状态，测试结果会跟着「用户改没改设置」变，
+    今天过明天挂。要验「配了才生效」就显式传值。
     """
     requests: list[dict] = []
     monkeypatch.setattr(agent, "OpenAI", lambda **_kw: _FakeClient(responses, requests))
+    monkeypatch.setattr(
+        agent, "run_max_iterations", lambda: max_iterations or agent.MAX_ITERATIONS
+    )
     # 工具菜单固定为非空，免得测试结果受本机工具注册表的影响
     # （mode=None 时本来一个工具都不给，这里要的就是「有工具」这个前提）
     monkeypatch.setattr(
@@ -114,6 +131,7 @@ class _StrictClient(_FakeClient):
     """模拟不认 stream_options 的网关：带上这个参数就直接报错。"""
 
     def _create(self, **kwargs):
+        kwargs["messages"] = list(kwargs.get("messages") or [])
         self._requests.append(kwargs)
         if "stream_options" in kwargs:
             raise TypeError("unexpected keyword argument 'stream_options'")
@@ -399,6 +417,55 @@ def test_last_request_forces_a_final_answer(monkeypatch) -> None:
     assert requests[-1]["tools"] is None
 
 
+def test_final_round_tells_the_model_the_tools_are_gone(monkeypatch) -> None:
+    """收尾轮要明确告诉模型「工具没了」，而不是只把 tools 字段撤掉。
+
+    真事（2026-09-21 的 PPT 任务）：deepseek-flash 前 10 轮 18 个调用全部规范，
+    第 11 轮该收尾时却把调用写进了正文。它从上下文里看得出「工具撤走了」吗？
+    看不出来 —— 历史里全是 tool_calls，system 提示词也还列着工具。于是它继续
+    按调用格式输出，而这一轮没有通道，就漏进了正文。
+
+    撤字段是「不说」，补这句话才是「说」。模型得先知道，才谈得上收尾。
+    """
+    responses = [
+        [_tool_chunk(f"call_{index}", "no_such_tool")] for index in range(agent.MAX_ITERATIONS)
+    ]
+    responses.append([_text_chunk("根据已有信息，答案是 42。")])
+
+    events, requests = _run(monkeypatch, responses)
+
+    assert "答案是 42" in _texts(events)
+    # 收尾请求的最后一条消息就是这句说明
+    final_messages = requests[-1]["messages"]
+    assert final_messages[-1]["role"] == "user"
+    assert "不再提供任何工具" in final_messages[-1]["content"]
+    # 前面几轮不该带它：那时候工具还在，说了只会让模型莫名其妙
+    for request in requests[:-1]:
+        assert all(
+            "不再提供任何工具" not in str(message.get("content"))
+            for message in request["messages"]
+        )
+
+
+def test_leak_on_the_final_round_blames_the_cap_not_the_model(monkeypatch) -> None:
+    """收尾轮仍漏出调用时，提示要指向「轮次上限」，不能甩锅给模型。
+
+    同一次事故的另一种收场：模型没理会「不要再请求工具」，把调用块写进了正文。
+    这时若提示说「换个函数调用更稳定的模型」，用户就会去换 —— 而换了照样漏，
+    因为根子是我们没告诉它工具已经撤了（见上一个测试）。
+    """
+    responses = [
+        [_tool_chunk(f"call_{index}", "no_such_tool")] for index in range(agent.MAX_ITERATIONS)
+    ]
+    responses.append([_text_chunk('我先看看。\n<tool_call>{"name": "read_file"}</tool_call>')])
+
+    events, _ = _run(monkeypatch, responses)
+
+    notices = _notices(events)
+    assert any("上限" in text for text in notices)
+    assert not any("换一个函数调用更稳定的模型" in text for text in notices)
+
+
 def test_empty_tool_menu_is_sent_as_none(monkeypatch) -> None:
     """一个启用的工具都没有时，不能给 API 传空列表。"""
     requests: list[dict] = []
@@ -680,6 +747,65 @@ def test_no_channel_means_cancel_can_never_fire(monkeypatch) -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_budget_warning_tells_the_model_to_wrap_up(monkeypatch) -> None:
+    """用到预算的八成时就提醒模型收尾，而且**只提醒一次**。
+
+    硬停在预算上限上很亏：那一刻工具刚跑完、结果也回来了，却没有下一次请求去
+    消化它。提前提醒，模型就能自己把剩下的活收拢到预算之内 —— Claude Code 的
+    `TOKEN_BUDGET` 就是这个思路（「接近预算时提示模型继续或结束」）。
+
+    反复提醒则有害无益：它常驻上下文，每轮都占地方，还会让模型一直念叨收尾。
+    """
+    monkeypatch.setattr(agent, "run_token_limit", lambda: 1000)
+
+    events, requests = _run(
+        monkeypatch,
+        [
+            # 第一轮就烧到 850（越过 1000 的八成），下一次请求前该收到提醒
+            [_tool_chunk("call_1", "list_dir"), _usage_chunk(700, 150)],
+            [_tool_chunk("call_2", "list_dir"), _usage_chunk(100, 50)],
+            [_text_chunk("做完了")],
+        ],
+    )
+
+    # 提醒出现在「第二轮请求」：预算是在第一轮流末尾才涨上去的
+    assert any(
+        "预算快用完" in str(message.get("content"))
+        for message in requests[0]["messages"]
+    ) is False
+    assert any(
+        "预算快用完" in str(message.get("content"))
+        for message in requests[1]["messages"]
+    )
+    # 到第三轮它还在上下文里（这是对的），但只该有一条
+    assert (
+        sum("预算快用完" in str(message.get("content")) for message in requests[2]["messages"])
+        == 1
+    )
+    # 界面也要知道发生了什么
+    assert any("已提醒模型收尾" in text for text in _notices(events))
+
+
+def test_no_budget_warning_while_there_is_room(monkeypatch) -> None:
+    """预算还宽裕时不打扰模型 —— 那句提醒本身也占上下文。"""
+    monkeypatch.setattr(agent, "run_token_limit", lambda: 10_000)
+
+    events, requests = _run(
+        monkeypatch,
+        [
+            [_tool_chunk("call_1", "list_dir"), _usage_chunk(400, 100)],
+            [_text_chunk("做完了")],
+        ],
+    )
+
+    assert all(
+        "预算快用完" not in str(message.get("content"))
+        for request in requests
+        for message in request["messages"]
+    )
+    assert not any("已提醒模型收尾" in text for text in _notices(events))
+
+
 def test_run_stops_when_the_token_limit_is_exceeded(monkeypatch) -> None:
     """超过开销上限就当场停：不执行工具，也不再请求模型。"""
     monkeypatch.setattr(agent, "run_token_limit", lambda: 100)
@@ -749,3 +875,40 @@ def test_run_token_limit_reads_the_preference(monkeypatch, tmp_path: Path) -> No
 
     store.set(MAX_RUN_TOKENS_KEY, "-10")
     assert agent.run_token_limit() == 0
+
+
+def test_run_max_iterations_reads_the_preference(monkeypatch, tmp_path: Path) -> None:
+    """轮次上限从偏好文件读；没配 / 填坏了 / 填非正数都退回默认值。
+
+    退回的是**默认值**而不是 0（这点和开销上限正相反）：开销上限「不限制」
+    只是不拦，是安全的；轮次上限「不限制」等于把防死循环那道兜底拆了。
+    """
+    path = tmp_path / "preferences.json"
+    monkeypatch.setattr(agent, "get_settings", lambda: SimpleNamespace(preferences_path=path))
+
+    assert agent.run_max_iterations() == agent.MAX_ITERATIONS  # 文件还不存在
+
+    store = PreferenceStore(path)
+    store.set(MAX_ITERATIONS_KEY, "50")
+    assert agent.run_max_iterations() == 50
+
+    for bad in ("", "abc", "0", "-5"):
+        store.set(MAX_ITERATIONS_KEY, bad)
+        assert agent.run_max_iterations() == agent.MAX_ITERATIONS
+
+
+def test_max_iterations_can_be_raised_from_preferences(monkeypatch) -> None:
+    """上限改了之后循环按新值停，提示语也要报那个值。
+
+    提示语尤其不能写常量：那会说成「已达到 30 轮上限」，而实际只跑了 3 轮 ——
+    用户照着这个数去查，只能查出一头雾水。
+    """
+    events, requests = _run(
+        monkeypatch,
+        [[_tool_chunk(f"call_{index}", "no_such_tool")] for index in range(4)],
+        max_iterations=3,
+    )
+
+    assert len(_steps(events)) == 3
+    assert len(requests) == 4  # 3 轮工具 + 1 次收尾
+    assert any("已达到 3 轮" in text for text in _notices(events))

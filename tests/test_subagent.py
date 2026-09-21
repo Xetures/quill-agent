@@ -222,10 +222,10 @@ def test_merge_leaves_context_tokens_alone() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_only_tool_calls_and_notices_are_broadcast(
+def test_only_actions_are_broadcast_and_the_text_is_not(
     monkeypatch: pytest.MonkeyPatch, in_run
 ) -> None:
-    """**文本增量不往外播。**
+    """**文本增量不往外播，动作要播。**
 
     子代理输出上千字的话那是几百个 SSE 事件，而外面真正想知道的其实是「它在做什么」。
     成品（结论）最后随工具结果一起到，不差这一点时间。
@@ -239,7 +239,7 @@ def test_only_tool_calls_and_notices_are_broadcast(
             [
                 "子代理说了一",
                 "大段话",
-                agent.ToolStep(name="read_file", arguments="{}", result="x"),
+                agent.ToolStart(name="read_file", arguments="{}"),
                 agent.Notice("提示"),
             ]
         ),
@@ -248,6 +248,57 @@ def test_only_tool_calls_and_notices_are_broadcast(
     subagent.spawn_agent("查一件事")
 
     assert [item["type"] for item in seen] == ["tool", "notice"]
+
+
+def test_the_start_of_a_tool_is_what_gets_broadcast(
+    monkeypatch: pytest.MonkeyPatch, in_run
+) -> None:
+    """播的是 ToolStart（执行**前**），不是 ToolStep（执行**后**）。
+
+    两者字段一样，但该被看见的是工具**跑着**的那段时间 —— 耗时全在前面，播一句
+    「跑完了」对「是不是卡住了」这个疑问没有帮助。父级界面上也是这个道理
+    （见 `agent.ToolStart` 的说明）。
+    """
+    seen: list[dict] = []
+    monkeypatch.setattr(subagent, "_publish", seen.append)
+    monkeypatch.setattr(
+        agent,
+        "run_agent_stream",
+        FakeRun([agent.ToolStart(name="run_command", arguments='{"command": "sleep 60"}')]),
+    )
+
+    subagent.spawn_agent("查一件事")
+
+    assert seen == [
+        {"type": "tool", "name": "run_command", "arguments": '{"command": "sleep 60"}'}
+    ]
+
+
+def test_a_quiet_stretch_is_broken_up_by_a_heartbeat(
+    monkeypatch: pytest.MonkeyPatch, in_run
+) -> None:
+    """长时间只有正文 / 思维链时，替子代理播一句「还在工作」。
+
+    真事（2026-09-21）：一次 `spawn_agent` 跑了整 360 秒，期间一个事件都没往外播，
+    正好撞上前端那条 360 秒的静默保护 —— 整条流被当成死连接掐掉，这一轮白跑。
+    那道保护的用意没错（防「对端睡了」，见 `web/src/api/chat.ts` 的 `IDLE_TIMEOUT_MS`），
+    错的是这里给它的信息太少。
+
+    阈值压到 0 来验「每个事件都补一句」；真实值是 30 秒（见 `_HEARTBEAT_SECONDS`）。
+    """
+    seen: list[dict] = []
+    monkeypatch.setattr(subagent, "_publish", seen.append)
+    monkeypatch.setattr(subagent, "_HEARTBEAT_SECONDS", 0.0)
+    monkeypatch.setattr(
+        agent, "run_agent_stream", FakeRun(["很长的", "一段正文", "分好几片"])
+    )
+
+    result = subagent.spawn_agent("查一件事")
+
+    assert [item["type"] for item in seen] == ["notice", "notice", "notice"]
+    assert all("正在工作" in item["text"] for item in seen)
+    # 心跳归心跳，正文照旧收进结论里
+    assert "很长的" in result and "分好几片" in result
 
 
 def test_publish_is_a_no_op_without_a_channel() -> None:

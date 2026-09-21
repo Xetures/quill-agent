@@ -39,7 +39,11 @@ from quill_agent import interaction
 from quill_agent.config import get_settings
 from quill_agent.memory import MemoryStore
 from quill_agent.models import Mode, ModelChoice
-from quill_agent.preferences import MAX_RUN_TOKENS_KEY, PreferenceStore
+from quill_agent.preferences import (
+    MAX_ITERATIONS_KEY,
+    MAX_RUN_TOKENS_KEY,
+    PreferenceStore,
+)
 from quill_agent.prompts import PromptLibrary
 from quill_agent.skills import SkillLibrary
 from quill_agent.store import (
@@ -56,17 +60,55 @@ from quill_agent.tools.files import (
 )
 from quill_agent.tools.todo import TodoBoard
 
-# 一轮对话里最多允许执行几「轮」工具调用，防止模型陷入死循环。
-# 注意它计的是工具轮次而不是请求次数：预算用尽后还会再发一次
+# 一轮对话里最多允许执行几「轮」工具调用 —— **防跑飞的兜底，不是常规闸门**。
+#
+# 常规闸门是 token 预算（`run_token_limit`）：真正决定一轮烧多少钱的是 token，
+# 不是次数 —— 两次请求的开销能差两个数量级（读一个 3 行文件 vs 装一个包）。
+# 按次数卡，卡住的是正常的长任务，真跑飞了反而未必拦得住。
+#
+# 定位和 Claude Code 的 `maxTurns` 一样：**兜底**。那边主循环是 `while(true)`，
+# 收口交给预算；这里留一格保守值，只是为了「用户没配 token 预算」时不至于无限跑。
+# 配了预算的话几乎轮不到它 —— 预算会先到（见 BUDGET_WARNING）。
+#
+# 从 10 提到 30：10 是被 plan 流程逼出来的数字，对「探路型」任务太紧 ——
+# 光摸清项目结构、读文档、确认工具链就能吃掉十轮，正事还没开始就被迫收尾
+# （2026-09-21 那个 PPT 任务就是这样）。
+#
+# 注意它计的是工具轮次而不是请求次数：兜底触发后还会再发一次
 # **不带工具**的请求让模型收尾，所以最多请求 MAX_ITERATIONS + 1 次。
 #
 # 计「轮」而不是「次」：模型一轮里可以同时请求好几个工具调用，那一批只花一格预算。
+MAX_ITERATIONS = 30
+
+# token 预算用到这个比例时，提醒模型开始收尾。
 #
-# 从 5 提到 10，是被 plan 流程逼出来的：一轮「先调研 → 交计划 → 等批准 → 动手 →
-# 验证」真实要 5～6 格（调研那几轮常一次读好几个文件，所以还好），留 5 格时
-# 计划一批准就快到顶了，模型会被迫在半路上收尾。10 格既容得下，也仍然是个
-# 有意义的防死循环上限 —— 它的目的是兜住跑飞，不是省那几次请求。
-MAX_ITERATIONS = 10
+# 硬停在预算上限上很亏：那一刻工具刚执行完、结果也回来了，却没有下一次请求
+# 去消化它。提前提醒，模型就能自己把剩下的活收拢到预算之内。
+#
+# 这是 Claude Code 里 `TOKEN_BUDGET` 的做法 ——「接近预算时提示模型继续或结束」。
+# 软着陆比硬切好，因为硬切切掉的往往是已经付过钱的那一步。
+BUDGET_WARN_RATIO = 0.8
+
+BUDGET_WARNING = (
+    "（系统提示）本轮的 token 预算快用完了。请开始收尾："
+    "把还需要做的事压缩到最少的几次工具调用内完成，然后直接给出最终回答；"
+    "如果信息不足，就说明还缺什么 —— 不要为了「做完」而继续铺开。"
+)
+
+# 预算用尽、最后一次请求不再带工具时，补上的这句说明。
+#
+# **不能只把 `tools` 字段撤掉就完事**：模型看不见这件事 —— 它的历史里躺着一串
+# 带 `tool_calls` 的 assistant 消息，system 提示词里也还列着工具名单，于是它会
+# 继续按调用格式输出。可这一轮没有 tools 通道，那段调用就漏进了正文。
+#
+# 真事（2026-09-21 的 PPT 任务）：deepseek-flash 前 10 轮 18 个调用全部规范，
+# 第 11 轮该收尾时却吐出了调用块 —— 用户看到的是「这模型不稳定」，实际是我们
+# 没说「工具没了」。把这件事说清楚，模型才会走收尾那条路。
+FINAL_ROUND_INSTRUCTION = (
+    "（系统提示）本轮的工具调用次数已经用完，接下来不再提供任何工具。"
+    "请不要再请求调用工具，直接基于已经获得的信息给出最终回答；"
+    "如果信息还不足以完成任务，就说明还缺什么。"
+)
 
 # 技能清单要求模型「用 read_skill 读取正文」，所以只要模式里给了技能，
 # 这个工具就必须在场 —— 否则模型会去调一个不存在的工具。
@@ -1285,6 +1327,24 @@ def run_token_limit() -> int:
         return 0
 
 
+def run_max_iterations() -> int:
+    """本轮的「工具轮次上限」；没配或配坏了就用 `MAX_ITERATIONS`。
+
+    它是**兜底**（理由见 `MAX_ITERATIONS` 的说明），主闸门是 token 预算。
+    之所以还开一个可配的口子：任务的「正常轮次」差得很远 —— 一句闲聊几轮就完，
+    探路型任务（摸清结构 → 读文档 → 确认工具链 → 动手）动辄十几轮，
+    给它们定同一个数只能是两头不讨好。
+
+    和 `run_token_limit` 的约定一致：坏值（空串、非数字、非正数）一律退回默认 ——
+    一个数字填错不该让对话直接跑不起来。
+    """
+    raw = PreferenceStore(get_settings().preferences_path).get(MAX_ITERATIONS_KEY)
+    try:
+        return int(raw) if int(raw) > 0 else MAX_ITERATIONS
+    except ValueError:
+        return MAX_ITERATIONS
+
+
 def _run_stream(
     *,
     prompt: str,
@@ -1380,10 +1440,19 @@ def _run_stream(
     # 工具轮次预算：每执行一轮工具就减一。减到 0 之后请求里不再带 tools，
     # 模型只能基于已有信息收尾 —— 不会出现「工具执行了、副作用发生了，
     # 结果却没机会被模型看到」的浪费。
-    tool_budget = MAX_ITERATIONS
+    #
+    # 上限可配（见 MAX_ITERATIONS_KEY）。它是兜底：正常完成任务靠模型自己收敛，
+    # 快撞上预算时还有 BUDGET_WARNING 提前提醒，轮不到它出场。
+    #
+    # 单独存一份 `round_limit`：`tool_budget` 会被逐轮减到 0，而提示语要报的是
+    # 「上限是多少」，拿递减后的值会说出「已达到 0 轮上限」这种鬼话。
+    round_limit = run_max_iterations()
+    tool_budget = round_limit
     # 开销上限也在这里读一次：这一轮开始时的值说了算，
     # 中途改偏好文件不该影响正在跑的对话
     limit = run_token_limit()
+    # 预算预警只提醒一次：重复堆进上下文既占地方，也只会让模型唠叨
+    budget_warned = False
 
     # 循环一定终止：每次迭代要么直接 return（拿到回答 / 预算已耗尽），
     # 要么把 tool_budget 减一。所以最多请求 MAX_ITERATIONS + 1 次。
@@ -1394,8 +1463,27 @@ def _run_stream(
             yield Notice("已取消这一轮。")
             return
 
+        # 快撞上预算就提醒模型收尾（见 BUDGET_WARNING）。检查点必须在**发出这次请求
+        # 之前** —— 提醒要赶在这一轮送出去，模型才来得及把剩下的活收拢到预算之内。
+        if (
+            limit
+            and not budget_warned
+            and tracker.total_tokens >= limit * BUDGET_WARN_RATIO
+        ):
+            budget_warned = True
+            messages.append({"role": "user", "content": BUDGET_WARNING})
+            yield Notice(
+                f"本轮已用 {tracker.total_tokens} tokens（上限 {limit}），已提醒模型收尾。"
+            )
+
         # 预算用尽就不再提供工具；空列表也不能传，部分服务不接受空的 tools
         available_tools = tools if tool_budget > 0 else None
+
+        if tool_budget <= 0:
+            # 光撤掉 tools 字段，模型是看不见的（理由见 FINAL_ROUND_INSTRUCTION）。
+            # 这条只在收尾轮补一次：它之后这一轮必然 return —— 要么拿到回答，
+            # 要么因为模型仍在请求工具而中止 —— 不会重复堆进上下文。
+            messages.append({"role": "user", "content": FINAL_ROUND_INSTRUCTION})
 
         try:
             stream = _open_stream(
@@ -1491,10 +1579,17 @@ def _run_stream(
             # 是正常回答，不该被扣上「把调用写成了文本」的帽子
             forged = bool(available_tools) and _looks_like_tool_call("".join(text_parts))
             if leaked or forged:
-                yield Notice(
-                    "模型把工具调用写成了普通文本，这一轮没有执行任何工具。"
-                    "可以重试，或换一个函数调用更稳定的模型。"
-                )
+                # 收尾轮漏了调用，根子在「没告诉模型工具没了」，不能甩锅给模型 ——
+                # 锅甩出去，用户会去换模型，换了照样漏。这里给准确的归因。
+                if tool_budget <= 0:
+                    yield Notice(
+                        f"已达到 {round_limit} 轮工具调用上限，模型仍未给出最终回答。"
+                    )
+                else:
+                    yield Notice(
+                        "模型把工具调用写成了普通文本，这一轮没有执行任何工具。"
+                        "可以重试，或换一个函数调用更稳定的模型。"
+                    )
             elif not emitted_text:
                 yield Notice(
                     "模型没有返回任何内容。可以重试，或换一个模型 —— "
@@ -1505,7 +1600,7 @@ def _run_stream(
         # 预算已耗尽却还收到工具调用：说明服务端没遵守「不给 tools」这条约定。
         # 这里不能再执行 —— 结果没有下一次请求去消化，副作用纯属白做。
         if tool_budget <= 0:
-            yield Notice(f"已达到 {MAX_ITERATIONS} 轮工具调用上限，模型仍未给出最终回答。")
+            yield Notice(f"已达到 {round_limit} 轮工具调用上限，模型仍未给出最终回答。")
             return
 
         # 开销上限：每次模型请求之后查一次（用量只在流末尾才有，没法中途拦）。

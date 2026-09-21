@@ -12,6 +12,7 @@ import threading
 from collections.abc import Iterator
 
 import pytest
+from server.routes import chat
 from server.routes.chat import Run, _close, _open, _sse
 
 
@@ -69,5 +70,40 @@ def test_normal_finish_does_not_cancel(loop: asyncio.AbstractEventLoop) -> None:
 
         assert len(events) == 1
         assert run.channel.is_cancelled() is False
+    finally:
+        _close(run)
+
+
+def test_a_quiet_stream_is_kept_alive(
+    loop: asyncio.AbstractEventLoop, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """静默超过心跳间隔时补一行 SSE 注释，别让对面以为连接死了。
+
+    真事（2026-09-21）：一次 `spawn_agent` 跑了整 360 秒，期间事件流一个字节都不走，
+    撞上前端那条 360 秒的静默保护（`web/src/api/chat.ts` 的 `IDLE_TIMEOUT_MS`）——
+    整条流被当成死连接掐掉，`reader.cancel()` 一路传到服务端，**那一轮白跑**。
+
+    **「没事件」不等于「死了」**：一次长思考、一个慢工具、子代理在干活，都会让流安静
+    好几分钟 —— 越是认真的任务越容易撞上。心跳填的就是这段。
+
+    发的是注释行（`: ` 开头），协议规定客户端应当忽略：前端 `parseBlock` 认不出
+    `event:` / `data:` 就跳过，但那一行字节照样算「收到了数据」。
+    """
+    monkeypatch.setattr(chat, "SSE_HEARTBEAT_SECONDS", 0.05)
+    run = Run(conversation_id="c3", loop=loop)
+    _open(run)
+
+    async def read_a_couple_of_beats() -> list[str]:
+        stream = _sse(run)
+        try:
+            return [await stream.__anext__() for _ in range(2)]
+        finally:
+            await stream.aclose()
+
+    try:
+        chunks = asyncio.run_coroutine_threadsafe(read_a_couple_of_beats(), loop).result(timeout=5)
+
+        assert all(chunk.startswith(":") for chunk in chunks)
+        assert all("keep-alive" in chunk for chunk in chunks)
     finally:
         _close(run)

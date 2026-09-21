@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+import time
 from contextvars import ContextVar
 from typing import Any
 
@@ -40,6 +41,17 @@ SUBAGENT_EXCLUDED = frozenset({"spawn_agent", "ask_user", "submit_plan", "todo_w
 
 # 嵌套深度。只允许一层。
 _depth: ContextVar[int] = ContextVar("quill_subagent_depth", default=0)
+
+# 子代理「还在干活」的心跳间隔（秒）。
+#
+# 为什么需要它：子代理的事件是按**动作**播的（调了哪个工具），而两个动作之间可能隔着
+# 很久 —— 模型在长思考、在长篇输出、工具在跑。那段时间外面一个字节都收不到，而前端
+# 有一条 360 秒的静默保护（见 `web/src/api/chat.ts` 的 `IDLE_TIMEOUT_MS`）：它会把
+# 「一直没数据」当成死连接，掐掉整条流。结果是**子代理干得越认真，越容易被自己人误杀**。
+#
+# 30 秒是折中：相对 360 秒有充足余量（中间可能隔着一次模型请求 + 一次工具），
+# 又不至于把看板刷成流水账。
+_HEARTBEAT_SECONDS = 30.0
 
 # 交给子代理的交代，拼在任务前面成为它那一轮的 user 消息。
 #
@@ -140,6 +152,8 @@ def spawn_agent(task: str) -> str:
     text_parts: list[str] = []
 
     try:
+        # 上次往外播报的时刻，心跳按它计时
+        last_beat = time.monotonic()
         for item in agent.run_agent_stream(
             prompt=f"{BRIEF}\n任务：{text}",
             files=[],
@@ -149,16 +163,28 @@ def spawn_agent(task: str) -> str:
             history=[],  # 空历史 = 干净的上下文，这正是子代理的意义所在
             stats=nested_stats,
         ):
-            if isinstance(item, str):
-                text_parts.append(item)
-            elif isinstance(item, agent.ToolStep):
+            if isinstance(item, agent.ToolStart):
+                # 播 ToolStart（执行**前**）而不是 ToolStep（执行**后**）：两者带的字段
+                # 一样，但需要被看见的是**执行中**那段静默 —— 耗时全在前面，播一句
+                # 「跑完了」对「是不是卡住了」这个疑问没有帮助。父级也是这个道理。
                 _publish({"type": "tool", "name": item.name, "arguments": item.arguments})
+                last_beat = time.monotonic()
             elif isinstance(item, agent.Notice):
                 _publish({"type": "notice", "text": item.text})
+                last_beat = time.monotonic()
+            else:
+                # 正文增量、思维链都不进看板：子代理输出上千字的话，那是几百个 SSE
+                # 事件，而外面要看的其实是「它正在做什么」。成品（它的结论）最后随
+                # 工具结果一起到，不差这一点时间。
+                if isinstance(item, str):
+                    text_parts.append(item)
 
-            # **文本增量不往外播**：子代理输出上千字的话，那是几百个 SSE 事件，
-            # 而外面要看的其实是「它正在做什么」。成品（它的结论）最后随工具结果
-            # 一起到，不差这一点时间
+                # 但它们证明「它还活着」—— 隔一会儿替它播一句。少了这句，一次长思考
+                # 或长输出就会撞上前端那条 360 秒的静默保护（见 _HEARTBEAT_SECONDS），
+                # 整条流被当成死连接掐掉。
+                if time.monotonic() - last_beat >= _HEARTBEAT_SECONDS:
+                    last_beat = time.monotonic()
+                    _publish({"type": "notice", "text": "子代理正在工作…"})
     finally:
         _depth.reset(token)
         # 用量并回父级：不并的话这些 token 花了钱却不出现在用量页上。
