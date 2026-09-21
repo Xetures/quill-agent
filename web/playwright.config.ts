@@ -17,9 +17,9 @@ export default defineConfig({
   reporter: [['list']],
   use: {
     baseURL: 'http://localhost:5199',
-    // 用系统已装的 Chrome，省掉 `npx playwright install` 那几百 MB 下载。
-    // CI（没有系统 Chrome）上换成 `...devices['Desktop Chrome']` 并先跑一次 install。
-    channel: 'chrome',
+    // 本地用系统已装的 Chrome，省掉 `npx playwright install` 那几百 MB 下载；
+    // CI 上没有系统 Chrome，交给 Playwright 自带的 chromium（先跑一次 install chromium，见 ci.yml）
+    ...(process.env.CI ? {} : { channel: 'chrome' }),
   },
   webServer: {
     // 用一个独立端口，别去碰用户可能正开着的 5173。

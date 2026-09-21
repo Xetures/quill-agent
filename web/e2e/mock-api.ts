@@ -15,13 +15,25 @@ export const brief = {
   updated_at: 1758400000,
 }
 
-export const model = {
+/** 任务页读 `options`（摊平后的下拉项）。 */
+export const modelOption = {
   key: 'cfg-1::m-1',
   config_id: 'cfg-1',
   config_name: '测试连接',
   model: 'm-1',
   label: '测试连接 / m-1',
   context_window: 128000,
+}
+
+/** API 设置页读 `configs`（原始连接）。同一个端点两种口径，后端一份响应里都给。 */
+export const modelConfig = {
+  id: 'cfg-1',
+  name: '测试连接',
+  base_url: 'https://example.test',
+  protocol: 'openai',
+  api_key: 'sk-test',
+  models: ['m-1'],
+  context_windows: { 'm-1': 128000 },
 }
 
 export const mode = {
@@ -46,7 +58,9 @@ export function doneMessage(overrides: Record<string, unknown> = {}): Record<str
 }
 
 /** `/api/chat` 要返回什么。可以是异步的 —— 用来模拟「还在跑」的中间态。 */
-export type ChatResponse = () => Promise<{ status: number; body: string }> | { status: number; body: string }
+export type ChatResponse = () =>
+  | Promise<{ status: number; body: string }>
+  | { status: number; body: string }
 
 export interface MockOptions {
   /** `/api/chat` 的响应；不给就返回一个空流。 */
@@ -56,20 +70,67 @@ export interface MockOptions {
 export async function mockApi(page: Page, options: MockOptions = {}): Promise<void> {
   // 只匹配「路径以 /api/ 开头」的请求。**不能用 glob `**/api/**`** —— 它会把前端自己的
   // 模块请求也拦下来（`/src/api/chat.ts` 的 URL 里就含 `/api/`），模块拿到一段 JSON、
-  // 应用直接挂不起来，页面一片空白，而报错只是一句难懂的 MIME type 警告
+  // 应用直接挂不起来，而报错只是一句难懂的 MIME type 警告
   await page.route(/^https?:\/\/[^/]+\/api\//, async (route) => {
     const path = new URL(route.request().url()).pathname
 
     if (path === '/api/preferences') return route.fulfill({ json: {} })
+    if (path === '/api/health') return route.fulfill({ json: { version: '0.1.4' } })
+
     if (path === '/api/conversations') {
       return route.fulfill({ json: { active: [brief], archived: [] } })
     }
     if (path === `/api/conversations/${CONVERSATION_ID}`) {
       return route.fulfill({ json: { messages: [] } })
     }
-    if (path === '/api/models') return route.fulfill({ json: { options: [model] } })
+
+    // 同一个端点被两个页面用两种口径读，所以两种字段都要给
+    if (path === '/api/models') {
+      return route.fulfill({ json: { options: [modelOption], configs: [modelConfig] } })
+    }
+    if (path === '/api/protocols') {
+      return route.fulfill({
+        json: {
+          protocols: [
+            {
+              value: 'openai',
+              label: 'OpenAI Chat Completions',
+              default_base_url: 'https://api.openai.com/v1',
+              hint: 'sk-...',
+            },
+          ],
+        },
+      })
+    }
+
     if (path === '/api/modes') {
       return route.fulfill({ json: { modes: [mode], groups: { prompt: {}, tool: {}, skill: {} } } })
+    }
+    if (path === '/api/prompt-groups') return route.fulfill({ json: { groups: [] } })
+    if (path === '/api/prompts') return route.fulfill({ json: { categories: [], items: [] } })
+    if (path === '/api/tool-groups') return route.fulfill({ json: { groups: [] } })
+    if (path === '/api/tools') return route.fulfill({ json: { tools: [], categories: [] } })
+    if (path === '/api/skill-groups') return route.fulfill({ json: { groups: [] } })
+    if (path === '/api/skills') return route.fulfill({ json: { skills: [], dir: '/tmp/skills' } })
+    if (path === '/api/memory') return route.fulfill({ json: { items: [], max: 50 } })
+    if (path === '/api/usage') {
+      return route.fulfill({ json: { dates: [], series: [], tasks: [] } })
+    }
+    if (path === '/api/search') {
+      return route.fulfill({
+        json: {
+          config: { backend: 'tavily', keys: {}, base_url: '', max_results: 5 },
+          backends: [
+            {
+              value: 'tavily',
+              label: 'Tavily',
+              endpoint: 'https://api.tavily.com',
+              hint: 'tvly-...',
+            },
+          ],
+          limits: { min: 1, max: 10, default: 5 },
+        },
+      })
     }
     if (path === '/api/workdir') {
       return route.fulfill({ json: { path: '/tmp/quill-e2e', native_picker: false } })
@@ -86,7 +147,7 @@ export async function mockApi(page: Page, options: MockOptions = {}): Promise<vo
       })
     }
 
-    // 其余端点（工具 / 技能 / 记忆…）给个空对象，别让请求真打出去
+    // 其余端点给个空对象，别让请求真打出去
     return route.fulfill({ json: {} })
   })
 }

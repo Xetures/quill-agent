@@ -90,6 +90,12 @@ uv run python scripts/make_release.py --windows   # 打测试包
 带进来的（`python-multipart` 就曾经是被另一个包顺带装上的，那个包被拆掉之后它跟着消失，
 用户那边直接启动失败）。干净环境才会现形。
 
+**CI 跑的就是本地那几条命令**（`.github/workflows/ci.yml`，push / PR 触发）：后端
+`ruff` + `pytest`，前端 `npm ci` + `typecheck` + `build` + `e2e`。所以本地跑绿了 CI 基本
+就绿了，唯一差别是 **CI 上没有系统 Chrome** —— 那边用 Playwright 自带的 chromium
+（`npx playwright install --with-deps chromium`），而本地用的是系统 Chrome（见
+`playwright.config.ts` 里那个 `process.env.CI` 分支）。
+
 ### 首次使用
 
 应用启动后需要先配置一个模型，否则任务页无法发起对话：
@@ -314,7 +320,7 @@ def your_tool(...) -> str:
 - **执行契约**：工具内部任何异常都转成可读文本返回，不向上抛。模型看到错误说明后通常能自行修正，
   而抛异常会直接打断整个 Agent 循环。
 
-**当前工具清单（26 个）：**
+**当前工具清单（27 个）：**
 
 | 工具 | 分类 | 说明 |
 | --- | --- | --- |
@@ -344,6 +350,7 @@ def your_tool(...) -> str:
 | `forget` | 记忆 | 按原文忘掉一条记忆（要求一字不差，避免误删） |
 | `web_search` | 联网 | 联网搜索，返回标题、地址和摘要（见 4.13、7.26） |
 | `web_fetch` | 联网 | 带着一个问题抓一个网页、只取相关的那部分正文（见 4.13、7.26） |
+| `recall_history` | 对话 | 按关键词检索更早的对话原文（正文和工具结果都算）—— 历史被截断时的找回入口（见 3.4） |
 
 > `search_content` 是这批里最关键的一个：没有它，模型要确认「某个函数在哪定义」就只能挨个读文件，
 > token 消耗是几十倍。它会自动跳过 `.venv` / `.git` / `__pycache__` 等目录，并按行截断、

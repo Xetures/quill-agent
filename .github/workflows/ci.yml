@@ -1,0 +1,60 @@
+name: CI
+
+# 后端与前端分开两个 job：它们互不依赖，并行跑更快，出问题时也一眼看得出是哪一半。
+#
+# 覆盖的是「本地一条命令能跑的所有检查」：
+#   ruff / pytest / vue-tsc / playwright
+# 以前这些只在手动 `make test` 时才跑，所以回归全靠人记得跑一遍。
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    name: 后端（ruff + pytest）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          # 按 uv.lock 缓存依赖，第二次往后快很多
+          enable-cache: true
+
+      # --extra dev 才有 pytest / ruff（见 pyproject.toml）
+      - run: uv sync --extra dev
+
+      - run: uv run ruff check .
+      - run: uv run pytest -q
+
+  frontend:
+    name: 前端（typecheck + build + e2e）
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # npm ci 而不是 install：锁文件说了算，装出来的和本地一致
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      # 构建也要在 CI 里跑一遍 —— 类型检查过不代表打包得过
+      # （产物 web/dist 是进版本库的，但 CI 里跑完不提交，只做验证）
+      - run: npm run build
+
+      # CI 上没有系统 Chrome，用 Playwright 自带的 chromium；
+      # --with-deps 会一并装上它需要的系统库（需要 sudo，runner 允许）
+      # 本地跑 e2e 不需要这一步：playwright.config.ts 里用的是系统 Chrome
+      - run: npx playwright install --with-deps chromium
+
+      - run: npm run e2e

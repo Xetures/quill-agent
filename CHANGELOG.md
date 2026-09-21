@@ -3,6 +3,24 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.1.5] - 2026-09-21
+
+### 新增
+
+- **CI（GitHub Actions，`.github/workflows/ci.yml`）**：push / PR 时自动跑后端
+  `ruff` + `pytest` 与前端 `npm ci` + `typecheck` + `build` + `e2e`。此前这些只在手动
+  `make test` 时才跑，回归全靠人记得跑一遍。
+- **前端 e2e 扩到「逐页冒烟」**（`web/e2e/pages.spec.ts`）：11 个页面每个都验「能打开、
+  标题正确、控制台不报错」—— 等价于把「手工点一遍所有页面」自动化，专盯前后端契约漂移。
+  `mock-api.ts` 顺带补齐了各页面用到的端点（注意同一个 `/api/models` 被两个页面用两种
+  口径读，`options` 与 `configs` 都要给）。
+
+### 修复
+
+- **README 的工具表漏了 `recall_history`**（表头写 26 个，实际 27 个）。功能本身没缺，
+  3.4 节有它的详细说明，只是表格没列 —— 这类「文档数字悄悄过期」以后靠 CI 之外的人眼
+  盯着，补上了就好。
+
 ## [0.1.4] - 2026-09-21
 
 ### 新增
