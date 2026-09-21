@@ -14,7 +14,8 @@ const PAGES = [
   { path: '/modes', title: '模式' },
   { path: '/prompts', title: '提示词' },
   { path: '/models', title: 'API 设置' },
-  { path: '/search', title: '联网搜索' },
+  // 联网搜索归到偏好设置下面（见 router.ts），顶栏标题由 SettingsLayout 统一给
+  { path: '/settings/search', title: '偏好设置' },
   { path: '/tools', title: '工具' },
   { path: '/skills', title: '技能' },
   { path: '/memory', title: '记忆' },
@@ -39,3 +40,11 @@ for (const { path, title } of PAGES) {
     expect(errors, `控制台报错：\n${errors.join('\n')}`).toEqual([])
   })
 }
+
+// /search 是旧地址：联网搜索挪进偏好设置后留了跳转，书签和历史里的链接不能落到空白页
+test('旧地址 /search 跳到偏好设置的联网搜索节', async ({ page }) => {
+  await mockApi(page)
+  await page.goto('/search')
+  await expect(page).toHaveURL(/\/settings\/search$/)
+  await expect(page.locator('.sub-item.active')).toHaveText('联网搜索')
+})

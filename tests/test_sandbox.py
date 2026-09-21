@@ -15,8 +15,12 @@ import sys
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
+from server import stores
+from server.schemas import SandboxPayload
 
 from quill_agent import config, sandbox
+from quill_agent.preferences import SANDBOX_MODE_KEY, SANDBOX_NETWORK_KEY, PreferenceStore
 from quill_agent.tools import shell
 
 # 本机能真跑沙箱吗？跑不了就让第三层用例整体跳过，而不是伪造一个通过。
@@ -391,6 +395,118 @@ def test_typo_in_the_mode_fails_loudly(monkeypatch: pytest.MonkeyPatch) -> None:
 
     with pytest.raises(ValueError):
         config.get_settings()
+
+
+# ---------------------------------------------------------------------------
+# 界面可改：偏好优先于 .env，且改完立即生效
+#
+# 这一节存在的理由：档位要是只能靠改 .env + 重启，用户遇到命令被拦时的理性选择
+# 就是干脆一关了之 —— 那才是最坏的结果。
+# ---------------------------------------------------------------------------
+
+
+def test_preference_overrides_the_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, sandbox_preferences: PreferenceStore
+) -> None:
+    """界面设过的档位盖过 .env —— 后者是「部署时的默认」，前者是「用户此刻要什么」。"""
+    monkeypatch.setenv("SANDBOX_MODE", "read-only")
+    config.get_settings.cache_clear()
+    sandbox_preferences.set(SANDBOX_MODE_KEY, "workspace-write")
+
+    assert sandbox.policy_for(tmp_path).mode is sandbox.SandboxMode.WORKSPACE_WRITE
+
+
+def test_broken_preference_falls_back_to_the_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, sandbox_preferences: PreferenceStore
+) -> None:
+    """偏好里填坏了就退回 .env 的值 —— 不是报错，也**不是退到 off**。
+
+    退到 off 就成了「以为开着沙箱、其实在裸跑」，正是这个模块最怕的失败方式。
+    退到 .env 则是安全的：那边的值写错会在**启动时**被 `Literal` 拦下，
+    所以能走到这一步的那个值一定合法。
+    """
+    monkeypatch.setenv("SANDBOX_MODE", "read-only")
+    config.get_settings.cache_clear()
+    sandbox_preferences.set(SANDBOX_MODE_KEY, "workspace-writ")
+
+    assert sandbox.policy_for(tmp_path).mode is sandbox.SandboxMode.READ_ONLY
+
+
+def test_network_switch_is_separate_from_the_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, sandbox_preferences: PreferenceStore
+) -> None:
+    """联网是独立的一个旋钮：装依赖那一下要开，装完就该收回去。"""
+    monkeypatch.setenv("SANDBOX_NETWORK", "false")
+    config.get_settings.cache_clear()
+
+    sandbox_preferences.set(SANDBOX_NETWORK_KEY, "true")
+    assert sandbox.policy_for(tmp_path).allow_network is True
+
+    sandbox_preferences.set(SANDBOX_NETWORK_KEY, "false")
+    assert sandbox.policy_for(tmp_path).allow_network is False
+
+
+def test_changing_the_preference_takes_effect_without_a_restart(
+    tmp_path: Path, sandbox_preferences: PreferenceStore
+) -> None:
+    """改完**下一条命令**就生效，不必重启进程。"""
+    sandbox_preferences.set(SANDBOX_MODE_KEY, "read-only")
+    assert sandbox.policy_for(tmp_path).mode is sandbox.SandboxMode.READ_ONLY
+
+    sandbox_preferences.set(SANDBOX_MODE_KEY, "workspace-write")
+    assert sandbox.policy_for(tmp_path).mode is sandbox.SandboxMode.WORKSPACE_WRITE
+
+
+def test_status_lists_every_mode_with_a_plain_language_hint(
+    sandbox_preferences: PreferenceStore,
+) -> None:
+    """档位清单与每档的说明都由后端给。
+
+    界面不另抄一份：抄漏一档的话用户会永久少一个选项，而且不会有任何报错 ——
+    这种错只有用户才碰得到。
+    """
+    state = sandbox.status()
+
+    assert [item["value"] for item in state["modes"]] == ["off", "read-only", "workspace-write"]
+    assert all(item["label"] and item["hint"] for item in state["modes"])
+    assert state["mode"] in {"off", "read-only", "workspace-write"}
+    assert isinstance(state["available"], bool)
+
+
+def test_status_admits_when_the_value_came_from_the_ui(
+    sandbox_preferences: PreferenceStore,
+) -> None:
+    """界面改过要看得出来 —— 否则「我改了 .env 怎么没反应」只能靠猜。"""
+    assert sandbox.status()["customized"] is False
+
+    sandbox_preferences.set(SANDBOX_MODE_KEY, "read-only")
+    assert sandbox.status()["customized"] is True
+
+
+def test_the_api_rejects_an_unknown_mode() -> None:
+    """接口层就拒掉拼错的档位，而不是「先存下、再静默回落」。
+
+    回落的方向恰好是「不隔离」—— 那等于让用户以为开着沙箱，实际在裸跑。
+    """
+    with pytest.raises(ValidationError):
+        SandboxPayload(mode="workspace-writ", network=False)
+
+
+def test_saving_via_the_api_lands_in_preferences(
+    monkeypatch: pytest.MonkeyPatch, sandbox_preferences: PreferenceStore
+) -> None:
+    """接口把两个值写进偏好，并回一份改完的状态（界面因此不必再补一次 GET）。"""
+    from server.routes import sandbox as sandbox_route
+
+    monkeypatch.setattr(stores, "preferences", lambda: sandbox_preferences)
+
+    payload = SandboxPayload(mode=sandbox.SandboxMode.READ_ONLY, network=True)
+    state = sandbox_route.set_sandbox(payload)
+
+    assert sandbox_preferences.get(SANDBOX_MODE_KEY) == "read-only"
+    assert sandbox_preferences.get(SANDBOX_NETWORK_KEY) == "true"
+    assert state["mode"] == "read-only"
+    assert state["network"] is True
 
 
 def test_startup_note_says_what_is_actually_in_effect(

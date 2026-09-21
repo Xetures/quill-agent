@@ -122,12 +122,9 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="page">
-    <Teleport to="#page-head-slot">
-      <h1>联网搜索</h1>
-      <span class="hint">让 Agent 能搜网、能读网页；搜索结果和正文都由这里配置的服务提供</span>
-    </Teleport>
-
+  <!-- 这一页现在是「偏好设置」里的一节：页面标题和二级导航由 SettingsLayout 提供，
+       所以这里不带 `.page` 外壳（套两层 .page 会多出一层滚动区） -->
+  <div>
     <section class="group">
       <h2>搜索服务</h2>
       <p class="muted desc">

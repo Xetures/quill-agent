@@ -13,7 +13,7 @@ from __future__ import annotations
 import copy
 import json
 from pathlib import Path
-from typing import TypeVar
+from typing import Any, TypeVar
 from uuid import uuid4
 
 from pydantic import ValidationError
@@ -92,6 +92,65 @@ def load_items(path: Path, model: type[T]) -> list[T]:
             continue  # 坏的那条跳过，其余照常读出
 
     return items
+
+
+def reject_if_builtin(items: list[Any], item_id: str, label: str) -> None:
+    """要删的这个是不是出厂资源？是就拒绝（各 store 的 `remove` 共用）。
+
+    藏在存储层而不是只靠界面把删除按钮藏起来：界面是「不提供入口」，这里是「不给删」。
+    少了这一层，一次误调接口（或者别的代码路径）就能把内置资源删掉，而用户下次启动
+    才会发现模式里引用的组不见了。
+
+    它**只管删除**：出厂资源是可以改的（改措辞、调描述都是正当需求），只是不能删 ——
+    删掉之后「开箱即用」就永久少一块，而出厂的那个模式正引用着这些组和提示词。
+
+    Raises:
+        ValueError: 该 id 存在且 `builtin=True`。文案直接给用户看。
+    """
+    target = next((item for item in items if item.id == item_id), None)
+    if target is not None and getattr(target, "builtin", False):
+        raise ValueError(f"「{target.name}」是内置{label}，不能删除。")
+
+
+def sync_builtin(store: Any, builtin_items: list[Any]) -> tuple[list[str], list[str]]:
+    """把出厂条目补进一个 store，返回 `(新增的名字, 修回标记的名字)`。
+
+    为什么不用 `store.add()`：它按**组名**查重，内置项的名字和用户自建项撞上时会
+    直接抛错 —— 而这里要做的是「确保它存在」，不该因为一个重名就整体放弃。
+    所以走一次整体的「读 → 改 → 写」（持锁），和 `_save_all` 的其它调用方一样。
+
+    两件事：
+
+        1. **缺失就补上** —— 新装一份应用时，这些条目一个都还没有；
+        2. **标记被抹掉就改回来** —— 少了 `builtin`，一条出厂资源就变成「用户可以
+           删掉」的了，而那正好是这个字段要防的事。别的字段一律不动：内容与描述
+           都可能被用户改过，那是他的东西。
+
+    顺序保持原样、新增的追加在末尾，这样界面上内置项的位置是稳定的。
+
+    Returns:
+        两个名字列表。都为空表示什么都没做（也就不落盘）。
+    """
+    with file_lock(store._path):  # noqa: SLF001 —— 同一模块内，这些 store 的实现就在上面
+        items = store.list()
+        positions = {item.id: index for index, item in enumerate(items)}
+        added: list[str] = []
+        repaired: list[str] = []
+
+        for item in builtin_items:
+            position = positions.get(item.id)
+            if position is None:
+                positions[item.id] = len(items)
+                items.append(item)
+                added.append(item.name)
+            elif not items[position].builtin:
+                items[position] = items[position].model_copy(update={"builtin": True})
+                repaired.append(item.name)
+
+        if added or repaired:
+            store._save_all(items)  # noqa: SLF001
+
+    return added, repaired
 
 
 class ModelStore:
@@ -229,9 +288,15 @@ class ToolGroupStore:
             self._save_all([group if group.id != item.id else item for group in items])
 
     def remove(self, group_id: str) -> None:
-        """按 id 删除；id 不存在时静默忽略。"""
+        """按 id 删除；id 不存在时静默忽略。
+
+        Raises:
+            ValueError: 这是一个出厂内置的工具组（见 `reject_if_builtin`）。
+        """
         with file_lock(self._path):
-            self._save_all([group for group in self.list() if group.id != group_id])
+            items = self.list()
+            reject_if_builtin(items, group_id, "工具组")
+            self._save_all([group for group in items if group.id != group_id])
 
     def _save_all(self, items: list[ToolGroup]) -> None:
         """整体覆写（须由调用方持锁进入，见 `file_lock`）。"""
@@ -291,9 +356,15 @@ class SkillGroupStore:
             self._save_all([group if group.id != item.id else item for group in items])
 
     def remove(self, group_id: str) -> None:
-        """按 id 删除；id 不存在时静默忽略。"""
+        """按 id 删除；id 不存在时静默忽略。
+
+        Raises:
+            ValueError: 这是一个出厂内置的技能组（见 `reject_if_builtin`）。
+        """
         with file_lock(self._path):
-            self._save_all([group for group in self.list() if group.id != group_id])
+            items = self.list()
+            reject_if_builtin(items, group_id, "技能组")
+            self._save_all([group for group in items if group.id != group_id])
 
     def _save_all(self, items: list[SkillGroup]) -> None:
         """整体覆写（须由调用方持锁进入，见 `file_lock`）。"""
@@ -359,9 +430,15 @@ class PromptGroupStore:
             self._save_all([group if group.id != item.id else item for group in items])
 
     def remove(self, group_id: str) -> None:
-        """按 id 删除；id 不存在时静默忽略。"""
+        """按 id 删除；id 不存在时静默忽略。
+
+        Raises:
+            ValueError: 这是一个出厂内置的提示词组（见 `reject_if_builtin`）。
+        """
         with file_lock(self._path):
-            self._save_all([item for item in self.list() if item.id != group_id])
+            items = self.list()
+            reject_if_builtin(items, group_id, "提示词组")
+            self._save_all([item for item in items if item.id != group_id])
 
     def drop_prompt(self, prompt_id: str) -> list[str]:
         """把某条提示词从所有引用它的组里摘掉，返回被改动的组名。
@@ -466,9 +543,15 @@ class ModeStore:
             self._save_all([item if item.id != mode.id else mode for item in items])
 
     def remove(self, mode_id: str) -> None:
-        """按 id 删除；id 不存在时静默忽略。"""
+        """按 id 删除；id 不存在时静默忽略。
+
+        Raises:
+            ValueError: 这是一个出厂内置的模式（见 `reject_if_builtin`）。
+        """
         with file_lock(self._path):
-            self._save_all([item for item in self.list() if item.id != mode_id])
+            items = self.list()
+            reject_if_builtin(items, mode_id, "模式")
+            self._save_all([item for item in items if item.id != mode_id])
 
     def _save_all(self, items: list[Mode]) -> None:
         """整体覆写（须由调用方持锁进入，见 `file_lock`）。"""

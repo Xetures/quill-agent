@@ -19,15 +19,23 @@ shell.py 里那两道闸（危险命令先问用户、交互式程序直接拒�
 
 分档
 ----
-    off              不套沙箱 —— 默认值，保持既有行为
+    off              不套沙箱 —— 执行类命令不受工作目录限制
     read-only        工作区只读、默认断网（读代码、做分析这类任务）
     workspace-write  工作区可写、默认断网（改代码、跑测试这类任务）
 
-为什么默认是 off
-----------------
-默认值仍是 off：开着的话，**没有可用后端的平台**上每条命令都会落到「无后端 → 拒绝执行」，
-开发和测试当场不可用。**无后端时不静默放行** —— 用户既然显式要了沙箱，偷偷裸跑是这里
-最坏的失败方式。
+档位可以在界面上改（顶栏「执行权限」），改完**下一条命令就生效**、不必重启：这个设置
+天然是按任务变的（读代码 / 改代码 / 装依赖要的边界各不相同），要是改一次就得重启一次，
+用户的理性选择就是干脆一关了之 —— 那才是最坏的结果。界面上那份存在偏好里，
+`.env` 的 `SANDBOX_MODE` 由此降为「这台机器部署时的默认」。
+
+默认值按平台给
+--------------
+有后端的平台（Linux / macOS）默认 `workspace-write`，没有后端的 Windows 默认 `off`
+（见 `config._default_sandbox_mode`）。
+
+为什么不能一律默认开着：在没有可用后端的平台上，每条命令都会落到「无后端 → 拒绝执行」，
+而用户根本没配过沙箱，只会觉得程序坏了。**无后端时不静默放行** —— 用户既然要了沙箱，
+偷偷裸跑是这里最坏的失败方式。
 
 两个后端（按平台自动选，不用配）
 -------------------------------
@@ -57,10 +65,15 @@ from functools import lru_cache
 from pathlib import Path
 
 from quill_agent.config import get_settings
+from quill_agent.preferences import (
+    SANDBOX_MODE_KEY,
+    SANDBOX_NETWORK_KEY,
+    PreferenceStore,
+)
 
 
 class SandboxMode(str, Enum):
-    """隔离档位。取值同时是 `SANDBOX_MODE` 环境变量的合法值。"""
+    """隔离档位。取值同时是 `.env` 的 `SANDBOX_MODE` 和偏好里那份的合法值。"""
 
     OFF = "off"
     READ_ONLY = "read-only"
@@ -73,6 +86,19 @@ class SandboxMode(str, Enum):
             SandboxMode.OFF: "不隔离",
             SandboxMode.READ_ONLY: "只读",
             SandboxMode.WORKSPACE_WRITE: "工作区可写",
+        }[self]
+
+    @property
+    def hint(self) -> str:
+        """界面上这一档「到底管什么」的一句话。
+
+        跟着枚举走、由 `status()` 发给界面，而不是抄在前端：三档的语义只有这一处
+        定义，改档位时不会漏改界面上的说明（那种漏改没人会报错，只会让人理解错）。
+        """
+        return {
+            SandboxMode.OFF: "不给命令加限制，和你在终端里直接跑没有区别。",
+            SandboxMode.READ_ONLY: "工作区只能读、默认断网。适合看代码、做分析。",
+            SandboxMode.WORKSPACE_WRITE: "工作区可写、默认断网。适合改代码、跑测试。",
         }[self]
 
 
@@ -130,18 +156,112 @@ SENSITIVE_HOME_DIRS = (
 )
 
 
-def policy_for(work_dir: str | Path) -> SandboxPolicy:
-    """按配置和给定工作目录造一份策略。
+def _preference_store() -> PreferenceStore:
+    """偏好文件（界面设的档位住那里）。
 
-    配置项的合法值由 `Settings` 上的 Literal 保证：`SANDBOX_MODE` 写错会在**启动时**
-    直接报错，而不是在这里被悄悄降级成 off。「以为开了沙箱、其实没开」比启动失败危险
-    得多 —— 尤其是这里降级的默认方向恰好是「不隔离」。
+    每次现读、不缓存：这个设置必须能**改完立即生效**（理由见 `SANDBOX_MODE_KEY`）。
+    代价是一条命令多读一个小 JSON —— 换来的是用户不必为了换档位重启进程。
     """
-    settings = get_settings()
+    return PreferenceStore(get_settings().preferences_path)
+
+
+def effective_mode() -> SandboxMode:
+    """此刻生效的档位：**界面设的优先，否则用配置里的**。
+
+    优先级这么定，是因为两者回答的不是同一个问题：`.env` 里的 `SANDBOX_MODE`
+    是「这台机器部署时的默认」，偏好里那份是「用户此刻要什么」。后者更具体、
+    也更晚表达，所以听它的。
+
+    偏好里的值坏了就退回配置，而不是当场报错 —— 和别处的约定一致（一个填错的
+    偏好不该让命令全跑不了）。这里的回落是安全的：配置里的值写错会在**启动时**
+    被 `Literal` 拦下，所以能走到这一步的那个值一定合法。
+    """
+    raw = _preference_store().get(SANDBOX_MODE_KEY)
+    if raw:
+        try:
+            return SandboxMode(raw)
+        except ValueError:
+            pass
+    return SandboxMode(get_settings().sandbox_mode)
+
+
+def effective_network() -> bool:
+    """此刻生效的联网开关。偏好里的写法约定见 `SANDBOX_NETWORK_KEY`。"""
+    raw = _preference_store().get(SANDBOX_NETWORK_KEY)
+    if raw:
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(get_settings().sandbox_network)
+
+
+def customized() -> bool:
+    """界面改过没有？
+
+    有它，界面才解释得清「为什么我改了 .env 却没反应」—— 因为偏好盖着那份。
+    没有这个标记，那句话就说不出口，用户只能怀疑是程序坏了。
+    """
+    store = _preference_store()
+    return bool(store.get(SANDBOX_MODE_KEY) or store.get(SANDBOX_NETWORK_KEY))
+
+
+def backend_name() -> str:
+    """当前平台会用（或该用）的后端名；本平台没有对应实现时返回空串。"""
+    if sys.platform.startswith("linux"):
+        return "bubblewrap"
+    if sys.platform == "darwin":
+        return "Seatbelt"
+    return ""
+
+
+def unavailable_reason() -> str:
+    """后端不可用的原因；可用时返回空串。
+
+    `available()` 只回答「行不行」，这里回答「为什么不行、怎么修」—— 界面要展示的
+    是后者。文案直接可展示给用户，并且要能让人自己修好。
+    """
+    if sys.platform.startswith("linux"):
+        ok, reason = _bwrap_probe()
+    elif sys.platform == "darwin":
+        ok, reason = _seatbelt_probe()
+    else:
+        return _no_backend_reason()
+    return "" if ok else f"{reason}（{_no_backend_reason()}）"
+
+
+def status() -> dict[str, object]:
+    """沙箱现状，供界面展示与修改。
+
+    放在这里而不是路由里：「后端叫什么、在不在」本身就是沙箱的知识，路由只管把它
+    转成 JSON。档位清单也从 `SandboxMode` 现取 —— 界面上那份列表因此不必手抄一遍，
+    也就不会出现「后端支持三档、界面只画两档」这种只有用户才会发现的错。
+    """
+    mode = effective_mode()
+    return {
+        "mode": mode.value,
+        "mode_label": mode.label,
+        "network": effective_network(),
+        "customized": customized(),
+        "available": available(),
+        "backend": backend_name(),
+        "unavailable_reason": unavailable_reason(),
+        "modes": [
+            {"value": item.value, "label": item.label, "hint": item.hint}
+            for item in SandboxMode
+        ],
+    }
+
+
+def policy_for(work_dir: str | Path) -> SandboxPolicy:
+    """按当前生效的设置和给定工作目录造一份策略。
+
+    档位与联网开关**每次现读**（见 `effective_mode`）：改了偏好，下一条命令就按新
+    档位跑，不用重启。这和 `run_token_limit` 那种「这一轮开始时的值说了算」是**有意
+    的区别** —— 预算是「这一轮花多少」的承诺，中途变卦只会让人困惑；沙箱是「此刻的
+    边界」，命令被拦 → 去改档位 → 重试，本来就该立即生效。
+    """
     return SandboxPolicy(
-        mode=SandboxMode(settings.sandbox_mode),
+        mode=effective_mode(),
         work_dir=Path(work_dir).resolve(),
-        allow_network=bool(settings.sandbox_network),
+        allow_network=effective_network(),
     )
 
 
@@ -177,7 +297,7 @@ def _no_backend_reason() -> str:
     if sys.platform == "darwin":
         return (
             "本机是 macOS，但 sandbox-exec 用不了（系统被裁剪过，或该工具已被移除）。"
-            "可以先用 SANDBOX_MODE=off 显式关掉隔离。"
+            "可以把 SANDBOX_MODE 设为 off，或在界面上把「执行权限」改成「不隔离」。"
         )
     if sys.platform == "win32":
         return (

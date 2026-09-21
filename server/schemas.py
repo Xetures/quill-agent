@@ -9,6 +9,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from quill_agent.models import Protocol
+from quill_agent.sandbox import SandboxMode
 from quill_agent.search import DEFAULT_MAX_RESULTS, MAX_RESULTS_LIMIT, SearchBackend
 
 
@@ -189,6 +190,21 @@ class PreferencePayload(BaseModel):
     """批量写入界面偏好。"""
 
     values: dict[str, str]
+
+
+class SandboxPayload(BaseModel):
+    """改沙箱档位与联网开关。
+
+    `mode` 直接用 `SandboxMode` 这个枚举，而不是再写一遍 `Literal[...]`：
+    档位的合法取值因此只有一个来源，将来加一档不必记得来这里同步 ——
+    漏掉的话用户就永久少一个选项，而且不会有任何报错。
+
+    写错的值在这里被拒（422），**不能**像别的偏好那样「坏了当默认值」：
+    静默回落的方向恰好是「不隔离」，那等于以为开着沙箱、其实在裸跑。
+    """
+
+    mode: SandboxMode
+    network: bool
 
 
 class SearchConfigPayload(BaseModel):

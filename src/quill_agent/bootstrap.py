@@ -6,6 +6,14 @@
 
 「只补不覆盖」是硬要求：用户改过的提示词是他的资产，升级时被出厂版本盖回去，
 比一开始就没有默认值还糟。
+
+播种分两条路，都在本模块收口：
+
+    1. **目录**（`prompt/`、`skills/`）—— 逐文件复制、已存在的一律跳过，
+       见 `seed_defaults`；
+    2. **JSON 里的出厂条目**（两个默认模式，以及它们引用的各组与内置提示词）——
+       有固定 id，所以是按 id 补进列表、已存在的只把出厂标记修回来，
+       见 `defaults.ensure`。
 """
 
 from __future__ import annotations
@@ -13,6 +21,7 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+from quill_agent import defaults
 from quill_agent.config import Settings
 from quill_agent.prompts import migrate_layout
 from quill_agent.store import migrate_prompt_group_refs
@@ -131,5 +140,11 @@ def startup_note(settings: Settings) -> str:
     migrated = migrate_legacy_layout(settings)
     if migrated:
         note += f"（已迁移旧数据：{'；'.join(migrated)}）"
+
+    # 两个默认模式及它们引用的各组。必须在上面两步之后：内置提示词要落进已经
+    # 迁移好的目录布局里，否则刚写下的文件会被下一轮的迁移再搬一次
+    created = defaults.ensure(settings)
+    if created:
+        note += f"（已补上出厂资源：{'；'.join(created)}）"
 
     return note

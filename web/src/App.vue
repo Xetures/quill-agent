@@ -2,7 +2,7 @@
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import { onMounted, ref } from 'vue'
 
-import HelpButton from './components/HelpButton.vue'
+import SandboxButton from './components/SandboxButton.vue'
 import Sidebar from './components/Sidebar.vue'
 import { bootstrap } from './stores/session'
 import { errorText } from './utils/error'
@@ -43,9 +43,12 @@ onMounted(async () => {
         <header class="topbar">
           <div id="page-head-slot" class="topbar-slot"></div>
 
-          <!-- 使用说明常驻在顶栏右侧：它和当前在哪个页面无关，
-               放这里任何页面都够得着，也不必每个页面各写一个入口 -->
-          <HelpButton />
+          <!-- 执行权限常驻在顶栏右侧：它和当前在哪个页面无关，放这里任何页面都够得着，
+               也不必每个页面各写一个入口。
+               特意**不放**输入框那一排 —— 那排是「这一轮」的选择，而沙箱是整台机器的
+               边界，放一起会让人以为它只对当前这次对话生效。
+               （使用说明挪进了侧边栏品牌区，见 Sidebar.vue） -->
+          <SandboxButton />
         </header>
 
         <RouterView />

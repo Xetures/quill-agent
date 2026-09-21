@@ -111,7 +111,7 @@ class Settings(BaseSettings):
         description="数据根目录（data/、prompt/、skills/ 都挂在它下面）",
     )
 
-    app_name: str = Field(default="quill", description="应用名称，用于页面标题等")
+    app_name: str = Field(default="Quill", description="应用名称，用于命令行提示与页面标题等")
 
     # 模型配置的存储文件位置
     models_path: Path = Field(default=Path("data/models.json"), description="模型配置 JSON 路径")
@@ -181,7 +181,7 @@ class Settings(BaseSettings):
     # 沙箱：给执行类工具（run_command / start_process）加一层内核级边界。
     # 它和「危险命令先问用户」那套审批是两回事：沙箱管「够不够得着」，审批管「要不要问」。
     #
-    #   off              不套沙箱（默认）—— 执行类命令不受工作目录限制
+    #   off              不套沙箱 —— 执行类命令不受工作目录限制
     #   read-only        工作区只读、默认断网
     #   workspace-write  工作区可写、默认断网
     #
@@ -192,18 +192,23 @@ class Settings(BaseSettings):
     #                    是**拒绝执行**（不静默裸跑）；全局默认开着会让开箱即用变成
     #                    开箱不可用，而用户根本没配过沙箱，只会觉得程序坏了
     #
+    # 注意它现在只是**部署时的默认**，不是「最终生效值」：界面上改过的档位存在偏好里、
+    # 优先级更高（见 `sandbox.effective_mode`）。用户在顶栏点两下就能换档，不必重启 ——
+    # 这是有意的，沙箱档位天然按任务变，改一次重启一次的话用户就会干脆关掉它。
+    #
     # Windows 那档不是「懒得做」：那边确实没有能对标 bwrap / Seatbelt 的现成原语，
     # 要拼受限 Token + 合成 SID 才够用，是个独立工程（见 `sandbox.py` 的说明）。
     sandbox_mode: Literal["off", "read-only", "workspace-write"] = Field(
         default_factory=_default_sandbox_mode,
-        description="执行类工具的沙箱档位：off / read-only / workspace-write",
+        description="执行类工具的沙箱档位（默认值；界面设置优先）",
     )
 
     # 沙箱里是否放行网络。默认 False：数据外传是这类 Agent 最实际的风险，
     # 而绝大多数编码任务用不上网络（装依赖那一下可以临时开）。
+    # 同 `sandbox_mode`：这也是默认值，界面上改过的存在偏好里。
     sandbox_network: bool = Field(
         default=False,
-        description="沙箱内是否允许联网（默认断网）",
+        description="沙箱内是否允许联网（默认值；界面设置优先）",
     )
 
     # 会话历史：一个会话一个 JSONL 文件，支持归档

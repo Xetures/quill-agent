@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Iterator
+from contextlib import suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -1532,6 +1533,20 @@ def _run_stream(
         # 双轨解析：文本立即外吐，工具调用只累积
         try:
             for chunk in stream:
+                # 用户按了停止。检查点必须放在**每个 chunk 上**，光靠循环顶部那一个
+                # 只能覆盖「轮与轮之间」—— 长输出的收尾轮要流几十秒，取消信号得等
+                # 它说完才被看见，用户按了停止界面却还在跑（实测能拖十几秒）。
+                # 每个 chunk 都过一次闸：流式输出的 chunk 间隔通常不到一秒，
+                # 这样从按下停止到界面收场就是一秒级的事。
+                if interaction.cancelled():
+                    # 主动断掉上游连接：等服务端把剩余内容发完是纯浪费，
+                    # 对方还可能再灌几兆过来。关不掉就不管 —— 循环退出后
+                    # 连接也会随对象回收而关闭，这里只是让它发生得更快
+                    with suppress(Exception):
+                        stream.close()
+                    yield Notice("已取消这一轮。")
+                    return
+
                 # 用量在流末尾单独一个 chunk 里，它通常是不带 choices 的
                 usage = getattr(chunk, "usage", None)
                 tracker.add_usage(usage)

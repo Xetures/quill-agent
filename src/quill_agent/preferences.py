@@ -37,6 +37,20 @@ MAX_RUN_TOKENS_KEY = "max_run_tokens"
 # 闲聊几轮就完，探路型任务动辄十几轮（摸结构 → 读文档 → 确认工具链 → 动手）。
 MAX_ITERATIONS_KEY = "max_iterations"
 
+# 沙箱档位（以字符串存）：off / read-only / workspace-write。
+# 空串 / 非法值一律**回落**到配置（.env 的 SANDBOX_MODE，再不行是平台默认值）。
+#
+# 为什么这个安全设置要开界面的口子：沙箱档位天然是**按任务变**的 —— 读代码、
+# 改代码、装依赖要的边界各不相同。要是改一次就得重启进程，用户的理性选择就是
+# 干脆一关了之，那才是最坏的结果。所以这里存「用户此刻的选择」，
+# .env 里那份降为「这台机器部署时的默认」。
+SANDBOX_MODE_KEY = "sandbox_mode"
+
+# 沙箱内是否放行网络（"true" / "false" 以字符串存）。空串 = 没设过，回落配置。
+# 单独存这个、而不是跟档位捆一块：装依赖那一下要联网，装完就该收回去 ——
+# 它和「命令够不够得着」是两个独立的旋钮。
+SANDBOX_NETWORK_KEY = "sandbox_network"
+
 
 def draft_key(conversation_id: str) -> str:
     """草稿的存储键。

@@ -67,6 +67,12 @@ const open = ref(false)
             <strong>技能</strong>：某类任务该怎么做。平时只在上下文里占一行，模型觉得需要时才读全文
             （<code>skills/&lt;名字&gt;/SKILL.md</code>）。
           </li>
+          <li>
+            <strong>执行权限（沙箱）</strong>：顶栏右侧那个锁 —— 限制命令<strong>够得着什么</strong>，
+            由系统内核执行，越界的写入和联网直接失败。它管的是<strong>整台机器</strong>，
+            和输入框上方那一排（都只管当前这一轮）不是一类东西；和「危险命令先问用户」
+            那套审批也不是一回事（那个管<strong>要不要问</strong>）。
+          </li>
           <li><strong>记忆</strong>：跨会话保留的事实与偏好，由模型主动写入，可在「记忆」页查看和关闭。</li>
           <li><strong>用量</strong>：token 消耗统计，按天看折线、按任务看表格（含已归档）。</li>
         </ul>

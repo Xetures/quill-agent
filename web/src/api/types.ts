@@ -180,6 +180,8 @@ export interface PromptGroup {
    * 用 id 而不是名字：名字可以随便改（改完引用照旧有效），同一个分类也能选多条。
    */
   prompts: string[]
+  /** 出厂自带的资源，界面不提供删除入口（理由见 `Mode.builtin`）。 */
+  builtin: boolean
 }
 
 /**
@@ -198,6 +200,16 @@ export interface Mode {
   memory_enabled: boolean
   /** 偏好模型的稳定标识（"连接id::模型名"）；空表示沿用任务页当前模型。 */
   preferred_model: string
+  /**
+   * 出厂自带的资源（两个默认模式，以及它们引用的各组与提示词）。
+   *
+   * 界面**不提供删除入口**：删掉「开箱即用」就没了，而用户没有别的办法把那套配置
+   * 拼回来。硬约束在存储层（见 `quill_agent/defaults.py`），前端这一层只是不去
+   * 提供那个按钮。
+   *
+   * 它只由后端写入：请求体里没有这个字段，界面上也改不了。
+   */
+  builtin: boolean
 }
 
 /**
@@ -224,6 +236,8 @@ export interface PromptItem {
   id: string
   name: string
   category: string
+  /** 出厂自带的资源，界面不提供删除入口（理由见 `Mode.builtin`）。 */
+  builtin: boolean
 }
 
 /** 提示词库：分类清单 + 全部提示词的元信息。 */
@@ -258,6 +272,8 @@ export interface ToolGroup {
    * 在「加进组 = 把一台机器交出去」和「不加 = 一点用没有」之间二选一。
    */
   confirm: string[]
+  /** 出厂自带的资源，界面不提供删除入口（理由见 `Mode.builtin`）。 */
+  builtin: boolean
 }
 
 export interface SkillItem {
@@ -276,6 +292,8 @@ export interface SkillGroup {
   name: string
   description: string
   skills: string[]
+  /** 出厂自带的资源，界面不提供删除入口（理由见 `Mode.builtin`）。 */
+  builtin: boolean
 }
 
 export interface MemoryItem {

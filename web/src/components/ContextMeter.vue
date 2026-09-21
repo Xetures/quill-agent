@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 上下文用量仪表盘：占用 / 窗口，一个占比圆环 + `xxk/xxk` 文字。
+ * 上下文用量读数：占用 / 窗口，一行 `xxk/xxk` 文字；占比走悬停提示。
  *
  * 读数从哪来：
  *   - **运行中**优先用流里播报的实时读数（`session.liveUsage`）。一轮里模型会被请求
@@ -88,8 +88,11 @@ const caption = computed(
 )
 
 /**
- * 缓存命中率（百分比）；**还没有可用读数时返回 null** —— 界面据此整块不显示，
- * 而不是填一个 0%。「不知道」和「真的没命中」是两回事，摆个 0 会被当成后者。
+ * 缓存命中率（百分比）；**还没有可用读数时返回 null**。
+ *
+ * null 时界面显示「—」而**不是 0%**：「不知道」和「真的没命中」是两回事，
+ * 摆个 0 会被当成后者。但这一格**始终占着位置** —— 藏起来的话，功能区最右边会随着
+ * 「有没有会话、这一轮跑没跑过」忽有忽无，旁边那两处读数跟着来回跳。
  *
  * 分母就是 `used`（同一次请求的输入量）—— 只有这样，这个百分比和旁边的上下文
  * 读数才对得上。
@@ -101,7 +104,9 @@ const hitRate = computed(() => {
 
 /** 命中率的悬停说明：把分子分母都摆出来，用户才知道这个数是怎么来的。 */
 const cacheTooltip = computed(() => {
-  if (hitRate.value === null) return ''
+  if (hitRate.value === null) {
+    return '还没有可用读数。\n服务商不返回缓存用量时，这里会一直是「—」。'
+  }
   return (
     `缓存命中率 ${hitRate.value}%（${cached.value} / ${used.value} tokens）\n` +
     '命中部分是这次请求复用的前缀 —— 越高越省钱、也越快。\n' +
@@ -109,40 +114,30 @@ const cacheTooltip = computed(() => {
   )
 })
 
-/** 圆环只有 40px，塞不下百分比文字，所以读数改用悬停提示给出来。 */
+/**
+ * 界面上只摆得下「占用 / 窗口」这行读数，占多少百分比交给悬停提示 ——
+ * 它是个确切的数（`上下文占用 37%（48k / 128k tokens）`），比一个看不出刻度的圈准。
+ */
 const tooltip = computed(() => {
   if (!windowSize.value) return '当前模型没有配置上下文窗口大小（去「API 设置」里填）'
   return `上下文占用 ${percent.value}%（${used.value} / ${windowSize.value} tokens）`
 })
-
-/** 越接近上限越该提醒：<70% 主色，70~90% 警告，>90% 危险。 */
-const color = computed(() => {
-  if (percent.value >= 90) return 'var(--el-color-danger)'
-  if (percent.value >= 70) return 'var(--el-color-warning)'
-  return 'var(--accent)'
-})
 </script>
 
 <template>
-  <div class="meter" :title="tooltip">
+  <!-- 两处读数（缓存命中率、上下文占用）是**平级排布**的，见下面 .meter 那段样式说明 -->
+  <div class="meter">
     <!-- 缓存命中率，贴在上下文读数的**左边**。它和上下文占用读的是同一次请求的数据，
-         放一起才看得出「这份上下文里有多少是复用来的」 -->
-    <div v-if="hitRate !== null" class="cache" :title="cacheTooltip">
-      <span class="value mono">{{ hitRate }}%</span>
+         放一起才看得出「这份上下文里有多少是复用来的」。
+         这一格**常驻**（没有读数时显示「—」）：藏起来会让整排读数随着
+         「有没有会话、这一轮跑没跑过」忽有忽无，旁边那处跟着来回跳 -->
+    <div class="cache" :title="cacheTooltip">
+      <span class="value mono">{{ hitRate === null ? '—' : `${hitRate}%` }}</span>
       <span class="unit muted">缓存</span>
     </div>
 
-    <!-- 不放环内文字：40px 的圈里塞百分比只会糊成一团。占比看环、读数看右边 -->
-    <el-progress
-      type="dashboard"
-      :percentage="percent"
-      :color="color"
-      :width="40"
-      :stroke-width="4"
-      :show-text="false"
-    />
-
-    <div class="caption">
+    <!-- 悬停说明挂在这一格上（见 tooltip）：外层 .meter 不生成盒子，挂它上面悬不到 -->
+    <div class="caption" :title="tooltip">
       <!-- 等宽字体 + 固定不折行，数字跳动时宽度不抖 -->
       <div class="value mono">{{ caption }}</div>
       <div class="unit muted">上下文</div>
@@ -151,7 +146,16 @@ const color = computed(() => {
 </template>
 
 <style scoped>
-/* 紧凑的一小格，贴着功能区那一行的最右边（位置由调用方的 .meter-slot 决定） */
+/*
+ * 两处读数平时抱成一团（下面的 flex），**整排放得下时才拆成平级项**（见下面那条媒体查询）。
+ *
+ * 为什么宽窗口要拆：作为一个 flex 容器，两处读数之间是这里的 `gap`（8px），而外面那一排
+ * 是 `justify-content: space-between` 均分出来的（1280 宽的窗口下 48px）—— 「缓存」
+ * 右边 8px、左边 48px，看着就是往右偏的。
+ *
+ * 为什么窄窗口不拆：`.tools` 是 `flex-wrap: wrap`，窗口一窄整排就要换行；拆成平级项之后
+ * 这两处可能被甩到同一行的两端（实测 900 宽时中间空 595px），比挨在一起难读得多。
+ */
 .meter {
   display: flex;
   align-items: center;
@@ -160,6 +164,8 @@ const color = computed(() => {
 
 .caption {
   line-height: 1.25;
+  /* 成了 .tools 的 flex 项之后别被压窄：里头是 nowrap 的数字，压了会被裁掉 */
+  flex-shrink: 0;
 }
 
 .value {
@@ -178,6 +184,8 @@ const color = computed(() => {
   display: flex;
   align-items: baseline;
   gap: 4px;
+  /* 和 .caption 一样：成了 .tools 的 flex 项之后别被压窄 */
+  flex-shrink: 0;
   white-space: nowrap;
   cursor: default;
 }
@@ -191,11 +199,19 @@ const color = computed(() => {
   font-size: 11px;
 }
 
-/* 窄窗口先舍掉文字，保留圆环 —— 环本身就能看出占比，文字进来还得折行 */
-@media (max-width: 720px) {
-  .caption,
-  .cache {
-    display: none;
+/*
+ * 整排放得下时把两处读数拆成平级项：`display: contents` 让这一层不生成盒子，
+ * .cache / .caption 直接变成 .tools 的兄弟，跟着整排被 `space-between` 均分 ——
+ * 「缓存」左右两边的空隙这才一样宽。
+ *
+ * 代价是这一层自己接不住鼠标（它没有盒子），所以悬停说明挂在读数上（见模板）。
+ *
+ * 断点只是个粗略的界：整排到底换不换行还取决于工作目录那一格有多宽（它显示的是路径，
+ * 路径长就宽），所以宁可取宽一点 —— 取窄了会撞上「两处被甩到一行两端」那种排布。
+ */
+@media (min-width: 1100px) {
+  .meter {
+    display: contents;
   }
 }
 </style>

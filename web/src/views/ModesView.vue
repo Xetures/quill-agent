@@ -190,9 +190,12 @@ onMounted(() => {
         <el-table :data="visible" size="small" stripe>
           <el-table-column type="index" label="#" width="44" align="center" />
 
-          <el-table-column prop="name" label="模式名" width="130">
+          <el-table-column prop="name" label="模式名" width="180">
             <template #default="{ row }">
               <span class="mode-name">{{ row.name }}</span>
+              <!-- 出厂资源标出来。下面的删除按钮对它是禁用的，不说明的话用户会以为
+                   界面坏了（硬约束在存储层，见 quill_agent/defaults.py） -->
+              <el-tag v-if="row.builtin" size="small" effect="plain" class="builtin">内置</el-tag>
             </template>
           </el-table-column>
 
@@ -262,7 +265,15 @@ onMounted(() => {
               >
                 编辑
               </el-button>
-              <el-button size="small" text type="danger" @click="remove(row.id, row.name)">
+              <!-- 内置模式不给删除入口（编辑照旧留着）。真正的拒绝在存储层 ——
+                   这里少了这个判断，用户点了会拿到一句 400，那是失败的体验而不是保护 -->
+              <el-button
+                v-if="!row.builtin"
+                size="small"
+                text
+                type="danger"
+                @click="remove(row.id, row.name)"
+              >
                 删除
               </el-button>
             </template>

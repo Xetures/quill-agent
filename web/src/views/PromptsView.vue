@@ -23,6 +23,12 @@ const lib = ref<PromptLib>({ categories: [], items: [] })
 
 const keyword = ref('')
 const promptKeyword = ref('')
+/**
+ * 提示词库当前看的是哪一类。
+ *
+ * 类别是固定的六类，所以界面上铺成六个按钮、单选 —— 默认停在第一类，具体是哪个
+ * 要等后端给了清单才知道（见 `load`）。
+ */
 const promptCategory = ref('')
 
 // 组筛选放前端做：组本来就没几个，来回请求后端反而更慢
@@ -55,6 +61,9 @@ async function load(): Promise<void> {
   ])
   groups.value = groupData.groups
   lib.value = promptData
+  // 类别按钮默认停在第一类。放在这儿而不是 ref 的初值里：类别清单是后端给的，
+  // 要等它回来才知道第一类叫什么 —— 写死「身份」的话，后端哪天调了顺序就错位了
+  if (!promptCategory.value) promptCategory.value = promptData.categories[0] ?? ''
 }
 
 /** 某个类别下有哪些提示词（组编辑弹窗按类别分组渲染用）。 */
@@ -360,9 +369,10 @@ onMounted(() => {
         <el-table :data="visibleGroups" size="small" stripe>
           <el-table-column type="index" label="#" width="44" align="center" />
 
-          <el-table-column prop="name" label="组名" width="140">
+          <el-table-column prop="name" label="组名" width="180">
             <template #default="{ row }">
               <span class="group-name">{{ row.name }}</span>
+              <el-tag v-if="row.builtin" size="small" effect="plain" class="builtin">内置</el-tag>
             </template>
           </el-table-column>
 
@@ -400,7 +410,15 @@ onMounted(() => {
               >
                 编辑
               </el-button>
-              <el-button size="small" text type="danger" @click="remove(row.id, row.name)">
+              <!-- 内置项不给删除入口（编辑照旧留着）。真正的拒绝在存储层（见
+                   quill_agent/defaults.py）—— 这里少了判断，用户点了只会拿到一句 400 -->
+              <el-button
+                v-if="!row.builtin"
+                size="small"
+                text
+                type="danger"
+                @click="remove(row.id, row.name)"
+              >
                 删除
               </el-button>
             </template>
@@ -417,6 +435,16 @@ onMounted(() => {
     <section class="half">
       <div class="half-head">
         <h2>提示词库</h2>
+
+        <!-- 六个类别铺成六个按钮，紧跟标题。
+             原来是下拉：要点开、看清、再选，三步；而类别总共只有六个、还是固定不变的
+             六类 —— 铺开一步就到，也顺带让人一眼看完提示词是按哪六类组织的 -->
+        <el-radio-group v-model="promptCategory" size="small" class="cats">
+          <el-radio-button v-for="item in lib.categories" :key="item" :value="item">
+            {{ item }}
+          </el-radio-button>
+        </el-radio-group>
+
         <el-input
           v-model="promptKeyword"
           size="small"
@@ -424,15 +452,6 @@ onMounted(() => {
           clearable
           class="filter"
         />
-        <el-select
-          v-model="promptCategory"
-          size="small"
-          placeholder="全部类别"
-          clearable
-          class="filter"
-        >
-          <el-option v-for="item in lib.categories" :key="item" :label="item" :value="item" />
-        </el-select>
         <el-button
           size="small"
           type="primary"
@@ -453,7 +472,12 @@ onMounted(() => {
           </el-table-column>
 
           <el-table-column prop="category" label="类别" width="110" />
-          <el-table-column prop="name" label="名称" min-width="200" />
+          <el-table-column prop="name" label="名称" min-width="200">
+            <template #default="{ row }">
+              <span>{{ row.name }}</span>
+              <el-tag v-if="row.builtin" size="small" effect="plain" class="builtin">内置</el-tag>
+            </template>
+          </el-table-column>
 
           <el-table-column label="操作" width="130" align="center">
             <template #default="{ row }">
@@ -461,7 +485,11 @@ onMounted(() => {
               <el-button size="small" text type="primary" @click="openPromptEdit({ id: row.id })">
                 编辑
               </el-button>
+              <!-- 内置提示词不给删除入口：它是出厂内容，而出厂的那个提示词组正引用着
+                   它，删掉之后整组就散了。**编辑照旧留着** —— 改措辞是正当需求，
+                   这条规矩只是不许删 -->
               <el-button
+                v-if="!row.builtin"
                 size="small"
                 text
                 type="danger"
@@ -598,8 +626,27 @@ onMounted(() => {
 .half-head {
   display: flex;
   align-items: center;
+  /* 六个类别按钮铺开后这一行明显变长：允许换行，而不是把「添加提示词」挤出屏幕 */
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 8px;
+}
+
+/* 六个类别按钮，紧跟标题铺成一排 */
+.cats {
+  flex-shrink: 0;
+}
+
+/* 六个按钮要和同排的「按名称过滤」输入框**一样高**。
+ *
+ * 单选按钮的高度靠内边距撑，而输入框是固定高度（`--el-component-size-small`，24px）——
+ * 只收内边距的话它们会比输入框矮一截，六个数挨着排看着就不齐。所以直接对齐那个变量，
+ * 高度就跟着主题和尺寸走，不用写死像素。 */
+.cats :deep(.el-radio-button__inner) {
+  display: flex;
+  align-items: center;
+  height: var(--el-component-size-small);
+  padding: 0 12px;
 }
 
 .half-head h2 {

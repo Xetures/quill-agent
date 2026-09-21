@@ -275,7 +275,7 @@ const runMetaText = computed(() => {
 watch(
   () => session.pendingQuestion,
   (question) => {
-    document.title = question ? '⚠ 等待你的确认 · quill' : 'quill'
+    document.title = question ? '⚠ 等待你的确认 · Quill' : 'Quill'
   },
 )
 
@@ -391,6 +391,20 @@ function onKeydown(event: Event | KeyboardEvent): void {
     <Teleport to="#page-head-slot">
       <h1>任务</h1>
       <span v-if="currentTitle" class="hint">{{ currentTitle }}</span>
+      <!-- 这一轮现在卡在哪一步（见 runPhaseText），以及跑了多久 / 跑到第几圈
+           （见 runMetaText）。
+           放在顶栏会话名后面：它是「我现在为什么不能打字」的答案，也是最容易被
+           当成「卡住了」的时段 —— 贴在视线常驻的顶栏比压在输入框上方更直观，
+           功能区那一排也少了随运行出现消失的一行 -->
+      <span
+        v-if="runPhaseText"
+        class="run-phase"
+        :class="{ asking: session.phase?.kind === 'asking' }"
+      >
+        <el-icon class="spin"><Loading /></el-icon>
+        <span>{{ runPhaseText }}</span>
+        <span v-if="runMetaText" class="run-meta">{{ runMetaText }}</span>
+      </span>
       <!-- 导出当前会话。用普通链接让浏览器自己下载：进度、保存对话框、大文件
            都是它的事，不必为此写一段 fetch -->
       <a
@@ -533,41 +547,64 @@ function onKeydown(event: Event | KeyboardEvent): void {
 
       <!-- 功能选择区：模式 / 模型 / 工作目录 / 附件。
            贴在输入框正上方，和「组成这一轮请求的东西」在同一处。
+           每一项都是「标签写在选项前面」：光一个下拉框看不出它管的是哪件事，
+           标签跟控件包在同一组里（.tool-group），换行时也不会被拆散。
            模式决定这一轮用哪些提示词、工具、技能和记忆，所以排在第一位 -->
       <div class="tools">
-        <el-select
-          v-model="session.modeId"
-          size="small"
-          :placeholder="session.modes.length ? '选择模式' : '还没有模式'"
-          class="mode-select"
-          @change="persistMode"
-        >
-          <el-option
-            v-for="mode in session.modes"
-            :key="mode.id"
-            :label="mode.name"
-            :value="mode.id"
-          />
-        </el-select>
+        <div class="tool-group">
+          <span class="label">模式</span>
+          <el-select
+            v-model="session.modeId"
+            size="small"
+            :placeholder="session.modes.length ? '选择模式' : '还没有模式'"
+            class="mode-select"
+            @change="persistMode"
+          >
+            <el-option
+              v-for="mode in session.modes"
+              :key="mode.id"
+              :label="mode.name"
+              :value="mode.id"
+            />
+          </el-select>
+        </div>
 
-        <el-select
-          v-model="session.modelKey"
-          size="small"
-          placeholder="选择模型"
-          class="model-select"
-          @change="persistModel"
-        >
-          <el-option
-            v-for="item in session.models"
-            :key="item.key"
-            :label="item.label"
-            :value="item.key"
-          />
-        </el-select>
+        <div class="tool-group">
+          <span class="label">模型</span>
+          <el-select
+            v-model="session.modelKey"
+            size="small"
+            placeholder="选择模型"
+            class="model-select"
+            @change="persistModel"
+          >
+            <el-option
+              v-for="item in session.models"
+              :key="item.key"
+              :label="item.label"
+              :value="item.key"
+            />
+          </el-select>
+        </div>
 
-        <!-- 思考开关。放在模型选择旁边，因为「要不要思考」是跟着模型走的：
-             小模型常常一思考就把输出预算花光、正文一个字都给不出来，这时把它关掉。
-             大模型不需要关它 —— 所以默认是开的 -->
+        <div class="tool-group">
+          <span class="label">工作目录</span>
+          <WorkDirPicker />
+        </div>
+
+        <div class="tool-group">
+          <span class="label">附件</span>
+          <!-- 只剩加号：标签已经说明这一格是什么，按钮里再写一遍「附件」就重复了。
+               悬停有「上传文件」的说明兜底 -->
+          <el-button size="small" :icon="Plus" title="上传文件" @click="pickFiles" />
+        </div>
+
+        <!-- 原生 file input 藏起来，由上面的按钮代为触发：
+             el-upload 会自己维护一套文件列表，而这里的列表已经由 pending 管着 -->
+        <input ref="fileInput" type="file" multiple hidden @change="onFilesPicked" />
+
+        <!-- 思考开关。「要不要思考」是跟着模型走的：小模型常常一思考就把输出预算花光、
+             正文一个字都给不出来，这时该关掉；大模型不需要关 —— 默认开着 -->
         <el-tooltip
           placement="top"
           content="关闭后不带思维链。小模型常因思考耗尽输出预算，这时该关掉它"
@@ -583,17 +620,10 @@ function onKeydown(event: Event | KeyboardEvent): void {
           </div>
         </el-tooltip>
 
-        <WorkDirPicker />
-
-        <el-button size="small" :icon="Plus" title="上传文件" @click="pickFiles">附件</el-button>
-
-        <!-- 原生 file input 藏起来，由上面的按钮代为触发：
-             el-upload 会自己维护一套文件列表，而这里的列表已经由 pending 管着 -->
-        <input ref="fileInput" type="file" multiple hidden @change="onFilesPicked" />
-
-        <!-- 上下文用量仪表盘：贴在这一行最右侧。它读的是这排里的模型选择（窗口大小），
-             放在同一行，改完模型抬头就能看到占比 -->
-        <ContextMeter class="meter-slot" />
+        <!-- 上下文用量仪表盘：它读的是这排里的模型选择（窗口大小），放在同一行，
+             改完模型抬头就能看到占比 -->
+        <span class="tools-divider" aria-hidden="true" />
+        <ContextMeter />
       </div>
 
       <div v-if="pending.length" class="pending">
@@ -606,20 +636,6 @@ function onKeydown(event: Event | KeyboardEvent): void {
         >
           {{ file.name }}
         </el-tag>
-      </div>
-
-      <!-- 这一轮现在卡在哪一步（见 runPhaseText），以及跑了多久 / 跑到第几圈
-           （见 runMetaText）。
-           放在输入框正上方：它就是「我现在为什么不能打字」的答案，
-           也是「慢」和「卡住」之间的区别 -->
-      <div
-        v-if="runPhaseText"
-        class="run-phase"
-        :class="{ asking: session.phase?.kind === 'asking' }"
-      >
-        <el-icon class="spin"><Loading /></el-icon>
-        <span>{{ runPhaseText }}</span>
-        <span v-if="runMetaText" class="run-meta">{{ runMetaText }}</span>
       </div>
 
       <div class="box">
@@ -696,14 +712,16 @@ function onKeydown(event: Event | KeyboardEvent): void {
   padding: 16px 20px;
 }
 
-/* 这一轮现在卡在哪一步（见 runPhaseText）。淡色小字，不抢输入框的注意力 */
+/* 这一轮现在卡在哪一步（见 runPhaseText）。挂在顶栏会话名后面（见模板）。
+ * 不折行不收缩：提示被折成两行比让它撑一下顶栏更难看，窄窗口宁可让会话名省略 */
 .run-phase {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 0 2px 6px;
+  flex-shrink: 0;
   font-size: 12px;
   color: var(--text-soft);
+  white-space: nowrap;
 }
 
 /* 用时与轮次：比阶段文案再淡一档。
@@ -867,8 +885,22 @@ function onKeydown(event: Event | KeyboardEvent): void {
   display: flex;
   align-items: center;
   gap: 8px;
+  /* 两端顶到边界、中间均分：第一项贴左、最后一项贴右，剩下的空间平均分给每个间隔。
+   *
+   * 不写成「把右侧那几个单独推走」（margin-left: auto）—— 那样中间会空出一大块，
+   * 整排读起来是两堆而不是一排。均分也要求每一项都是平级的兄弟：早先「思考 + 仪表」
+   * 包在一组里，组内的间距是固定的，跟外面的间隔对不上 */
+  justify-content: space-between;
   /* 窗口压窄时换行，而不是把工作目录挤没 */
   flex-wrap: wrap;
+}
+
+/* 设置 | 数据 的分隔线：左边是用户选的，右边是跑出来的 */
+.tools-divider {
+  width: 1px;
+  height: 18px;
+  background: var(--border);
+  flex-shrink: 0;
 }
 
 /* 思考开关（见模板）。做成「小字 + 小开关」的样子融入这一排，
@@ -882,23 +914,33 @@ function onKeydown(event: Event | KeyboardEvent): void {
   cursor: pointer;
 }
 
+/* 「标签 + 控件」的一组（见模板）。包在同一组里才不会被 space-between 的均分
+ * 或换行拆散 —— 标签和它的控件分了家，两个都看不懂 */
+.tool-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 组前头那两个字。和「思考」开关的字同一副样子：都是对控件的说明，不是内容 */
+.tool-group .label {
+  font-size: 12px;
+  color: var(--text-soft);
+  white-space: nowrap;
+}
+
 .mode-select {
   flex-shrink: 0;
-  width: 150px;
+  width: 120px;
 }
 
 .model-select {
   flex-shrink: 0;
-  width: 220px;
+  width: 180px;
 }
 
 /* 仪表盘推到这一行的最右侧：它读的窗口大小就来自左边的模型选择，
  * 两者放同一排，换模型后一眼能看到占比跟着变 */
-.meter-slot {
-  flex-shrink: 0;
-  margin-left: auto;
-}
-
 .pending {
   display: flex;
   flex-wrap: wrap;

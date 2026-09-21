@@ -50,6 +50,10 @@ PROMPT_CATEGORIES: tuple[str, ...] = (
 
 MARKDOWN_SUFFIX = ".md"
 
+# 元信息块里标记「这条是出厂自带的」。由应用写入（见 `defaults.py`），界面不给修改入口 ——
+# 它的唯一作用是让内置提示词不可删除，用户改了它就等于把「开箱即用」拆掉了。
+BUILTIN_KEY = "builtin"
+
 # 展示名的长度上限。它不再是文件名，所以不受 `naming.safe_name` 那套限制，
 # 但太长的名字在表格里会撑破版面
 MAX_NAME_CHARS = 60
@@ -95,6 +99,11 @@ def check_category(category: str) -> str:
     return category
 
 
+# 元信息块里表示布尔真的取值。写进文件时固定写 `true`，读的时候宽一点 ——
+# 用户可能手工改成 `1` / `yes`，那也该认。
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True)
 class PromptItem:
     """一条提示词的元信息（不含正文）—— 列表、下拉、引用解析只需要这些。"""
@@ -102,6 +111,7 @@ class PromptItem:
     id: str
     name: str
     category: str
+    builtin: bool = False
 
 
 @dataclass(frozen=True)
@@ -112,6 +122,7 @@ class PromptDetail:
     name: str
     category: str
     content: str
+    builtin: bool = False
 
 
 class PromptLibrary:
@@ -165,6 +176,7 @@ class PromptLibrary:
                     # 元信息缺了就退化成 id：用户手改文件把块写坏时，至少还能看见它
                     name=(meta.get("name") or "").strip() or path.stem,
                     category=(meta.get("category") or "").strip(),
+                    builtin=(meta.get(BUILTIN_KEY) or "").strip().lower() in _TRUTHY,
                 )
             )
 
@@ -197,6 +209,7 @@ class PromptLibrary:
             name=item.name,
             category=item.category,
             content=self.read(prompt_id) or "",
+            builtin=item.builtin,
         )
 
     def create(self, *, name: str, category: str, content: str) -> PromptDetail:
@@ -215,29 +228,46 @@ class PromptLibrary:
     def save(self, prompt_id: str, *, name: str, category: str, content: str) -> PromptDetail:
         """覆盖一条提示词；名字与分类都可以改（引用用的是 id，不怕改）。
 
+        **内置提示词照样能改，但出厂标记必须原样带回来。** 它不在入参里，所以要从现有
+        文件读回来 —— 漏了这一步，用户改一次正文就等于自己把「不可删除」拆掉了，
+        而且全程没有任何提示。
+
         Raises:
             ValueError: id 不合法、文件不存在、名字不合法、或分类不在六类里。
         """
         if not self.path_of(prompt_id).is_file():
             raise ValueError(f"没有找到提示词 {prompt_id}。")
 
+        current = self.get(prompt_id)
+        builtin = bool(current and current.builtin)
+
         clean = clean_name(name)
         check_category(category)
-        self._write(prompt_id, clean, category, content)
+        self._write(prompt_id, clean, category, content, builtin=builtin)
 
-        return PromptDetail(id=prompt_id, name=clean, category=category, content=content.strip())
+        return PromptDetail(
+            id=prompt_id,
+            name=clean,
+            category=category,
+            content=content.strip(),
+            builtin=builtin,
+        )
 
     def delete(self, prompt_id: str) -> str:
         """删除一条提示词，返回 id。
 
         Raises:
-            ValueError: id 不合法，或这条提示词本来就不存在。
+            ValueError: id 不合法、这条提示词本来就不存在、或它是出厂内置的。
                 **不存在时报错而不是静默通过**：界面上删一个已经不存在的条目，
                 多半是视图过期了，说一声比假装成功有用（与 `SkillLibrary.delete` 同口径）。
         """
         path = self.path_of(prompt_id)
         if not path.is_file():
             raise ValueError(f"没有找到提示词 {prompt_id}，没有删除任何东西。")
+
+        item = self.get(prompt_id)
+        if item is not None and item.builtin:
+            raise ValueError(f"「{item.name}」是内置提示词，不能删除。")
 
         path.unlink()
         return prompt_id
@@ -253,11 +283,38 @@ class PromptLibrary:
 
         raise RuntimeError("连续 100 次都没生成出没被占用的提示词 id，这不该发生。")
 
-    def _write(self, prompt_id: str, name: str, category: str, content: str) -> None:
+    def write_builtin(
+        self, prompt_id: str, *, name: str, category: str, content: str
+    ) -> bool:
+        """写入一条出厂提示词；这个 id 已经有文件就什么都不做。
+
+        与 `create` 的差别有两点，都是给「启动时播种」用的（见 `defaults.py`）：
+
+            1. **id 由调用方给定** —— 出厂资源必须是稳定 id，内置提示词组要引用它；
+            2. **只补不覆盖** —— 用户可能改过这条提示词的正文，那是他的东西，升级时
+               不该被出厂版本盖回去（与 `bootstrap.seed_defaults` 对目录的做法一致）。
+
+        Returns:
+            是否真的写了。重复调用无副作用。
+        """
+        check_category(category)
+        if self.path_of(prompt_id).is_file():
+            return False
+
+        self._write(prompt_id, clean_name(name), category, content, builtin=True)
+        return True
+
+    def _write(
+        self, prompt_id: str, name: str, category: str, content: str, *, builtin: bool = False
+    ) -> None:
         """写文件：元信息块由代码拼，正文原样放后面。"""
-        front = (
-            f"{FRONTMATTER_FENCE}\nname: {name}\ncategory: {category}\n{FRONTMATTER_FENCE}"
-        )
+        lines = [FRONTMATTER_FENCE, f"name: {name}", f"category: {category}"]
+        # 只给内置条目写这一行 —— 用户自己建的提示词不该被标成「不可删除」
+        if builtin:
+            lines.append(f"{BUILTIN_KEY}: true")
+        lines.append(FRONTMATTER_FENCE)
+
+        front = "\n".join(lines)
         body = content.strip()
         text = f"{front}\n\n{body}\n" if body else f"{front}\n"
         atomic_write_text(self.path_of(prompt_id), text)

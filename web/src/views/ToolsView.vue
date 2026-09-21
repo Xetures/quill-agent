@@ -190,9 +190,10 @@ onMounted(() => {
         <el-table :data="visibleGroups" size="small" stripe>
           <el-table-column type="index" label="#" width="44" align="center" />
 
-          <el-table-column prop="name" label="工具组名" width="140">
+          <el-table-column prop="name" label="工具组名" width="180">
             <template #default="{ row }">
               <span class="group-name">{{ row.name }}</span>
+              <el-tag v-if="row.builtin" size="small" effect="plain" class="builtin">内置</el-tag>
             </template>
           </el-table-column>
 
@@ -221,7 +222,16 @@ onMounted(() => {
               >
                 编辑
               </el-button>
-              <el-button size="small" text type="danger" @click="remove(row.id, row.name)">
+              <!-- 内置项不给删除入口，编辑照旧留着（硬约束在存储层，见
+                   quill_agent/defaults.py）。它装着注册表里的全部工具，
+                   删掉「开箱即用」就没了 -->
+              <el-button
+                v-if="!row.builtin"
+                size="small"
+                text
+                type="danger"
+                @click="remove(row.id, row.name)"
+              >
                 删除
               </el-button>
             </template>

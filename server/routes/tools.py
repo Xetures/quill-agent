@@ -96,7 +96,8 @@ def create_tool_group(payload: ToolGroupPayload) -> dict:
 def update_tool_group(group_id: str, payload: ToolGroupPayload) -> dict:
     """修改一个工具组；id 不存在时 404。"""
     store = stores.tool_groups()
-    if store.get(group_id) is None:
+    existing = store.get(group_id)
+    if existing is None:
         raise HTTPException(status_code=404, detail="工具组不存在。")
 
     _check_tool_names(payload.tools)
@@ -109,6 +110,9 @@ def update_tool_group(group_id: str, payload: ToolGroupPayload) -> dict:
             description=payload.description,
             tools=payload.tools,
             confirm=payload.confirm,
+            # 出厂标记沿用已有的那个：请求体里没有这个字段，直接构造会把它重置成
+            # False —— 一个内置工具组改一次描述，就悄悄变成可删除的了
+            builtin=existing.builtin,
         )
         store.update(item)
     except ValueError as exc:
@@ -120,7 +124,12 @@ def update_tool_group(group_id: str, payload: ToolGroupPayload) -> dict:
 @router.delete("/tool-groups/{group_id}")
 def delete_tool_group(group_id: str) -> dict[str, bool]:
     """删除一个工具组；id 不存在时静默成功（删除是幂等的）。"""
-    stores.tool_groups().remove(group_id)
+    try:
+        stores.tool_groups().remove(group_id)
+    except ValueError as exc:
+        # 出厂内置的工具组（见 defaults.py）
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     return {"removed": True}
 
 
@@ -171,7 +180,8 @@ def create_skill_group(payload: SkillGroupPayload) -> dict:
 def update_skill_group(group_id: str, payload: SkillGroupPayload) -> dict:
     """修改一个技能组；id 不存在时 404。"""
     store = stores.skill_groups()
-    if store.get(group_id) is None:
+    existing = store.get(group_id)
+    if existing is None:
         raise HTTPException(status_code=404, detail="技能组不存在。")
 
     _check_skill_names(payload.skills)
@@ -182,6 +192,8 @@ def update_skill_group(group_id: str, payload: SkillGroupPayload) -> dict:
             name=payload.name,
             description=payload.description,
             skills=payload.skills,
+            # 理由同 `update_tool_group`：请求体里没有出厂标记，得从已有条目带过来
+            builtin=existing.builtin,
         )
         store.update(item)
     except ValueError as exc:
@@ -193,7 +205,12 @@ def update_skill_group(group_id: str, payload: SkillGroupPayload) -> dict:
 @router.delete("/skill-groups/{group_id}")
 def delete_skill_group(group_id: str) -> dict[str, bool]:
     """删除一个技能组；id 不存在时静默成功。"""
-    stores.skill_groups().remove(group_id)
+    try:
+        stores.skill_groups().remove(group_id)
+    except ValueError as exc:
+        # 出厂内置的技能组（见 defaults.py）
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     return {"removed": True}
 
 

@@ -225,14 +225,29 @@ def add_mode(payload: ModePayload) -> dict:
 
 @router.put("/modes/{mode_id}")
 def update_mode(mode_id: str, payload: ModePayload) -> dict:
+    """覆盖一个模式。
+
+    **出厂标记沿用已有的那个**，不由请求体决定：请求体里根本没有 `builtin` 字段
+    （界面不该能改它），所以直接 `Mode(**payload)` 会把它重置成 `False` ——
+    一个内置模式改一次描述，就悄悄变成可删除的了。
+    """
+    existing = stores.modes().get(mode_id)
     item = Mode(id=mode_id, **payload.model_dump())
+    if existing is not None:
+        item = item.model_copy(update={"builtin": existing.builtin})
+
     stores.modes().update(item)
     return item.model_dump()
 
 
 @router.delete("/modes/{mode_id}")
 def delete_mode(mode_id: str) -> dict[str, bool]:
-    stores.modes().remove(mode_id)
+    try:
+        stores.modes().remove(mode_id)
+    except ValueError as exc:
+        # 出厂内置的模式（见 defaults.py）—— 文案是给用户看的，原样转 400
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     return {"removed": True}
 
 
@@ -267,7 +282,12 @@ def update_prompt_group(group_id: str, payload: PromptGroupPayload) -> dict:
 
 @router.delete("/prompt-groups/{group_id}")
 def delete_prompt_group(group_id: str) -> dict[str, bool]:
-    stores.prompt_groups().remove(group_id)
+    try:
+        stores.prompt_groups().remove(group_id)
+    except ValueError as exc:
+        # 出厂内置的提示词组（见 defaults.py）
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     return {"removed": True}
 
 
@@ -288,7 +308,13 @@ def list_prompts() -> dict:
     return {
         "categories": list(PROMPT_CATEGORIES),
         "items": [
-            {"id": item.id, "name": item.name, "category": item.category}
+            {
+                "id": item.id,
+                "name": item.name,
+                "category": item.category,
+                # 界面靠它决定要不要给出删除入口（出厂提示词不能删，见 defaults.py）
+                "builtin": item.builtin,
+            }
             for item in library.list_items()
         ],
     }
@@ -324,7 +350,13 @@ def read_prompt(prompt_id: str) -> dict:
     if item is None:
         raise HTTPException(status_code=404, detail=f"提示词不存在：{prompt_id}")
 
-    return {"id": item.id, "name": item.name, "category": item.category, "content": item.content}
+    return {
+        "id": item.id,
+        "name": item.name,
+        "category": item.category,
+        "content": item.content,
+        "builtin": item.builtin,
+    }
 
 
 @router.put("/prompts/{prompt_id}")

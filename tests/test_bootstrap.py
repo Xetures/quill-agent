@@ -91,6 +91,10 @@ def test_startup_note_mentions_where_the_data_lives(monkeypatch, tmp_path: Path)
         prompt_dir=tmp_path / "prompt",
         skills_dir=tmp_path / "skills",
         prompt_groups_path=tmp_path / "prompt_groups.json",
+        # 播种出厂资源（两个默认模式及它们引用的各组）也要用到这几个路径
+        tool_groups_path=tmp_path / "tool_groups.json",
+        skill_groups_path=tmp_path / "skill_groups.json",
+        modes_path=tmp_path / "modes.json",
     )
 
     assert str(tmp_path) in bootstrap.startup_note(settings)

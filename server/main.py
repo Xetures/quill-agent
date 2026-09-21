@@ -25,6 +25,11 @@ from quill_agent.config import get_settings
 from server import stores
 from server.routes import chat, conversations, memory, models, search, tools, usage
 
+# `sandbox` 这个名字上面已经给了 `quill_agent.sandbox`（启动自检要用它，
+# 见 `sandbox.startup_note()`）。并进上一行会把它盖掉 —— 而且只在启动自检那一刻
+# 才炸成 AttributeError，测试跑不到那里。
+from server.routes import sandbox as sandbox_routes
+
 logger = logging.getLogger(__name__)
 
 # 前端构建产物（`make build` 生成）。存在就由后端一起托管 —— 发布形态下只需要
@@ -98,6 +103,7 @@ app.include_router(tools.router, prefix="/api")
 app.include_router(memory.router, prefix="/api")
 app.include_router(usage.router, prefix="/api")
 app.include_router(search.router, prefix="/api")
+app.include_router(sandbox_routes.router, prefix="/api")
 
 
 @app.get("/api/health")

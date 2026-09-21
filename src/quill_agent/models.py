@@ -271,6 +271,7 @@ class ToolGroup(BaseModel):
     description: str = Field(default="", description="功能简介")
     tools: list[str] = Field(default_factory=list, description="组内工具名")
     confirm: list[str] = Field(default_factory=list, description="其中需要用户确认的工具名")
+    builtin: bool = Field(default=False, description="是否应用自带的出厂资源（不可删除）")
 
 
 class SkillGroup(BaseModel):
@@ -289,6 +290,7 @@ class SkillGroup(BaseModel):
     name: str = Field(min_length=1, description="组名")
     description: str = Field(default="", description="功能简介")
     skills: list[str] = Field(default_factory=list, description="组内技能名")
+    builtin: bool = Field(default=False, description="是否应用自带的出厂资源（不可删除）")
 
 
 class PromptGroup(BaseModel):
@@ -317,6 +319,7 @@ class PromptGroup(BaseModel):
     name: str = Field(min_length=1, description="组名")
     description: str = Field(default="", description="功能简介")
     prompts: list[str] = Field(default_factory=list, description="提示词 id 列表")
+    builtin: bool = Field(default=False, description="是否应用自带的出厂资源（不可删除）")
 
 
 class Mode(BaseModel):
@@ -348,3 +351,4 @@ class Mode(BaseModel):
     skill_group_id: str = Field(default="", description="引用的技能组 id")
     memory_enabled: bool = Field(default=True, description="是否启用记忆")
     preferred_model: str = Field(default="", description="偏好模型的稳定标识；空表示沿用当前")
+    builtin: bool = Field(default=False, description="是否应用自带的出厂资源（不可删除）")

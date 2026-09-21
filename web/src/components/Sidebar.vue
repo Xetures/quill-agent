@@ -1,12 +1,10 @@
 <script setup lang="ts">
 import {
   Box,
-  ChatDotRound,
   Collection,
   Cpu,
   DataLine,
   Document,
-  Link,
   Loading,
   MagicStick,
   Plus,
@@ -14,11 +12,13 @@ import {
   Stamp,
   Tools,
 } from '@element-plus/icons-vue'
+import type { Component } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import quillIcon from '../assets/quill-icon.svg'
 import { archiveConversation, loadMessages, session, startNewConversation } from '../stores/session'
 import { formatTime } from '../utils/format'
+import HelpButton from './HelpButton.vue'
 
 // ElMessage / ElMessageBox 由 unplugin-auto-import 自动引入（样式也一并带上），
 // 所以这个文件里看不到它们的 import —— 这是按需引入的代价：省了 import，
@@ -27,13 +27,23 @@ import { formatTime } from '../utils/format'
 const route = useRoute()
 const router = useRouter()
 
+interface NavItem {
+  to: string
+  label: string
+  icon: Component
+}
+
 /**
  * 导航项。
  *
  * 没有「任务」—— 它的入口是上面的「新建任务」按钮和下面的会话列表：
  * 想继续聊就点会话，想开新的就点按钮，都不需要「切到任务页」这个动作。
+ *
+ * 「偏好设置」是一级项，但页面里还有一层二级导航（主题 / 对话 / 联网搜索 / 关于，
+ * 见 SettingsLayout）。二级导航不放在侧边栏：那要先点开父级才看得到几节，
+ * 而这几节本来就互相独立，每次换一节都要两步。
  */
-const NAV = [
+const NAV: NavItem[] = [
   { to: '/modes', label: '模式', icon: MagicStick },
   { to: '/prompts', label: '提示词', icon: Document },
   { to: '/tools', label: '工具', icon: Tools },
@@ -42,7 +52,6 @@ const NAV = [
   { to: '/archived', label: '归档', icon: Box },
   { to: '/usage', label: '用量', icon: DataLine },
   { to: '/models', label: 'API设置', icon: Cpu },
-  { to: '/search', label: '联网搜索', icon: Link },
   { to: '/settings', label: '偏好设置', icon: Setting },
 ]
 
@@ -78,13 +87,17 @@ async function onArchive(id: string, title: string): Promise<void> {
 
 <template>
   <aside class="sidebar">
-    <!-- 品牌区：LOGO + 应用名。高度和主区顶栏一致，见 --topbar-height -->
+    <!-- 品牌区：LOGO + 应用名 + 使用说明入口。高度和主区顶栏一致，见 --topbar-height。
+         说明入口放这里而不是主区顶栏：它讲的是「这个应用怎么用」，属于品牌这一类的
+         常驻信息 —— 挨着 LOGO 比挤在任务页标题旁边更说得通，那边也就能空出来给
+         和当前任务真正相关的操作（比如执行权限） -->
     <div class="brand">
-      <img class="logo" :src="quillIcon" alt="quill" />
+      <img class="logo" :src="quillIcon" alt="Quill" />
       <div class="brand-text">
-        <div class="app-name">quill</div>
+        <div class="app-name">Quill</div>
         <div class="tagline">本地 Agent 工作台</div>
       </div>
+      <HelpButton />
     </div>
 
     <!-- 品牌区以下的整块内容放进滚动容器：导航项和「会话」标题高度固定、
@@ -198,8 +211,19 @@ async function onArchive(id: string, title: string): Promise<void> {
   box-shadow: var(--shadow-sm);
 }
 
+/* flex: 1 让它占满剩余宽度，右侧的说明入口因此自然贴到边上（不必给那边加 margin）。
+ * 代价是这块会被压缩，所以要能收敛：min-width: 0 加上下面两行省略号 ——
+ * 否则窄窗口下副标题会顶到按钮上去 */
 .brand-text {
+  flex: 1;
   min-width: 0;
+}
+
+.app-name,
+.tagline {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .app-name {

@@ -51,6 +51,18 @@
   --on-accent: #f5f0e6; /* 压在 accent 上的文字色 */
   --gold: #c8933f; /* 强调：只用在小面积上，铺大会腻 */
 
+  /* 执行权限（沙箱）三档各自的颜色。单开一组，而不是复用主色或语义色：
+   *
+   *   - 不能复用 --accent：浅色模式下它和正文色是同一个深蓝，标上去等于没标；
+   *   - 也不套 --el-color-success / warning 那套：三档之间不是「好 / 坏 / 危险」
+   *     的关系，硬套会让「只读」看起来像出了错。
+   *
+   * 选色只有一个依据：**三者摆在一起要一眼分得开** —— 色相拉到 20° / 210° / 145°
+   * （橙 / 蓝 / 绿），深浅两套主题下都够醒目。 */
+  --sandbox-off: #c2652a; /* 不隔离：没有边界，值得留意 */
+  --sandbox-workspace-write: #2f6ea8; /* 工作区可写：常规档 */
+  --sandbox-read-only: #3f8a5c; /* 只读：最紧的一档 */
+
   --shadow-sm: 0 1px 2px rgba(27, 58, 92, 0.06);
   --shadow: 0 2px 8px rgba(27, 58, 92, 0.08);
 
@@ -93,6 +105,12 @@ html.dark {
   /* 主色是暖金（明度高），压在上面的字要用深色才不糊 —— 与浅色模式相反 */
   --on-accent: #101d2a;
   --gold: #d9a04a;
+
+  /* 执行权限三档色（浅色那份的深色版本，见 :root）：整体提亮一档，
+     否则压在深靛蓝底上会发闷、三者之间也难区分 */
+  --sandbox-off: #e5825a;
+  --sandbox-workspace-write: #6aa9dd;
+  --sandbox-read-only: #6cbf8b;
 
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
@@ -187,6 +205,13 @@ body {
 
 .muted {
   color: var(--text-soft);
+}
+
+/* 表格里给「出厂自带的资源」做标记的那个小标签（模式页、提示词页、工具页、技能页都要用，
+ * 所以放全局）。它紧跟在名字后面，说明为什么那一行的删除按钮是灰的 */
+.builtin {
+  margin-left: 6px;
+  flex-shrink: 0;
 }
 
 .mono {

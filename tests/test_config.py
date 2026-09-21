@@ -10,7 +10,7 @@ def test_settings_defaults(monkeypatch) -> None:
 
     settings = config.Settings(_env_file=None)
 
-    assert settings.app_name == "quill"
+    assert settings.app_name == "Quill"
     # 工作目录默认取进程启动时的当前目录。这条断言顺带守住「默认值不是 Path('.')」
     # ——后者要到访问时才解析，中途 chdir 会改变安全边界
     assert settings.work_dir == Path.cwd()
