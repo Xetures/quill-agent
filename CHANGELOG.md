@@ -3,6 +3,18 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.1.4] - 2026-09-21
+
+### 新增
+
+- **前端 e2e 冒烟测试**（Playwright，`web/e2e/`）。覆盖任务页最容易出错、也最难手工
+  穷尽的几处状态流转：发消息后的流式正文与工具步骤渲染、运行中输入框禁用与「停止这一轮」、
+  请求失败后必须解锁输入框（不能卡在 busy）。
+  - 所有 `/api/*` 都在测试里拦掉（`e2e/mock-api.ts`），**不需要后端、也不需要模型** ——
+    后端已有单测覆盖，这里要的是「界面 + SSE 解析 + 渲染」这条链路的回归保护。
+  - 用系统已装的 Chrome（`channel: 'chrome'`），省掉 `playwright install` 的下载。
+  - `make e2e` / `npm run e2e` 运行。CI 上没有系统 Chrome 时改用 `chromium` 并先装一次。
+
 ## [0.1.3] - 2026-09-21
 
 ### 修复

@@ -24,6 +24,11 @@ env/
 .coverage
 htmlcov/
 
+# 前端 e2e（Playwright）的产物与报告
+web/test-results/
+web/playwright-report/
+web/blob-report/
+
 # ---------------- 前端 ----------------
 node_modules/
 dist/

@@ -73,6 +73,7 @@ make web                   # 终端 B：前端，浏览器打开 http://localhos
 | `make build` | 构建前端产物到 `web/dist` |
 | `make cli` | 运行命令行入口 |
 | `make test` | 运行单元测试 |
+| `make e2e` | 前端端到端冒烟测试（Playwright，用系统 Chrome，不需要后端） |
 | `make lint` | 静态检查（ruff） |
 | `make fmt` | 格式化代码 |
 | `make clean` | 清理缓存与虚拟环境 |
@@ -2065,6 +2066,22 @@ make web    # 前端 5173
 完全不变。兜底路由必须注册在**所有 API 路由之后**（FastAPI 按注册顺序匹配），并且显式让
 `/api/*` 返回 404 —— 否则一个不存在的接口会返回「200 + 一坨网页」，调用方很难看出问题。
 静态文件路径也要做一次「解析后仍在 dist 内」的校验，避免 `../` 穿越。
+
+**前端 e2e 冒烟测试**（`make e2e`）。它补的正是上面这条链路**以前完全没有自动化**的缺口 ——
+2026-09 排查「界面卡死」时全靠手工在浏览器里点，中途还几次被过期的快照文件误导。
+
+几条约定值得记住：
+
+- **只打前端**：所有 `/api/*` 都由 `page.route` 拦掉（`web/e2e/mock-api.ts`），所以**不需要
+  后端、也不需要模型**，跑一条只要两三秒。后端已经有单测覆盖，这里盯的是「界面 + SSE 解析 +
+  渲染」这条链路。
+- **匹配要用「路径以 `/api/` 开头」**，不能用 glob `**/api/**`：后者会把前端自己的模块请求
+  也拦下来（`/src/api/chat.ts` 的 URL 里就含 `/api/`），模块拿到一段 JSON、应用直接挂不起来，
+  而报错只是一句难懂的 MIME type 警告。
+- **用系统已装的 Chrome**（`channel: 'chrome'`），省掉 `npx playwright install` 那几百 MB。
+  换到 CI（没有系统 Chrome）时才需要装一次 `chromium` 并改配置。
+- `webServer` 用**独立端口 5199**，不去碰用户可能正开着的 5173。
+- 产物（`test-results/`、`playwright-report/`）已在 `.gitignore` 里。
 
 ### 7.6 输入区：两个设计点
 

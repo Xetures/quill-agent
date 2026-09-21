@@ -1,4 +1,4 @@
-.PHONY: install dev api serve web build test lint fmt clean
+.PHONY: install dev api serve web build test e2e lint fmt clean
 
 install:            ## 安装运行时依赖
 	uv sync
@@ -23,6 +23,9 @@ cli:                ## 运行命令行入口
 
 test:               ## 运行测试
 	uv run pytest
+
+e2e:                ## 前端端到端冒烟测试（Playwright，用系统 Chrome，无需后端）
+	cd web && npm run e2e
 
 lint:               ## 静态检查
 	uv run ruff check .
