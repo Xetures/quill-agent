@@ -3,6 +3,19 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.1.7] - 2026-09-21
+
+### 新增
+
+- **任务页显示缓存命中率**（上下文仪表盘**左边**的 `xx% 缓存`）。它读的是
+  `cached_tokens / context_tokens` —— 分子分母来自**同一次请求**，与旁边的上下文读数
+  同一个口径，两个数放在一起才说得通。还没有可用读数时**整块不显示**，而不是填一个
+  0%（「不知道」和「真没命中」是两回事）。
+
+  后端从用量里抠这个数时两种字段名都认：OpenAI / Ollama 的
+  `prompt_tokens_details.cached_tokens`，以及 DeepSeek 的 `prompt_cache_hit_tokens`。
+  实跑验证：`{"context_tokens": 80, "cached_tokens": 3}` → 界面显示 `4% 缓存`。
+
 ## [0.1.6] - 2026-09-21
 
 ### 新增

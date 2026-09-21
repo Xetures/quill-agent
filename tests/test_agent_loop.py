@@ -308,6 +308,64 @@ def test_thinking_off_falls_back_when_service_rejects_it(monkeypatch) -> None:
     assert agent._reasoning_cache == {"": False}
 
 
+def test_cached_tokens_are_read_from_usage() -> None:
+    """缓存命中数要从用量里抠出来，两种字段名都要认。
+
+    各家不统一：OpenAI / Ollama 放在 `prompt_tokens_details.cached_tokens`，
+    DeepSeek 另有一个 `prompt_cache_hit_tokens`。界面上的缓存命中率就靠它。
+    """
+    stats = agent.RunStats()
+
+    # OpenAI / Ollama 的形状
+    stats.add_usage(
+        SimpleNamespace(
+            prompt_tokens=100,
+            completion_tokens=10,
+            total_tokens=110,
+            prompt_tokens_details=SimpleNamespace(cached_tokens=80),
+        )
+    )
+    assert stats.context_tokens == 100
+    assert stats.cached_tokens == 80
+
+    # DeepSeek 的原生字段（没有 details 那一层）
+    stats.add_usage(
+        SimpleNamespace(
+            prompt_tokens=200,
+            completion_tokens=10,
+            total_tokens=210,
+            prompt_cache_hit_tokens=150,
+        )
+    )
+    assert stats.context_tokens == 200
+    assert stats.cached_tokens == 150
+
+
+def test_cached_tokens_reset_when_service_does_not_report() -> None:
+    """这次没报缓存字段就要归零，不能沿用上一次的值。
+
+    它和 `context_tokens` 一样是「最后一次请求」的口径 —— 分母换了、分子还留着
+    上次的数，算出来的命中率就是个假的。
+    """
+    stats = agent.RunStats()
+
+    stats.add_usage(
+        SimpleNamespace(
+            prompt_tokens=100,
+            completion_tokens=1,
+            total_tokens=101,
+            prompt_tokens_details=SimpleNamespace(cached_tokens=90),
+        )
+    )
+    assert stats.cached_tokens == 90
+
+    stats.add_usage(
+        SimpleNamespace(prompt_tokens=120, completion_tokens=1, total_tokens=121)
+    )
+    assert stats.context_tokens == 120
+    assert stats.cached_tokens == 0
+
+
 def test_reasoning_content_is_yielded_separately(monkeypatch) -> None:
     """推理模型的思考过程单独产出，不混进正文。"""
     events, _ = _run(monkeypatch, [[_reasoning_chunk("先想想…"), _text_chunk("答案是 42。")]])

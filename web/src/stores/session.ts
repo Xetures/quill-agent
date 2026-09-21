@@ -83,6 +83,14 @@ export const session = reactive({
   liveUsage: 0,
 
   /**
+   * 运行中播报的**缓存命中** token 数 —— 和 `liveUsage` 来自**同一次请求**。
+   *
+   * 界面上那个「缓存命中率」就是两者相除。这里存原始数而不是存比率：它们的更新时机
+   * 和保留策略跟 `liveUsage` 完全一致，比率等读的时候再算更简单。
+   */
+  liveCached: 0,
+
+  /**
    * 运行中抛回来、还没回答的问题（目前只有执行前确认）。
    *
    * 挂在会话上而不是那条流式消息上：它要在消息列表**下方**渲染成一张卡片，
@@ -195,6 +203,8 @@ interface ActiveRun {
   reply: Message
   controller: AbortController
   usage: number
+  /** 同一次请求里缓存命中的输入 token 数（缓存命中率的分子）。 */
+  cached: number
   todos: TodoItem[]
   subagentEvents: SubagentEvent[]
   question: Question | null
@@ -247,6 +257,7 @@ function attachRun(conversationId: string): void {
   session.activeRunId = run?.runId ?? ''
   session.phase = run?.phase ?? null
   session.liveUsage = run?.usage ?? 0
+  session.liveCached = run?.cached ?? 0
   session.liveTodos = run?.todos ?? []
   session.subagentEvents = run?.subagentEvents ?? []
   session.pendingQuestion = run?.question ?? null
@@ -265,6 +276,7 @@ function syncRunState(run: ActiveRun): void {
 
   session.phase = run.phase
   session.liveUsage = run.usage
+  session.liveCached = run.cached
   session.liveTodos = run.todos
   session.subagentEvents = run.subagentEvents
   session.pendingQuestion = run.question
@@ -518,6 +530,7 @@ export async function sendMessage(options: {
     reply,
     controller: new AbortController(),
     usage: 0,
+    cached: 0,
     todos: [],
     subagentEvents: [],
     question: null,
@@ -561,6 +574,7 @@ export async function sendMessage(options: {
       } else if (event.type === 'usage') {
         // 运行中的实时读数：先记进这一轮，再（在当前会话时）同步给仪表盘
         run.usage = event.contextTokens
+        run.cached = event.cachedTokens
         syncRunState(run)
       } else if (event.type === 'tool_start') {
         setPhase(run, { kind: 'tool', name: event.name })

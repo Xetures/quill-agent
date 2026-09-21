@@ -182,7 +182,10 @@ def stream_round(request: ChatRequest, files: list) -> Iterator[tuple[str, dict[
             # **只推不存** —— 它是过程数据，这一轮的最终读数仍然随下面的 stats 落盘。
             # 必须在 else 之前接住：那个分支把剩下的一律当正文，一个 Usage 对象
             # 序列化出去会直接报错
-            yield "usage", {"context_tokens": item.context_tokens}
+            yield "usage", {
+                "context_tokens": item.context_tokens,
+                "cached_tokens": item.cached_tokens,
+            }
         elif isinstance(item, ToolStart):
             # 只是「现在开始跑这个工具」，不落盘也不进 steps —— 它是过程信号，
             # 成品是随后的 ToolStep

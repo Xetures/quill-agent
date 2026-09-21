@@ -42,6 +42,14 @@ export interface RunStats {
    * 同一个理由）。
    */
   context_tokens?: number
+  /**
+   * 最后一次请求里**缓存命中**的输入 token 数。
+   *
+   * 和 `context_tokens` 同一个口径 —— 分子分母来自同一次请求，比值才有意义，
+   * 界面上的缓存命中率就是 `cached_tokens / context_tokens`。
+   * 同样是后加的字段（老记录里没有）；服务不报它的话是 0。
+   */
+  cached_tokens?: number
   /** 整轮耗时（秒），含工具执行。 */
   elapsed: number
 }
@@ -440,7 +448,7 @@ export type ChatEvent =
    * 一轮里模型会被请求多次（每执行完一轮工具就要再问一次），上下文是**一路长上去**的；
    * 这些中间读数既不落盘也不进消息，只是让仪表盘别停在上一次的旧值上。
    */
-  | { type: 'usage'; contextTokens: number }
+  | { type: 'usage'; contextTokens: number; cachedTokens: number }
   /**
    * 任务清单更新：模型调用了 `todo_write`。
    *

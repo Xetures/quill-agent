@@ -216,6 +216,24 @@ class ToolStep:
     elapsed: float = 0.0
 
 
+def _cached_tokens(usage) -> int:
+    """从用量里抠出「缓存命中的输入 token 数」；拿不到就返回 0。
+
+    各家字段不统一：
+        - OpenAI / Ollama：`prompt_tokens_details.cached_tokens`
+        - DeepSeek：另有 `prompt_cache_hit_tokens`
+    两个都试一遍。都用 `getattr` 兜底 —— 这些都不是 SDK 的稳定字段，
+    取不到就静默当 0，不影响别的统计。
+    """
+    details = getattr(usage, "prompt_tokens_details", None)
+    cached = getattr(details, "cached_tokens", None) if details is not None else None
+    if cached:
+        return int(cached)
+
+    hit = getattr(usage, "prompt_cache_hit_tokens", None)
+    return int(hit) if hit else 0
+
+
 @dataclass
 class RunStats:
     """一轮对话的资源消耗。
@@ -231,6 +249,10 @@ class RunStats:
             它和 `prompt_tokens` 是两个口径，别混用：每轮都要把同一份上下文重发
             一遍，累加起来是账单，只有「最后一次」才是窗口占用。界面上的用量仪表盘
             读这个，用量页读那三个累加值。
+        cached_tokens: 最后一次请求里**缓存命中**的输入 token 数。和 `context_tokens`
+            同一个口径（分子分母必须来自同一次请求，比值才有意义）——
+            界面上的缓存命中率就是 `cached_tokens / context_tokens`。
+            服务不报这个字段时是 0。
         elapsed: 整轮耗时（秒），包含工具执行的时间。
     """
 
@@ -238,6 +260,7 @@ class RunStats:
     completion_tokens: int = 0
     total_tokens: int = 0
     context_tokens: int = 0
+    cached_tokens: int = 0
     elapsed: float = 0.0
 
     def add_usage(self, usage) -> None:
@@ -257,6 +280,9 @@ class RunStats:
         # 从「上次的读数」直接掉到 0，看着像上下文被清空了
         if prompt:
             self.context_tokens = prompt
+            # 缓存命中数跟着同一个「最后一次」口径走 —— 它的分母就是这次请求的输入量，
+            # 两者必须来自同一次请求，比值才有意义
+            self.cached_tokens = _cached_tokens(usage)
 
     def merge(self, other: RunStats) -> None:
         """把另一轮的用量并进来（目前只有子代理会走这条）。
@@ -326,12 +352,14 @@ class Usage:
     每轮都在长。用量本来只随 `RunStats` 在结束时一起给出去 —— 界面在整个跑的过程中
     只能显示上一轮的旧值，跑完才「啪」地跳一下。所以每拿到一次用量就播报一次。
 
-    只带 `context_tokens`：它是**这次请求的输入量**，也就是「上下文现在有多大」，
-    正是仪表盘要的那个数。累加的账单三项不给 —— 那要等这一轮结束才准，
-    而实时界面上也不需要它。
+    只带 `context_tokens` 和 `cached_tokens`：前者是**这次请求的输入量**（「上下文现在
+    有多大」，仪表盘要的就是它），后者是这次输入里**缓存命中的那部分** —— 两者来自
+    同一次请求，比值才有意义（界面上的缓存命中率就是这么算的）。累加的账单三项不给 ——
+    那要等这一轮结束才准，而实时界面上也不需要它。
     """
 
     context_tokens: int
+    cached_tokens: int = 0
 
 
 @dataclass(frozen=True)
@@ -1400,7 +1428,10 @@ def _run_stream(
                 # 拿到就播报（见 Usage）：这一轮里上下文是在**长**的，攒到最后才给的话，
                 # 界面整个过程都停在上一轮的读数上，跑完才跳一下
                 if usage is not None and tracker.context_tokens:
-                    yield Usage(context_tokens=tracker.context_tokens)
+                    yield Usage(
+                        context_tokens=tracker.context_tokens,
+                        cached_tokens=tracker.cached_tokens,
+                    )
 
                 if not chunk.choices:  # 有些服务会额外发一个只带用量的 chunk
                     continue

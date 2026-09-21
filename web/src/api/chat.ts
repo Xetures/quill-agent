@@ -180,7 +180,11 @@ function parseBlock(block: string): ChatEvent | null {
     case 'subagent':
       return { type: 'subagent', event: payload as unknown as SubagentEvent }
     case 'usage':
-      return { type: 'usage', contextTokens: Number(payload.context_tokens ?? 0) }
+      return {
+        type: 'usage',
+        contextTokens: Number(payload.context_tokens ?? 0),
+        cachedTokens: Number(payload.cached_tokens ?? 0),
+      }
     case 'todo':
       return { type: 'todo', items: (payload.items ?? []) as TodoItem[] }
     case 'summary':
