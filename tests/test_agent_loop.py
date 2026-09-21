@@ -188,6 +188,56 @@ def test_normal_answer_is_not_mistaken_for_a_leak(monkeypatch) -> None:
     assert _notices(events) == []
 
 
+def test_qwen_style_tool_call_block_is_caught(monkeypatch) -> None:
+    """Qwen 系的标准调用块（`<tool_call>`）也要认出来。
+
+    实测：Ollama 上跑 qwen 系模型时，调用可能以
+    `<tool_call>{"name": …, "arguments": …}</tool_call>` 的形式漏进 content ——
+    标签没被消掉，`tool_calls` 却是空的。
+    """
+    leak = '<tool_call>\n{"name": "read_file", "arguments": {"path": "README.md"}}\n</tool_call>'
+
+    events, _ = _run(monkeypatch, [[_text_chunk(leak)]])
+
+    assert _steps(events) == []
+    assert any("写成了普通文本" in text for text in _notices(events))
+
+
+def test_bare_json_tool_call_leak_is_caught(monkeypatch) -> None:
+    """裸 JSON 的调用（一个标签都没有）也要报出来。
+
+    实测：`qwen3-4b-function-calling-pro` 在真实工具组下稳定吐
+    `[{"name": …, "arguments": …}]`。它不是任何固定标记，前缀匹配认不出来 ——
+    不报的话用户只看到一串 JSON、工具一个都没跑，也不知道发生了什么。
+    """
+    leak = '[{"name": "list_dir", "arguments": {"path": "."}}]'
+
+    events, _ = _run(monkeypatch, [[_text_chunk(leak)]])
+
+    assert _steps(events) == []
+    assert any("写成了普通文本" in text for text in _notices(events))
+
+
+def test_plain_json_answer_is_not_called_a_leak(monkeypatch) -> None:
+    """正常的 JSON 回答不该被扣上「工具调用漏了」的帽子（启发式要够保守）。"""
+    events, _ = _run(monkeypatch, [[_text_chunk('{"answer": 42}')]])
+
+    assert _notices(events) == []
+    assert _texts(events) == '{"answer": 42}'
+
+
+def test_looks_like_tool_call_heuristic() -> None:
+    """启发式只在「确实像一次调用」时点头。"""
+    assert agent._looks_like_tool_call('[{"name": "a", "arguments": {}}]')
+    assert agent._looks_like_tool_call('{"name": "a", "parameters": {}}')
+    # 有 name 但没有 arguments/parameters —— 不像调用
+    assert not agent._looks_like_tool_call('{"name": "张三"}')
+    # 完全正常的回答
+    assert not agent._looks_like_tool_call('{"answer": 42}')
+    assert not agent._looks_like_tool_call("名字叫 name，参数是 arguments")
+    assert not agent._looks_like_tool_call("")
+
+
 def test_reasoning_content_is_yielded_separately(monkeypatch) -> None:
     """推理模型的思考过程单独产出，不混进正文。"""
     events, _ = _run(monkeypatch, [[_reasoning_chunk("先想想…"), _text_chunk("答案是 42。")]])

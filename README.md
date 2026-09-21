@@ -1388,6 +1388,24 @@ for event in run_agent_stream(
 模型一个字都没说时（推理模型把输出预算全花在思考上时会出现）也会产出一个 `Notice`，
 否则界面上就是一个空气泡，用户不知道发生了什么。所有异常同样走 `Notice`，不向上抛。
 
+**「工具调用漏进正文」也要认出来。** 有些模型不把调用放进 `tool_calls`，而是当成正文吐出来
+（DeepSeek 的原生标记、Qwen 的 `<tool_call>` 块，乃至没有任何标签的**裸 JSON**）。这时
+`tool_calls` 是空的，循环会把这一轮误判成「模型答完了」—— 工具没执行、审批没弹出，用户只
+看到一段乱码。所以有两条判定，**只在「这一轮 `tool_calls` 为空」时才走**：
+
+| 判定 | 认什么 | 怎么认 |
+| --- | --- | --- |
+| `leaked` | 带标签的调用块 | `TOOL_CALL_LEAK_MARKERS` 前缀匹配（DeepSeek DSML、`</invoke>`、`<function_calls>`、`<tool_call>`）—— 流式阶段就截断，标记之后的内容一个字都不进正文 |
+| `_looks_like_tool_call` | **裸 JSON**（`[{"name": …, "arguments": …}]`） | 形状启发式，且**仅当工具菜单非空**时才算 |
+
+第二条是实测补上的：`qwen3-4b-function-calling-pro`（Ollama）在真实工具组下稳定吐裸 JSON，
+前缀匹配完全认不出来 —— 用户只看到一串 JSON、工具一个都没跑，也不知道为什么。启发式刻意
+保守（要求正文以 `[` / `{` 开头，且同时出现 `name` 与 `arguments`/`parameters`）：误判的代价
+只是多一句提示，而漏判的代价是用户对着一串 JSON 发呆。
+
+两条命中时给的是同一句 `Notice`：**「模型把工具调用写成了普通文本，这一轮没有执行任何工具。
+可以重试，或换一个函数调用更稳定的模型。」**
+
 `ReasoningDelta` 是推理模型的思考过程。DeepSeek 系在 `delta.reasoning_content` 里返回它，
 少数中转站叫 `reasoning` —— 两者都用 `getattr` 兜底读取：它不是 OpenAI 的标准字段，
 SDK 未必保留，取不到就静默跳过，不影响正文。思考过程按增量产出，界面累积后存进消息的

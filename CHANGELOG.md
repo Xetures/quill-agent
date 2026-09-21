@@ -3,6 +3,22 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.1.3] - 2026-09-21
+
+### 修复
+
+- **「工具调用漏进正文」的识别补上了它实际出现的两种格式**。原先只认三种带标签的调用块
+  （DeepSeek DSML、`</invoke>`、`<function_calls>`），实测发现真实泄漏的格式是另外两种，
+  一个都没覆盖：
+  - Qwen 系标准的 `<tool_call>{…}</tool_call>`；
+  - **裸 JSON**（`[{"name": …, "arguments": …}]`）—— `qwen3-4b-function-calling-pro` 在
+    真实工具组下稳定吐这个形状，没有任何标签，前缀匹配认不出来。
+
+  裸 JSON 改用形状启发式（`_looks_like_tool_call`），且**仅当工具菜单非空、这一轮
+  `tool_calls` 为空**时才算；刻意保守（要求以 `[` / `{` 开头且同时出现 `name` 与
+  `arguments`/`parameters`），避免把正常的 JSON 回答当成泄漏。
+  不认的话，用户只看到一串 JSON、工具一个都没跑，也不知道发生了什么。
+
 ## [0.1.2] - 2026-09-21
 
 ### 修复

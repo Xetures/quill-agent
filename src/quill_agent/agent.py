@@ -149,6 +149,7 @@ TOOL_CALL_LEAK_MARKERS = (
     "<\uff5c\uff5cDSML\uff5c\uff5c",  # DeepSeek 原生标记（竖线是全角）
     "</invoke>",  # XML 风格的调用块
     "<function_calls>",  # 另一种常见的调用块写法
+    "<tool_call",  # Qwen 系的标准调用块（`<tool_call>{"name": …}</tool_call>`）
 )
 
 # 正文要压住多少个字符才往外吐：标记可能被切在相邻两个分片之间
@@ -162,6 +163,28 @@ def _leak_index(text: str) -> int:
     hits = [text.find(marker) for marker in TOOL_CALL_LEAK_MARKERS]
     positions = [hit for hit in hits if hit != -1]
     return min(positions) if positions else -1
+
+
+def _looks_like_tool_call(text: str) -> bool:
+    """正文整体看起来像一次工具调用（而不是正常回答）吗？
+
+    为什么需要它：`TOOL_CALL_LEAK_MARKERS` 那套是**固定前缀**匹配，只认带标签的调用块。
+    但有些模型（小模型、或 chat template 与工具约定对不上的 GGUF）直接吐一段**裸 JSON**：
+
+        [{"name": "read_file", "arguments": {"path": "README.md"}}]
+
+    没有任何标签可认，于是正文被当正常回答渲染 —— 用户只看到一串 JSON，工具一个都没跑，
+    也不知道发生了什么。实测 `qwen3-4b-function-calling-pro` 就是这样（且还会幻觉工具名）。
+
+    只在**这一轮 `tool_calls` 为空、且工具菜单非空**时才用它，所以可以宽松些：
+    误判的代价只是多一句提示，而漏判的代价是用户对着一串 JSON 发呆。
+    """
+    body = text.strip()
+    # 裸 JSON：一个数组或对象，且同时带 name 和 arguments/parameters 这两个键 ——
+    # 这个组合几乎只出现在「一次或多次工具调用」上
+    if body[:1] in ("[", "{") and '"name"' in body:
+        return '"arguments"' in body or '"parameters"' in body
+    return False
 
 
 @dataclass(frozen=True)
@@ -1375,9 +1398,14 @@ def _run_stream(
 
         # 没有工具调用 = 本轮就是最终回答，结束
         if not tool_calls:
-            if leaked:
-                # 模型把工具调用写成了正文，这一轮其实一个工具都没执行。
-                # 不能当成最终回答静默结束 —— 那在界面上看起来就是「卡住了」
+            # 两类「调用漏进正文」都要认出来，否则这一轮会被当成模型答完了静默结束 ——
+            # 界面上只剩一段乱码，看起来就像卡住：
+            #   ① 流式阶段就认出了固定标记（`leaked`）；
+            #   ② 正文整体长得像一次调用（裸 JSON，没有标签可认，见 `_looks_like_tool_call`）。
+            # ② 只在**工具菜单非空**时才算：一个工具都没给的时候，模型输出 JSON 完全可能
+            # 是正常回答，不该被扣上「把调用写成了文本」的帽子
+            forged = bool(available_tools) and _looks_like_tool_call("".join(text_parts))
+            if leaked or forged:
                 yield Notice(
                     "模型把工具调用写成了普通文本，这一轮没有执行任何工具。"
                     "可以重试，或换一个函数调用更稳定的模型。"
