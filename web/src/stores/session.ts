@@ -467,6 +467,14 @@ export async function sendMessage(options: {
   // 这条流的读数（见 syncRunState）
   const conversationId = session.currentId
 
+  // 同一会话不并发：一轮还没跑完就再发一条，`runs` 里这条记录会被后来的**覆盖**，
+  // 而先结束的那一轮又会把后来者的记录删掉 —— 两轮互相踩，界面收不了尾
+  // （卡在「等待模型响应」、输入框锁死，只能刷新）。
+  //
+  // 界面上输入框在 busy 时本就禁用，这里是兜底：绕过界面直接调用（脚本、自动化）
+  // 那条路也得被拦住。而且要在消息上屏**之前**拦 —— 否则会留下一条永远没有回复的提问。
+  if (runs.has(conversationId)) return
+
   // 用户消息先上屏，给即时反馈（后端同时也会落盘）。
   // files 只用于在气泡里显示「这条消息带了什么」，不参与发给模型的内容
   session.messages.push({
@@ -582,22 +590,34 @@ export async function sendMessage(options: {
     // 只会让他以为出了故障
     if (!run.controller.signal.aborted) reply.notices?.push(`请求失败：${errorText(exc)}`)
   } finally {
-    runs.delete(conversationId)
-    // 转圈图标随这一轮的结束消失（也可能它早就不在当前会话上了）
+    // 只清理**属于自己那一份**：`runs` 按会话存，万一已有更晚的一轮接管了它
+    // （同会话并发时 `set` 会覆盖），无条件 delete 会把对方的记录一并抹掉 ——
+    // 侧边栏转圈消失、界面提前解锁，而那一轮其实还在跑。
+    // 正常路径下这里取到的就是自己，删完即空。
+    const owns = runs.get(conversationId) === run
+    if (owns) runs.delete(conversationId)
+    // 转圈图标按实际的 runs 重算（也可能这一轮早就不在当前会话上了）
     syncRunningIds()
 
     // 只有界面正看着这个会话时才收拾实时状态。用户切到别的会话去了的话，
     // 就不该动那一边的界面 —— 那边自有它自己的一份（见 attachRun）
     if (session.currentId === conversationId) {
-      session.busy = false
-      session.phase = null
-      // 流都结束了还留着一张卡片，用户会以为还能点 —— 点了也没人接
-      session.pendingQuestion = null
-      // 运行已经收尾，再留着这个 id 只会让「停止」按钮指向一个不存在的运行
-      session.activeRunId = ''
-      // 被取消 / 出错时子代理看板可能还在，一并收掉
-      session.subagentEvents = []
-      // liveUsage / liveTodos 刻意不清：那一轮已经长到多大，正是出错后想看的（见字段注释）
+      const still = runs.get(conversationId)
+      if (still) {
+        // 同会话还有一轮在跑（异常的并发路径）：把界面接回它，**别解锁**。
+        // 提前解锁会让用户以为能发下一条，而那一轮其实还没完
+        syncRunState(still)
+      } else {
+        session.busy = false
+        session.phase = null
+        // 流都结束了还留着一张卡片，用户会以为还能点 —— 点了也没人接
+        session.pendingQuestion = null
+        // 运行已经收尾，再留着这个 id 只会让「停止」按钮指向一个不存在的运行
+        session.activeRunId = ''
+        // 被取消 / 出错时子代理看板可能还在，一并收掉
+        session.subagentEvents = []
+        // liveUsage / liveTodos 刻意不清：那一轮已经长到多大，正是出错后想看的（见字段注释）
+      }
     }
 
     // 标题和排序时间可能变了，刷一下侧边栏

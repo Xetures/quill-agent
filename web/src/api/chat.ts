@@ -35,6 +35,48 @@ export interface ChatPayload {
  *     payload: 本轮请求体。
  *     signal: 用于中途取消；取消时 `reader.read()` 会以 AbortError 抛出。
  */
+/**
+ * 多久没收到任何数据，就认定这条连接已经死了。
+ *
+ * `reader.read()` 在没数据时会一直挂着 —— 这是长连接的**常态**（等模型吐第一个字、
+ * 等工具跑完），不是错误，所以不能简单加个总时长超时。但对端**休眠 / 网络中断**时它
+ * 同样会一直挂着：TCP 半开连接不会立刻报错，于是界面永远停在「等待模型响应」、
+ * 输入框锁死，只能刷新页面 —— 这正是「跑模型的机器睡了一觉，界面就再也回不来」的原因。
+ *
+ * 360 秒是照着「最长的合法静默」定的：工具执行上限 300 秒（见后端 run_command），
+ * 再留一点余量。设小了会把正常的长任务误杀。
+ */
+const IDLE_TIMEOUT_MS = 360_000
+
+/**
+ * 带着「静默超时」读一块数据。
+ *
+ * 超时抛错，让调用方走「连接已死」那条路 —— 有错可报，总好过永远转圈。
+ */
+async function readWithIdleTimeout(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const idle = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () =>
+        reject(
+          new Error(
+            `超过 ${Math.round(IDLE_TIMEOUT_MS / 1000)} 秒没有收到任何数据，连接可能已经断开`,
+          ),
+        ),
+      IDLE_TIMEOUT_MS,
+    )
+  })
+
+  try {
+    return await Promise.race([reader.read(), idle])
+  } finally {
+    // 正常读到、超时、被 abort —— 三条路都要清掉定时器，否则它会一直挂着
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
 export async function* streamChat(
   payload: ChatPayload,
   signal?: AbortSignal,
@@ -64,7 +106,7 @@ export async function* streamChat(
 
   try {
     while (true) {
-      const { done, value } = await reader.read()
+      const { done, value } = await readWithIdleTimeout(reader)
       if (done) break
 
       buffer += decoder.decode(value, { stream: true })
@@ -84,14 +126,15 @@ export async function* streamChat(
     }
   } finally {
     // 正常结束、调用方 break、中途抛错 —— 三条路都要走到这里。
-    // 不释放的话这个 reader 会一直锁着底层流（连接也不会被关掉），
-    // 而释放时机取决于 GC，等于没有时机
-    try {
-      await reader.cancel()
-    } catch {
-      // 已经结束或已被取消，忽略
-    }
-    reader.releaseLock()
+    //
+    // **不 await `cancel()`**：连接僵死时它可能永远不 resolve（要等对端应答），
+    // 而它挂住会把整个收尾流程一起拖住 —— 超时抛出的错传不出去、界面永远收不了尾。
+    // 这正是「跑模型的机器睡了一觉，界面就再也回不来」的最后一道锁。
+    //
+    // 尽力而为即可：取消成功则连接被关掉，没成功也随流对象被 GC 回收。
+    // 也不再 `releaseLock()` —— cancel 尚未落地时它会因「有 pending read」而抛，
+    // 而 cancel 之后这个 reader 本来就用不上了。
+    void reader.cancel().catch(() => {})
   }
 }
 
