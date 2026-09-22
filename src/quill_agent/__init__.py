@@ -13,6 +13,6 @@ from importlib.metadata import PackageNotFoundError, version
 try:
     __version__ = version("quill-agent")
 except PackageNotFoundError:  # 未安装（例如直接以源码方式运行）时的兜底
-    __version__ = "0.1.14"
+    __version__ = "0.1.16"
 
 __all__ = ["__version__"]

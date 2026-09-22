@@ -26,7 +26,8 @@ import asyncio
 import json
 import logging
 import threading
-from collections.abc import AsyncIterator, Iterator, Sequence
+import time
+from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from dataclasses import asdict
 from datetime import datetime
 from typing import Annotated, Any, BinaryIO
@@ -112,17 +113,82 @@ def _resolve_mode(request: ChatRequest) -> Mode | None:
     return stores.modes().get(request.mode_id)
 
 
+def _stamp(message: dict) -> dict:
+    """给消息打上时间戳（就地改，顺带返回同一条，好串着写）。"""
+    message["ts"] = datetime.now().isoformat(timespec="seconds")
+    return message
+
+
 def _remember(store: ConversationStore, conversation_id: str, message: dict) -> None:
     """写进会话文件，并补上时间戳。
 
     服务端不维护内存副本 —— 前端自己持有消息列表，刷新时重新拉。
     少一份需要同步的状态就少一类 bug。
     """
-    message["ts"] = datetime.now().isoformat(timespec="seconds")
-    store.append(conversation_id, message)
+    store.append(conversation_id, _stamp(message))
 
 
-def stream_round(request: ChatRequest, files: list) -> Iterator[tuple[str, dict[str, Any]]]:
+# 助手消息边跑边落盘的节流间隔（秒）。
+#
+# 正文是**逐分片**来的，一个稍长的回答几百个分片 —— 每个都写一次是在拿磁盘换一个没人看
+# 的中间态。但完全不写又回到原点：跑到一半进程被杀，盘上只剩用户那句提问。2 秒是
+# 「重启后最多丢 2 秒的内容」和「不把磁盘写爆」之间的取舍。
+ANSWER_FLUSH_SECONDS = 2.0
+
+
+class _AnswerSaver:
+    """这一轮的助手消息：边跑边往盘上写，但按时间节流。
+
+    存在的理由是「跑到一半进程被杀」：在此之前助手消息只在整轮结束时写一次，所以那一刻
+    盘上只有用户那句提问 —— 想过什么、动过哪些文件，重启后全都看不出来。
+
+    **第一次写立即发生**（`_last` 从 0 起步）。否则一个几秒就跑完的回答要等到收尾才落盘，
+    这件事就等于没做。短回答本来也丢不了什么，但长任务恰恰是从一开始就该看得见。
+    """
+
+    def __init__(self, store: ConversationStore, conversation_id: str, run_id: str) -> None:
+        self._store = store
+        self._conversation_id = conversation_id
+        self._run_id = run_id
+        self._last = 0.0
+
+    def maybe(self, build: Callable[[], dict], *, force: bool = False) -> None:
+        """到点了就写。
+
+        `build` 到**真要写时**才调用：做一次快照要拼字符串、跑 `asdict`，不该为每个分片
+        白做一遍 —— 那些调用里绝大多数会被上面的时间判断挡掉。
+        """
+        now = time.monotonic()
+        if not force and now - self._last < ANSWER_FLUSH_SECONDS:
+            return
+
+        data = build()
+        # 还没什么可写的（刚开跑，只有 round / start 这类过程事件）——跳过，**而且不动
+        # `_last`**。
+        #
+        # 这一条是实测逼出来的：整轮事件往往是「几十毫秒内到齐，然后长时间静默」（等模型
+        # 回话、等工具跑完）。若让那个空快照占掉「首次写」的机会，后面的正文和步骤就会
+        # 全部落在 2 秒窗口内被挡掉 —— 而下一批事件要等模型响应，几百毫秒到几十秒之后
+        # 才来。结果是盘上一直停在一个**空壳**上：明明已经想过、改过了，重启后看到的
+        # 却是一片空白。空着不写，首次写的机会就留给第一个真正有内容的事件。
+        if not force and not data.get("content") and not data.get("steps"):
+            return
+
+        self._last = now
+        try:
+            self._store.upsert_run(self._conversation_id, self._run_id, data)
+        except OSError as exc:
+            # 收尾那次失败是真问题 —— 这一轮的结果没留下来，得让用户知道（异常会冒到
+            # `_pump` 的兜底里变成一条 Notice）。中间态则吞掉：它是附加的东西，一次 IO
+            # 抖动不该把整轮对话打断 —— 后面还有几十次机会把它写进去
+            if force:
+                raise
+            print(f"[chat] 这一轮的中间态没能落盘（不影响运行）：{exc}", flush=True)
+
+
+def stream_round(
+    request: ChatRequest, files: list, run_id: str
+) -> Iterator[tuple[str, dict[str, Any]]]:
     """跑一轮对话，把 agent 的事件流翻译成「事件名 + 数据」。
 
     **产出的是二元组而不是拼好的 SSE 文本**：拼装是传输层的事，而这条流现在要经过
@@ -132,6 +198,8 @@ def stream_round(request: ChatRequest, files: list) -> Iterator[tuple[str, dict[
     Args:
         request: 文本部分（会话 id、输入、模型、模式）。
         files: 本轮附件（`Attachment` 列表），交给业务层落盘。
+        run_id: 这一轮的运行 id。助手消息**边跑边落盘**，写入时要靠它认领「盘上那条
+            是不是我」（见 `_AnswerSaver`）。它是运行开始时才生成的，所以从外面传进来。
     """
     store = stores.conversations()
     conversation_id = request.conversation_id
@@ -163,6 +231,35 @@ def stream_round(request: ChatRequest, files: list) -> Iterator[tuple[str, dict[
     steps: list[ToolStep] = []
     notices: list[str] = []
     reasoning_parts: list[str] = []
+    saver = _AnswerSaver(store, conversation_id, run_id)
+
+    def snapshot(*, partial: bool) -> dict:
+        """把「到此刻为止」的这一轮做成一条助手消息。
+
+        字段只有一份固定定义 —— 换界面不该让历史记录变成两种格式。中间态和最终态是
+        同一条消息的两种版本，唯一的差别是 `partial` 标记。
+        """
+        data = {
+            "role": "assistant",
+            # 认领用的身份：重启后盘上那条是「谁写的」全靠它（见 `_AnswerSaver`）
+            "run_id": run_id,
+            "content": "".join(text_parts),
+            "steps": [asdict(step) for step in steps],
+            "notices": notices,
+            "reasoning": "".join(reasoning_parts),
+            "stats": asdict(stats),
+            # 这一轮列过的任务清单（模型没列过就是空数组）。落盘是为了**回看时还在** ——
+            # 只在运行中显示的话，一条长任务跑完，它当初打算做哪几步就再也看不到了
+            "todos": board.to_payload(),
+            # 用量统计按模型分组靠它。`stats` 里只有 token 数，认不出是哪个模型花的，
+            # 事后也没法反推（会话里可以中途换模型），所以必须在落盘时就记下
+            "model": request.model,
+        }
+        if partial:
+            # 这一轮还没跑完，盘上这条是**中间态**。留着标记，重启后看到它才知道
+            # 「这不是回答完了，是跑到一半断了」—— 少了这句话，半截内容看起来就是最终答案
+            data["partial"] = True
+        return _stamp(data)
 
     for item in run_agent_stream(
         prompt=text,
@@ -174,6 +271,9 @@ def stream_round(request: ChatRequest, files: list) -> Iterator[tuple[str, dict[
         board=board,
         thinking=request.thinking,
     ):
+        # 这一轮迭代里是不是多了一个工具步骤 —— 是的话下面要强制写一次（见 `maybe` 调用）
+        stepped = False
+
         if isinstance(item, Notice):
             notices.append(item.text)
             yield "notice", {"text": item.text}
@@ -199,6 +299,7 @@ def stream_round(request: ChatRequest, files: list) -> Iterator[tuple[str, dict[
             yield "tool_start", {"name": item.name}
         elif isinstance(item, ToolStep):
             steps.append(item)
+            stepped = True
             yield "tool", asdict(item)
         elif isinstance(item, SummaryMade):
             # 摘要要**落盘**：它得活过这一轮，下一轮组装上下文时才能直接用上，
@@ -218,27 +319,27 @@ def stream_round(request: ChatRequest, files: list) -> Iterator[tuple[str, dict[
             text_parts.append(item)
             yield "text", {"text": item}
 
-    # 助手消息落盘。字段只有一份固定定义 —— 换界面不该让历史记录变成两种格式
-    answer = {
-        "role": "assistant",
-        "content": "".join(text_parts),
-        "steps": [asdict(step) for step in steps],
-        "notices": notices,
-        "reasoning": "".join(reasoning_parts),
-        "stats": asdict(stats),
-        # 这一轮列过的任务清单（模型没列过就是空数组）。落盘是为了**回看时还在** ——
-        # 只在运行中显示的话，一条长任务跑完，它当初打算做哪几步就再也看不到了
-        "todos": board.to_payload(),
-        # 用量统计按模型分组靠它。`stats` 里只有 token 数，认不出是哪个模型花的，
-        # 事后也没法反推（会话里可以中途换模型），所以必须在落盘时就记下
-        "model": request.model,
-    }
-    # 这一轮改了哪些文件，顺手存一份快照供「还原」。
+        # 每个事件之后都问一次「到点了吗」。事件是几毫秒一个的，真写盘由 `_AnswerSaver`
+        # 按时间挡掉 —— 放在循环末尾而不是各个分支里，是为了**不漏事件类型**：
+        # 将来加一种新事件，这里默认就覆盖到了。
+        #
+        # 工具步骤例外，它**强制**写：那是「做了什么」最硬的证据，而实际的时间线常常是
+        # 「一串事件几十毫秒内到齐 → 长时间静默（等模型回话、等工具跑完）」。不强制的话
+        # 它会被节流挡掉，而那之后就没有事件来推动下一次落盘了
+        saver.maybe(lambda: snapshot(partial=True), force=stepped)
+
+    # 收尾：写最终态。到这一步 `partial` 才消失 —— 它已经从「跑到一半」变成「跑完了」。
+    # **这里不是「保存」**：中间态早就陆续写下去了，这一步是把最后一份内容盖上去
+    answer = snapshot(partial=False)
+    # 这一轮改了哪些文件，取一份摘要写进消息（界面据此显示「改了 N 个文件」和还原入口）。
+    # 快照本身在每次改动时就落盘了（changes.record_text → _flush），这里只拿摘要 ——
+    # 否则跑到一半断了，文件改了却还原不了。
     # 没有改动时是 None —— 前端据此不显示那一行，也不该有空荡荡的「还原」按钮
     recorder = changes.current()
     answer["changes"] = changes.save(recorder) if recorder else None
-
-    _remember(store, conversation_id, answer)
+    # 强制写：`_last` 可能刚被上面循环里的最后一次刷新推近，但那一次的内容是**中间态**，
+    # 不带最终统计。这里必须盖上去
+    saver.maybe(lambda: answer, force=True)
 
     yield "done", answer
 
@@ -427,7 +528,8 @@ async def chat(
     # daemon：进程退出时不该被卡在确认题上的线程拖住
     threading.Thread(
         target=_pump,
-        args=(run, stream_round(request, uploads)),
+        # run.id 要传进去：助手消息边跑边落盘时，靠它认领盘上那条记录（见 `_AnswerSaver`）
+        args=(run, stream_round(request, uploads, run.id)),
         name=f"quill-run-{run.id}",
         daemon=True,
     ).start()

@@ -8,6 +8,15 @@
 工具签名不用加参数，谁要用谁自己取）。没激活时（比如单元测试直接调工具）记录静默跳过，
 **工具本身照常工作** —— 这层是附加的，不能让它成为工具的依赖。
 
+**改动一发生就落盘，不等这一轮跑完。** 原先是在整轮结束时写一次（`stream_round` 收尾
+那句 `save`）。问题在于：中途重启或断电时，**被改的文件已经在磁盘上了，而还原要的前像
+还没落盘** —— 结果是文件改了、还原不了，用户没有任何办法退回去。跑得越久（几十步的长
+任务）这个窗口越大，而长任务恰恰最需要能退。所以 `record_text` 每次记完就 `_flush` 一次，
+代价是 manifest 会被反复重写 —— 它是几百字节，而换来的是「还原」在任何时刻都是可用的。
+
+**落盘失败不打断这一轮。** 文件已经改了，这里丢的只是还原能力；让工具调用因此失败，
+等于用一个小毛病换一个大毛病。但也不是没声音 —— 磁盘满这类事得有条线索（见 `_flush`）。
+
 **边界，写在这里也写进界面。**
 - `run_command` 改的文件**记不到**：它走的是 shell，我们不解析命令行。还原时界面要说明
   这一点，否则用户会以为还原干净了。
@@ -24,6 +33,8 @@ from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
+
+from quill_agent.locking import atomic_write_text
 
 # 单个文件超过它就不存内容了。把 base64 和大文件存两份会把内存和磁盘一起吃满，
 # 而那种文件本来也不是「还原」救得回来的东西。
@@ -185,29 +196,23 @@ def record_text(target: Path, after: str | None, *, kind: str) -> None:
         )
     )
 
+    # 记完就落盘，不等这一轮跑完 —— 理由见模块开头。这里的一行是「改了就能退」
+    # 和「跑到一半重启就退不回去」的全部区别
+    _flush(recorder)
 
-def save(recorder: ChangeRecorder) -> dict | None:
-    """把这一轮的改动落盘，供之后还原。返回给消息用的汇总；没有改动时返回 None。
 
-    存的是**改动前**的内容：还原只需要它（现在的样子就在磁盘上，不用再存一份）。
+def _persist(recorder: ChangeRecorder, first: dict[str, FileChange]) -> None:
+    """把去重后的改动写进检查点目录（前像 blobs + manifest）。
+
+    **写盘一律走 `atomic_write_text`**：manifest 现在是跑一轮期间反复写的（见 `_flush`），
+    而它正是「还原」唯一的路标 —— 直接 write_text 中途被杀会留下一个截断的 JSON，
+    之后 restore 打不开它，这一轮改过的文件就再也退不回去了。
     """
-    changes = recorder.changes
-    if not changes:
-        return None
-    home, conversation_id, run_id = recorder.home, recorder.conversation_id, recorder.run_id
-
-    # 按文件去重，只留**最早**那一条：还原要的是「这一轮开始时它长什么样」。同一个文件
-    # 被改过几次的话，只有最早那条的 before 是对的 —— 用最后一条会把中间那次的结果当成原样。
-    first: dict[str, FileChange] = {}
-    for change in changes:
-        first.setdefault(change.path, change)
-
-    folder = home / "checkpoints" / conversation_id / run_id
+    folder = recorder.home / "checkpoints" / recorder.conversation_id / recorder.run_id
     blobs = folder / "files"
     blobs.mkdir(parents=True, exist_ok=True)
 
     manifest = []
-    summary = []
     for change in first.values():
         before_hash = None
         if change.before is not None and not change.binary:
@@ -215,7 +220,7 @@ def save(recorder: ChangeRecorder) -> dict | None:
             blob = blobs / before_hash
             # 按内容命名 → 同一个文件的多轮改动、多个文件内容相同，都只占一份
             if not blob.exists():
-                blob.write_text(change.before, encoding="utf-8")
+                atomic_write_text(blob, change.before)
 
         manifest.append(
             {
@@ -225,12 +230,54 @@ def save(recorder: ChangeRecorder) -> dict | None:
                 "binary": change.binary,
             }
         )
-        summary.append({"path": change.path, "kind": change.kind, "binary": change.binary})
 
-    (folder / "manifest.json").write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    return {"run_id": run_id, "files": summary}
+    atomic_write_text(folder / "manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+
+
+def _flush(recorder: ChangeRecorder) -> list[dict] | None:
+    """把**当前累积的**改动落盘，返回文件摘要；没有改动时返回 None。
+
+    幂等，可以反复调：`record_text` 每记一笔调一次（改动一发生就能还原），这一轮结束时
+    `save` 再调一次（把摘要带回给消息）。重复调用只是重算一遍，不会重复存内容。
+
+    写盘失败**不往外抛**：文件已经改了，这里丢的只是还原能力；让工具调用因此失败，等于拿
+    一个小毛病换一个大毛病。但也不是完全没声音 —— 磁盘满这类事得留条线索，否则用户会发现
+    「还原」悄悄不管用了，却不知道是从什么时候开始的。
+    """
+    changes = recorder.changes
+    if not changes:
+        return None
+
+    # 按文件去重，只留**最早**那一条：还原要的是「这一轮开始时它长什么样」。同一个文件
+    # 被改过几次的话，只有最早那条的 before 是对的 —— 用最后一条会把中间那次的结果当成原样。
+    first: dict[str, FileChange] = {}
+    for change in changes:
+        first.setdefault(change.path, change)
+
+    # 摘要先算出来：它只依赖内存里的改动。界面显示的「改了哪几个文件」是已经发生的事实，
+    # 不该因为快照没写成功就变成「没改过」
+    summary = [{"path": c.path, "kind": c.kind, "binary": c.binary} for c in first.values()]
+
+    try:
+        _persist(recorder, first)
+    except OSError as exc:
+        print(f"[changes] 快照落盘失败，这一轮将无法还原：{exc}", flush=True)
+
+    return summary
+
+
+def save(recorder: ChangeRecorder) -> dict | None:
+    """把这一轮的改动落盘，供之后还原。返回给消息用的汇总；没有改动时返回 None。
+
+    存的是**改动前**的内容：还原只需要它（现在的样子就在磁盘上，不用再存一份）。
+
+    真正的写入其实早就在 `record_text` 里逐次发生过了（见 `_flush`）；这里再调一次是为了
+    拿到摘要 —— 顺带兜住「最后一次改动之后又发生了什么」的收尾情况。
+    """
+    summary = _flush(recorder)
+    if summary is None:
+        return None
+    return {"run_id": recorder.run_id, "files": summary}
 
 
 def restore(
@@ -247,7 +294,12 @@ def restore(
     if not manifest_path.exists():
         return [], []
 
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        # 原子写之后不该出现，但更早版本留下的截断文件要扛得住：还原不了就如实说，
+        # 总比让「还原」这个按钮直接报错强
+        return [], []
     root = work_dir.resolve()
     restored: list[str] = []
     skipped: list[str] = []

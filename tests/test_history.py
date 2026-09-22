@@ -75,3 +75,47 @@ def test_delete_until_empty_then_load_is_empty(store: ConversationStore, conv: s
         store.delete_at(conv, 0)
 
     assert store.load(conv) == []
+
+
+def test_upsert_run_keeps_one_record_per_run(store: ConversationStore, conv: str) -> None:
+    """同一轮写多少次，盘上就只有一条。
+
+    助手消息是**边跑边写**的（`chat.stream_round` → `_AnswerSaver`），一轮里会写很多次。
+    用 append 的话每写一次多一条，重启后看起来像模型回答了十几次。
+    """
+    store.upsert_run(conv, "run-a", {"role": "assistant", "run_id": "run-a", "content": "半截"})
+    store.upsert_run(conv, "run-a", {"role": "assistant", "run_id": "run-a", "content": "完整了"})
+
+    assistants = [item for item in store.load(conv) if item["role"] == "assistant"]
+    assert len(assistants) == 1
+    assert assistants[0]["content"] == "完整了"
+
+
+def test_upsert_run_replaces_in_place(store: ConversationStore, conv: str) -> None:
+    """替换**不改变位置**：这一轮的消息该留在它原来的先后顺序里。
+
+    否则每刷一次盘，这条消息就跑到末尾 —— 而后面可能还有这一轮产生的摘要记录。
+    """
+    store.upsert_run(conv, "run-a", {"role": "assistant", "run_id": "run-a", "content": "半截"})
+    store.append(conv, {"role": "summary", "content": "压过的前文"})
+    store.upsert_run(conv, "run-a", {"role": "assistant", "run_id": "run-a", "content": "完整了"})
+
+    assert [item.get("role") for item in store.load(conv)[-2:]] == ["assistant", "summary"]
+    assert store.load(conv)[-2]["content"] == "完整了"
+
+
+def test_upsert_run_appends_distinct_runs(store: ConversationStore, conv: str) -> None:
+    """不同轮次各占一条 —— 别把上一轮的回答给覆盖掉。"""
+    store.upsert_run(conv, "run-a", {"role": "assistant", "run_id": "run-a", "content": "第一轮"})
+    store.upsert_run(conv, "run-b", {"role": "assistant", "run_id": "run-b", "content": "第二轮"})
+
+    assistants = [item["content"] for item in store.load(conv) if item["role"] == "assistant"]
+    assert assistants == ["第一轮", "第二轮"]
+
+
+def test_upsert_run_creates_the_file_when_missing(tmp_path: Path) -> None:
+    """会话文件不存在也要能写 —— 它不是「只在已有会话上用」的接口。"""
+    store = ConversationStore(tmp_path)
+    store.upsert_run("20260101-000000-abcd", "run-a", {"role": "assistant", "content": "x"})
+
+    assert store.load("20260101-000000-abcd")[0]["content"] == "x"

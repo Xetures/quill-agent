@@ -214,3 +214,97 @@ def test_forget_conversation_removes_checkpoints(
     changes.forget_conversation(home, "c1")
 
     assert not folder.exists()
+
+
+def test_restore_works_without_final_save(env: tuple[Path, Path, changes.ChangeRecorder]) -> None:
+    """**不必等这一轮跑完**：改完就能还原。
+
+    这是「快照前移」的回归测试。原先快照是整轮结束时才写一次，跑了一半重启（或被掐掉）
+    就是这个局面：文件已经改了，还原要的前像还在内存里 —— 文件改了，退不回去。
+    """
+    home, work, _ = env
+    target = work / "a.txt"
+    target.write_text("原样\n", encoding="utf-8")
+
+    changes.record_text(target, "改过\n", kind="write")
+    target.write_text("改过\n", encoding="utf-8")
+
+    # 刻意**不调** changes.save —— 模拟「这一轮没跑到收尾就断了」
+    restored, skipped = changes.restore(home, "c1", "run1", work)
+
+    assert restored == ["a.txt"]
+    assert skipped == []
+    assert target.read_text(encoding="utf-8") == "原样\n"
+
+
+def test_every_change_lands_on_disk_immediately(
+    env: tuple[Path, Path, changes.ChangeRecorder],
+) -> None:
+    """每记一笔就落盘一次，且是**追加** —— 后一笔不能把前一笔挤掉。"""
+    home, work, _ = env
+    folder = home / "checkpoints" / "c1" / "run1"
+    first, second = work / "a.txt", work / "b.txt"
+    first.write_text("a 原样\n", encoding="utf-8")
+    second.write_text("b 原样\n", encoding="utf-8")
+
+    changes.record_text(first, "a 改过\n", kind="write")
+    paths = [e["path"] for e in json.loads((folder / "manifest.json").read_text(encoding="utf-8"))]
+    assert paths == ["a.txt"]
+
+    changes.record_text(second, "b 改过\n", kind="write")
+    paths = [e["path"] for e in json.loads((folder / "manifest.json").read_text(encoding="utf-8"))]
+    assert paths == ["a.txt", "b.txt"]
+
+
+def test_manifest_is_rewritten_atomically(env: tuple[Path, Path, changes.ChangeRecorder]) -> None:
+    """不留临时文件残留，且 manifest 始终是**完整**的 JSON。
+
+    它现在是反复重写的，中途被杀的概率比「整轮只写一次」高得多。截断的 manifest 会让
+    这一轮的改动永远退不回去 —— 所以写它必须走临时文件 + 一步换过去。
+
+    这里比的是**目录里有什么**，而不是 glob 一个后缀：临时文件是隐藏的
+    （`.manifest.json.tmp1234`），`glob("*.tmp")` 根本匹配不到隐藏文件 —— 那样写会变成
+    一条永远通过的假测试。
+    """
+    home, work, _ = env
+    folder = home / "checkpoints" / "c1" / "run1"
+    for i in range(5):
+        target = work / f"f{i}.txt"
+        target.write_text(f"原样{i}\n", encoding="utf-8")
+        changes.record_text(target, f"改过{i}\n", kind="write")
+
+    assert sorted(item.name for item in folder.iterdir()) == ["files", "manifest.json"]
+    assert len(json.loads((folder / "manifest.json").read_text(encoding="utf-8"))) == 5
+
+
+def test_corrupt_manifest_does_not_raise(env: tuple[Path, Path, changes.ChangeRecorder]) -> None:
+    """更早的版本可能留下截断的 manifest：还原不了就返回空，别让按钮直接报错。"""
+    home, work, _ = env
+    folder = home / "checkpoints" / "c1" / "run1"
+    folder.mkdir(parents=True)
+    (folder / "manifest.json").write_text('[{"path": "a.txt", "kind"', encoding="utf-8")
+
+    assert changes.restore(home, "c1", "run1", work) == ([], [])
+
+
+def test_backup_failure_does_not_break_recording(
+    env: tuple[Path, Path, changes.ChangeRecorder], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """落盘失败不打断这一轮：文件已经改了，丢的只是还原能力。
+
+    但摘要照给 —— 「改了哪几个文件」是已经发生的事实，不该因为快照没写成功就变成没改过。
+    """
+    _, work, recorder = env
+    target = work / "a.txt"
+    target.write_text("原样\n", encoding="utf-8")
+
+    def boom(*_: object) -> None:
+        raise OSError("磁盘满了")
+
+    monkeypatch.setattr(changes, "_persist", boom)
+
+    changes.record_text(target, "改过\n", kind="write")  # 不该抛
+
+    summary = changes.save(recorder)
+    assert summary is not None
+    assert summary["files"] == [{"path": "a.txt", "kind": "write", "binary": False}]

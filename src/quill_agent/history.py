@@ -154,6 +154,35 @@ class ConversationStore:
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(message, ensure_ascii=False) + "\n")
 
+    def upsert_run(self, conv_id: str, run_id: str, message: dict) -> None:
+        """写入「某一轮的助手消息」：已有这一轮的记录就替换它，没有才追加。
+
+        **为什么 append 不够用。** 助手消息现在是**边跑边写**的（见 `chat.stream_round`）：
+        跑到一半进程被杀，盘上也得有「这一轮做到哪了」。而 JSONL 的 append 只会往末尾加
+        新行 —— 每写一次就多一条，重启后看起来像模型回答了十几次。
+
+        所以按 `run_id` 找位置：找到就替换、找不到才追加。写多少次，盘上都只有一条。
+
+        代价是重写整个文件（和 `delete_at` 同一套办法）。会话只有几十条消息，而调用方带
+        节流（见 `chat.ANSWER_FLUSH_SECONDS`），不值得为它换一套更复杂的结构。
+        """
+        self.ensure_dirs()
+        path = self._active / f"{conv_id}{SUFFIX}"
+        with file_lock(path):
+            messages = self._read(path)
+            # 从后往前找：这一轮的消息总在最后几条里
+            for index in range(len(messages) - 1, -1, -1):
+                if messages[index].get("run_id") == run_id:
+                    messages[index] = message
+                    break
+            else:
+                messages.append(message)
+
+            atomic_write_text(
+                path,
+                "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in messages),
+            )
+
     def delete_at(self, conv_id: str, index: int) -> bool:
         """删掉第 index 条消息（从 0 数）。索引越界或会话不存在时返回 False。
 
