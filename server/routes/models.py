@@ -18,6 +18,7 @@ from quill_agent.models import (
 )
 from quill_agent.prompts import PROMPT_CATEGORIES
 from server import stores
+from server.auth import REDACTED, redact
 from server.schemas import (
     CatalogLookupPayload,
     ModelPayload,
@@ -52,7 +53,13 @@ def list_models() -> dict:
         for config in configs
         for name in config.models
     ]
-    return {"configs": configs, "options": options}
+    safe_configs = []
+    for config in configs:
+        data = config.model_dump()
+        data["api_key"] = redact(config.api_key)
+        data["api_key_configured"] = bool(config.api_key)
+        safe_configs.append(data)
+    return {"configs": safe_configs, "options": options}
 
 
 @router.get("/protocols")
@@ -89,12 +96,21 @@ def add_model(payload: ModelPayload) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    return item.model_dump()
+    data = item.model_dump()
+    data["api_key"] = redact(item.api_key)
+    data["api_key_configured"] = bool(item.api_key)
+    return data
 
 
 @router.put("/models/{config_id}")
 def update_model(config_id: str, payload: ModelPayload) -> dict:
-    _validate_key(payload)
+    current = stores.models().get(config_id)
+    if current is None:
+        raise HTTPException(status_code=404, detail=f"没有这个模型连接：{config_id}")
+
+    effective_key = current.api_key if payload.api_key == REDACTED else payload.api_key
+    effective_payload = payload.model_copy(update={"api_key": effective_key})
+    _validate_key(effective_payload)
 
     try:
         item = ModelConfig(
@@ -102,7 +118,7 @@ def update_model(config_id: str, payload: ModelPayload) -> dict:
             name=payload.name,
             base_url=payload.base_url,
             protocol=payload.protocol,
-            api_key=payload.api_key,
+            api_key=effective_key,
             models=payload.models,
             context_windows=payload.context_windows,
         )
@@ -110,7 +126,10 @@ def update_model(config_id: str, payload: ModelPayload) -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     stores.models().update(item)
-    return item.model_dump()
+    data = item.model_dump()
+    data["api_key"] = redact(item.api_key)
+    data["api_key_configured"] = bool(item.api_key)
+    return data
 
 
 @router.delete("/models/{config_id}")

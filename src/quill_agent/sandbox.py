@@ -277,12 +277,17 @@ def build_argv(command: str, policy: SandboxPolicy) -> list[str]:
 
     返回的列表一律配 `shell=False` 使用 —— 命令字符串已经明明白白地交给
     `/bin/sh -c` 了，不必再让 subprocess 去猜一次 shell。
-
-    Raises:
-        SandboxUnavailable: 策略要求沙箱，但当前系统没有可用后端。
     """
+    return build_process_argv([*_shell_for_platform(), command], policy)
+
+
+def build_process_argv(command: list[str], policy: SandboxPolicy) -> list[str]:
+    """把一个直接执行的 argv 包进沙箱；`command` 不经过 shell。"""
+    if not command:
+        raise ValueError("command 不能为空")
+
     if not policy.active:
-        return [*_shell_for_platform(), command]
+        return list(command)
 
     if sys.platform.startswith("linux"):
         return _bwrap_argv(command, policy)
@@ -307,7 +312,7 @@ def _no_backend_reason() -> str:
     return "当前系统没有已知的沙箱后端。"
 
 
-def _bwrap_argv(command: str, policy: SandboxPolicy) -> list[str]:
+def _bwrap_argv(command: list[str], policy: SandboxPolicy) -> list[str]:
     """用 bubblewrap 把命令关进命名空间里。
 
     Raises:
@@ -354,7 +359,7 @@ def _bwrap_argv(command: str, policy: SandboxPolicy) -> list[str]:
     # 独立的 PID 命名空间：命令看不见（也就杀不掉）外面别的进程
     argv += ["--unshare-pid"]
 
-    argv += ["--chdir", work_dir, "--", *_shell_for_platform(), command]
+    argv += ["--chdir", work_dir, "--", *command]
     return argv
 
 
@@ -392,7 +397,7 @@ def _bwrap_probe() -> tuple[bool, str]:
     return True, ""
 
 
-def _seatbelt_argv(command: str, policy: SandboxPolicy) -> list[str]:
+def _seatbelt_argv(command: list[str], policy: SandboxPolicy) -> list[str]:
     """用 macOS 的 Seatbelt（sandbox-exec）把命令关进策略里。
 
     Raises:
@@ -409,8 +414,7 @@ def _seatbelt_argv(command: str, policy: SandboxPolicy) -> list[str]:
         "-p",
         _seatbelt_profile(policy),
         "--",
-        *_shell_for_platform(),
-        command,
+        *command,
     ]
 
 
@@ -526,12 +530,16 @@ def available() -> bool:
     return False
 
 
-def startup_note() -> str:
+def startup_note(work_dir: str | Path | None = None) -> str:
     """进程启动时的一句自检说明，供界面 / 日志展示。
 
     它存在的理由是：一个「以为开了沙箱、其实没有」的配置，比明确关着更危险。
+
+    `work_dir` 是**实际生效**的工作目录，调用方应当传 `settings.work_dir`。
+    不传才退回 cwd：那个值未必等于生效值（启动目录不可用时它会被回退，见
+    `config._default_work_dir`），拿它描述出来的边界与真正生效的是两回事。
     """
-    policy = policy_for(Path.cwd())
+    policy = policy_for(work_dir if work_dir is not None else Path.cwd())
 
     if not policy.active:
         return "沙箱未启用（SANDBOX_MODE=off），执行类命令不受工作目录限制。"

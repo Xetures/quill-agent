@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 
 import pytest
 
@@ -40,7 +42,7 @@ def in_run():
         tools=[
             "read_file",
             "write_file",
-            "spawn_agent",
+            "spawn_agents",
             "ask_user",
             "submit_plan",
             "todo_write",
@@ -57,6 +59,24 @@ def in_run():
         yield environment
     finally:
         agent._environment.reset(token)
+
+
+@pytest.fixture
+def channel():
+    """一条真实的交互通道 + 它的事件循环。
+
+    通道本来就是为**跨线程投递**而设计的（`_pump` 就跑在另一条线程里），所以这里也让
+    它跑在后台循环上 —— 拿个假的替代品反而验不到「worker 线程往队列里塞」那条路。
+    """
+    event_loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=event_loop.run_forever, daemon=True)
+    thread.start()
+    try:
+        yield interaction.Interaction(event_loop, run_id="r"), event_loop
+    finally:
+        event_loop.call_soon_threadsafe(event_loop.stop)
+        thread.join(timeout=2)
+        event_loop.close()
 
 
 # ---------------------------------------------------------------------------
@@ -78,11 +98,13 @@ def test_subagent_drops_the_tools_that_talk_to_the_user(
     fake = FakeRun(["结论"])
     monkeypatch.setattr(agent, "run_agent_stream", fake)
 
-    subagent.spawn_agent("查一件事")
+    subagent.spawn_agents(["查一件事"])
 
     nested = fake.calls[0]["context"]
     assert "read_file" in nested.tools
-    assert "spawn_agent" not in nested.tools
+    # 并行版同样要排掉。深度护栏拦得住调用，但留着它白占 schema，
+    # 还可能让子代理白试一轮才发现调不通
+    assert "spawn_agents" not in nested.tools
     assert "ask_user" not in nested.tools
     assert "submit_plan" not in nested.tools
     assert "todo_write" not in nested.tools
@@ -97,7 +119,7 @@ def test_subagent_inherits_everything_else(monkeypatch: pytest.MonkeyPatch, in_r
     fake = FakeRun(["结论"])
     monkeypatch.setattr(agent, "run_agent_stream", fake)
 
-    subagent.spawn_agent("查一件事")
+    subagent.spawn_agents(["查一件事"])
 
     nested = fake.calls[0]["context"]
     assert nested.prompts == in_run.context.prompts
@@ -117,7 +139,7 @@ def test_subagent_starts_from_an_empty_history(
     fake = FakeRun(["结论"])
     monkeypatch.setattr(agent, "run_agent_stream", fake)
 
-    subagent.spawn_agent("查一件事")
+    subagent.spawn_agents(["查一件事"])
 
     call = fake.calls[0]
     assert call["history"] == []
@@ -137,7 +159,7 @@ def test_the_task_carries_the_brief_and_the_text(
     fake = FakeRun(["结论"])
     monkeypatch.setattr(agent, "run_agent_stream", fake)
 
-    subagent.spawn_agent("查一件事")
+    subagent.spawn_agents(["查一件事"])
 
     prompt = fake.calls[0]["prompt"]
     assert "子代理" in prompt
@@ -153,7 +175,7 @@ def test_result_carries_the_conclusion(monkeypatch: pytest.MonkeyPatch, in_run) 
     """文本增量是按片段到的，要拼起来再交回去。"""
     monkeypatch.setattr(agent, "run_agent_stream", FakeRun(["它是", "这么回事。"]))
 
-    result = subagent.spawn_agent("查一件事")
+    result = subagent.spawn_agents(["查一件事"])
 
     assert "它是这么回事。" in result
 
@@ -171,7 +193,7 @@ def test_a_silent_subagent_is_reported_as_such(
         FakeRun([agent.ToolStep(name="read_file", arguments="{}", result="x")]),
     )
 
-    assert "没有给出结论" in subagent.spawn_agent("查一件事")
+    assert "没有给出结论" in subagent.spawn_agents(["查一件事"])
 
 
 def test_usage_is_merged_back_into_the_parent(
@@ -187,7 +209,7 @@ def test_usage_is_merged_back_into_the_parent(
 
     monkeypatch.setattr(agent, "run_agent_stream", fake)
 
-    subagent.spawn_agent("查一件事")
+    subagent.spawn_agents(["查一件事"])
 
     assert in_run.stats.total_tokens == 120
 
@@ -222,6 +244,19 @@ def test_merge_leaves_context_tokens_alone() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _capture_publishes(seen: list[dict]):
+    """替掉 `_publish`，把播出去的**载荷**收进 `seen`。
+
+    刻意丢掉第一个参数（子代理标签）：它是并行时才引入的，而这些用例关心的是
+    「播了什么」，单个子代理的身份在这里没有意义。
+    """
+
+    def record(_label: str, payload: dict) -> None:
+        seen.append(payload)
+
+    return record
+
+
 def test_only_actions_are_broadcast_and_the_text_is_not(
     monkeypatch: pytest.MonkeyPatch, in_run
 ) -> None:
@@ -231,7 +266,7 @@ def test_only_actions_are_broadcast_and_the_text_is_not(
     成品（结论）最后随工具结果一起到，不差这一点时间。
     """
     seen: list[dict] = []
-    monkeypatch.setattr(subagent, "_publish", seen.append)
+    monkeypatch.setattr(subagent, "_publish", _capture_publishes(seen))
     monkeypatch.setattr(
         agent,
         "run_agent_stream",
@@ -245,7 +280,7 @@ def test_only_actions_are_broadcast_and_the_text_is_not(
         ),
     )
 
-    subagent.spawn_agent("查一件事")
+    subagent.spawn_agents(["查一件事"])
 
     assert [item["type"] for item in seen] == ["tool", "notice"]
 
@@ -260,14 +295,14 @@ def test_the_start_of_a_tool_is_what_gets_broadcast(
     （见 `agent.ToolStart` 的说明）。
     """
     seen: list[dict] = []
-    monkeypatch.setattr(subagent, "_publish", seen.append)
+    monkeypatch.setattr(subagent, "_publish", _capture_publishes(seen))
     monkeypatch.setattr(
         agent,
         "run_agent_stream",
         FakeRun([agent.ToolStart(name="run_command", arguments='{"command": "sleep 60"}')]),
     )
 
-    subagent.spawn_agent("查一件事")
+    subagent.spawn_agents(["查一件事"])
 
     assert seen == [
         {"type": "tool", "name": "run_command", "arguments": '{"command": "sleep 60"}'}
@@ -279,7 +314,7 @@ def test_a_quiet_stretch_is_broken_up_by_a_heartbeat(
 ) -> None:
     """长时间只有正文 / 思维链时，替子代理播一句「还在工作」。
 
-    真事（2026-09-21）：一次 `spawn_agent` 跑了整 360 秒，期间一个事件都没往外播，
+    真事（2026-09-21）：一次 `spawn_agents` 跑了整 360 秒，期间一个事件都没往外播，
     正好撞上前端那条 360 秒的静默保护 —— 整条流被当成死连接掐掉，这一轮白跑。
     那道保护的用意没错（防「对端睡了」，见 `web/src/api/chat.ts` 的 `IDLE_TIMEOUT_MS`），
     错的是这里给它的信息太少。
@@ -287,13 +322,13 @@ def test_a_quiet_stretch_is_broken_up_by_a_heartbeat(
     阈值压到 0 来验「每个事件都补一句」；真实值是 30 秒（见 `_HEARTBEAT_SECONDS`）。
     """
     seen: list[dict] = []
-    monkeypatch.setattr(subagent, "_publish", seen.append)
+    monkeypatch.setattr(subagent, "_publish", _capture_publishes(seen))
     monkeypatch.setattr(subagent, "_HEARTBEAT_SECONDS", 0.0)
     monkeypatch.setattr(
         agent, "run_agent_stream", FakeRun(["很长的", "一段正文", "分好几片"])
     )
 
-    result = subagent.spawn_agent("查一件事")
+    result = subagent.spawn_agents(["查一件事"])
 
     assert [item["type"] for item in seen] == ["notice", "notice", "notice"]
     assert all("正在工作" in item["text"] for item in seen)
@@ -303,7 +338,7 @@ def test_a_quiet_stretch_is_broken_up_by_a_heartbeat(
 
 def test_publish_is_a_no_op_without_a_channel() -> None:
     """没有通道时静默丢弃：子代理照样跑，只是外面看不到过程。"""
-    subagent._publish({"type": "tool", "name": "read_file", "arguments": "{}"})
+    subagent._publish("标签", {"type": "tool", "name": "read_file", "arguments": "{}"})
 
 
 # ---------------------------------------------------------------------------
@@ -318,7 +353,7 @@ def test_a_subagent_cannot_spawn_another(monkeypatch: pytest.MonkeyPatch, in_run
 
     token = subagent._depth.set(1)
     try:
-        result = subagent.spawn_agent("再派一个")
+        result = subagent.spawn_agents(["再派一个"])
     finally:
         subagent._depth.reset(token)
 
@@ -327,7 +362,7 @@ def test_a_subagent_cannot_spawn_another(monkeypatch: pytest.MonkeyPatch, in_run
 
 
 def test_an_empty_task_is_refused() -> None:
-    assert "空的" in subagent.spawn_agent("   ")
+    assert "空的" in subagent.spawn_agents(["   "])
 
 
 def test_outside_a_run_it_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -338,7 +373,7 @@ def test_outside_a_run_it_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(agent, "run_agent_stream", FakeRun([]))
 
     assert agent.current_environment() is None
-    assert "不在一次 Agent 运行里" in subagent.spawn_agent("查一件事")
+    assert "不在一次 Agent 运行里" in subagent.spawn_agents(["查一件事"])
 
 
 def test_the_depth_guard_is_per_thread_not_global() -> None:
@@ -379,15 +414,282 @@ def test_progress_reaches_the_channel() -> None:
         channel = interaction.Interaction(event_loop, run_id="r")
         token = interaction.activate(channel)
         try:
-            subagent._publish({"type": "tool", "name": "read_file", "arguments": "{}"})
+            subagent._publish("标签", {"type": "tool", "name": "read_file", "arguments": "{}"})
         finally:
             interaction.deactivate(token)
 
         assert _next(event_loop, channel) == (
             "subagent",
-            {"type": "tool", "name": "read_file", "arguments": "{}"},
+            # `agent` 是并行引入的：几个子代理同时播事件，看板要靠它分清谁在动
+            {"agent": "标签", "type": "tool", "name": "read_file", "arguments": "{}"},
         )
     finally:
         event_loop.call_soon_threadsafe(event_loop.stop)
         thread.join(timeout=2)
         event_loop.close()
+
+
+# ---------------------------------------------------------------------------
+# 并行派多个
+# ---------------------------------------------------------------------------
+
+
+class SlowRun:
+    """每次调用停一会儿，并吐一条**带任务名**的结论。
+
+    停这一下是专门给「测并行」用的：串行地调三次同样会让三次都被调到，所以
+    「调用了几次」说明不了任何事 —— 只有总耗时能。
+    """
+
+    def __init__(self, delay: float = 0.0, tokens: int = 0) -> None:
+        self.delay = delay
+        self.tokens = tokens
+        self.prompts: list[str] = []
+        # 工作线程会并发进来，列表的写入要自己保护（`append` 本身是原子的，
+        # 但这里以后可能不止这一句）
+        self._lock = threading.Lock()
+
+    def __call__(self, **kwargs):
+        prompt = kwargs["prompt"]
+        with self._lock:
+            self.prompts.append(prompt)
+        if self.delay:
+            time.sleep(self.delay)
+        if self.tokens:
+            kwargs["stats"].total_tokens += self.tokens
+        yield f"结论-{prompt.rsplit('任务：', 1)[-1]}"
+
+
+def test_tasks_really_run_in_parallel(monkeypatch: pytest.MonkeyPatch, in_run) -> None:
+    """三件各 0.3 秒的活并行跑，总耗时接近 0.3 秒，而不是 0.9 秒。
+
+    这是这个工具存在的**全部理由**。只验「三次都被调到了」是看不出并行的 ——
+    串行地调三次同样做得到。
+    """
+    monkeypatch.setattr(agent, "run_agent_stream", SlowRun(delay=0.3))
+
+    started = time.monotonic()
+    result = subagent.spawn_agents(["甲", "乙", "丙"])
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.6  # 串行要 0.9 秒左右
+    for task in ("甲", "乙", "丙"):
+        assert f"结论-{task}" in result
+
+
+def test_every_worker_gets_the_run_context(monkeypatch: pytest.MonkeyPatch, in_run) -> None:
+    """每个工作线程都要重新绑一遍运行上下文。
+
+    这是并行最容易漏的地方：ContextVar **不跨线程继承**（见模块开头那张表）。
+    漏了运行环境，子代理会直接回一句「不在一次运行里」—— 不是「效果差一点」。
+    """
+    seen: list[bool] = []
+
+    def probing(**_: object):
+        seen.append(agent.current_environment() is not None)
+        yield "结论"
+
+    monkeypatch.setattr(agent, "run_agent_stream", probing)
+
+    subagent.spawn_agents(["甲", "乙", "丙"])
+
+    assert seen == [True, True, True]
+
+
+def test_worker_events_carry_the_subagent_label(
+    monkeypatch: pytest.MonkeyPatch, in_run, channel
+) -> None:
+    """并行时看板上得能分清是谁在动 —— 事件要带子代理的标签。"""
+    chan, loop = channel
+    monkeypatch.setattr(
+        agent,
+        "run_agent_stream",
+        FakeRun([agent.ToolStart(name="read_file", arguments="{}")]),
+    )
+
+    token = interaction.activate(chan)
+    try:
+        subagent.spawn_agents(["甲", "乙"])
+        labels = {_next(loop, chan)[1]["agent"] for _ in range(2)}
+    finally:
+        interaction.deactivate(token)
+
+    assert labels == {"甲", "乙"}
+
+
+def test_children_receive_the_parents_shared_token_budget(
+    monkeypatch: pytest.MonkeyPatch, in_run
+) -> None:
+    """所有并行子代理必须拿到同一份父级预算对象。"""
+    seen: list[agent.TokenBudget] = []
+    lock = threading.Lock()
+
+    def fake(**kwargs):
+        with lock:
+            seen.append(kwargs["token_budget"])
+        yield "结论"
+
+    monkeypatch.setattr(agent, "run_agent_stream", fake)
+
+    subagent.spawn_agents(["甲", "乙", "丙"])
+
+    assert len(seen) == 3
+    assert all(item is in_run.token_budget for item in seen)
+
+
+def test_each_childs_usage_is_added_up(monkeypatch: pytest.MonkeyPatch, in_run) -> None:
+    """每个子代理花的 token 都要记到父级账上 —— 并行时更不能漏。
+
+    漏掉的那部分是**真花了钱**的，只是用量页上看不见。合并由父级统一做：
+    各线程自己 merge 进父级是读-改-写，并发下会丢。
+    """
+    monkeypatch.setattr(agent, "run_agent_stream", SlowRun(tokens=100))
+
+    subagent.spawn_agents(["甲", "乙", "丙"])
+
+    assert in_run.stats.total_tokens == 300
+
+
+def test_cancelling_parallel_work_does_not_wait_for_queued_tasks(
+    monkeypatch: pytest.MonkeyPatch, in_run, channel
+) -> None:
+    """取消后立刻收场，线程池中排队的任务不能再启动。"""
+    started = threading.Event()
+    release = threading.Event()
+    prompts: list[str] = []
+    lock = threading.Lock()
+
+    def blocking_run(**kwargs):
+        with lock:
+            prompts.append(kwargs["prompt"])
+        started.set()
+        release.wait(timeout=2)
+        yield "结论"
+
+    monkeypatch.setattr(agent, "run_agent_stream", blocking_run)
+    monkeypatch.setattr(subagent, "MAX_PARALLEL_AGENTS", 1)
+    chan, _ = channel
+    token = interaction.activate(chan)
+    try:
+        canceller = threading.Thread(target=lambda: (started.wait(), chan.cancel()), daemon=True)
+        canceller.start()
+        started_at = time.monotonic()
+        result = subagent.spawn_agents(["甲", "乙"])
+        elapsed = time.monotonic() - started_at
+        canceller.join(timeout=1)
+
+        assert elapsed < 1
+        assert len(prompts) == 1
+        assert "未开始的任务已取消" in result
+    finally:
+        release.set()
+        interaction.deactivate(token)
+
+
+def test_running_child_stops_at_the_next_stream_item(
+    monkeypatch: pytest.MonkeyPatch, in_run, channel
+) -> None:
+    """已经启动的子代理在模型流的下一个检查点看到取消，不再消费后续项。"""
+    waiting = threading.Event()
+    release = threading.Event()
+    consumed: list[str] = []
+
+    def streaming_run(**_):
+        yield "第一段"
+        waiting.set()
+        release.wait(timeout=2)
+        consumed.append("第二段")
+        yield "第二段"
+        consumed.append("第三段")
+        yield "第三段"
+
+    monkeypatch.setattr(agent, "run_agent_stream", streaming_run)
+    chan, _ = channel
+    token = interaction.activate(chan)
+    try:
+        def cancel_then_release() -> None:
+            waiting.wait()
+            chan.cancel()
+            release.set()
+
+        canceller = threading.Thread(target=cancel_then_release, daemon=True)
+        canceller.start()
+        result = subagent.spawn_agents(["甲"])
+        canceller.join(timeout=1)
+
+        assert consumed == ["第二段"]
+        assert "已取消并行子代理" in result
+    finally:
+        release.set()
+        interaction.deactivate(token)
+
+
+def test_too_many_tasks_are_refused(monkeypatch: pytest.MonkeyPatch, in_run) -> None:
+    """一次派太多直接拒绝，而不是照单全收：每个子代理都是一次完整的模型对话。"""
+    run = SlowRun()
+    monkeypatch.setattr(agent, "run_agent_stream", run)
+
+    result = subagent.spawn_agents([f"任务{i}" for i in range(subagent.MAX_SUBAGENT_TASKS + 1)])
+
+    assert "最多派" in result
+    assert run.prompts == []  # 一个都不该跑起来
+
+
+def test_extra_tasks_queue_instead_of_being_dropped(
+    monkeypatch: pytest.MonkeyPatch, in_run
+) -> None:
+    """超过并行上限的在池子里排队 —— 排队而不是丢掉：模型可能只是没估准数量。"""
+    run = SlowRun()
+    monkeypatch.setattr(agent, "run_agent_stream", run)
+    count = subagent.MAX_PARALLEL_AGENTS + 2
+
+    result = subagent.spawn_agents([f"活{i}" for i in range(count)])
+
+    assert len(run.prompts) == count
+    for index in range(count):
+        assert f"结论-活{index}" in result
+
+
+def test_one_child_crashing_does_not_take_down_the_batch(
+    monkeypatch: pytest.MonkeyPatch, in_run
+) -> None:
+    """一个子代理崩了不该拖垮整批：其余的把结论带回来，崩的那个如实说。"""
+
+    def flaky(**kwargs):
+        if "坏" in kwargs["prompt"]:
+            raise RuntimeError("炸了")
+        yield "好结论"
+
+    monkeypatch.setattr(agent, "run_agent_stream", flaky)
+
+    result = subagent.spawn_agents(["好的", "坏的"])
+
+    assert "好结论" in result
+    assert "出错了" in result
+
+
+def test_the_depth_guard_survives_the_thread_boundary(
+    monkeypatch: pytest.MonkeyPatch, in_run
+) -> None:
+    """「只允许一层」在并行里照样管用。
+
+    深度同样存在 ContextVar 上，所以必须在**父线程**里取好再带进 worker ——
+    worker 里读到的是默认值 0，看起来就像「父级从没派过子代理」，护栏也就失效了。
+    """
+    monkeypatch.setattr(agent, "run_agent_stream", FakeRun([]))
+
+    token = subagent._depth.set(1)
+    try:
+        result = subagent.spawn_agents(["甲", "乙"])
+    finally:
+        subagent._depth.reset(token)
+
+    assert "不能再派子代理" in result
+
+
+def test_a_blank_task_list_is_refused(monkeypatch: pytest.MonkeyPatch, in_run) -> None:
+    """空列表、以及只有空白的项，都要拒掉 —— 返回空会被当成「子代理没说话」。"""
+    monkeypatch.setattr(agent, "run_agent_stream", FakeRun([]))
+
+    assert "空的" in subagent.spawn_agents([])
+    assert "空的" in subagent.spawn_agents(["   ", ""])

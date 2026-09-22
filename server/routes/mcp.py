@@ -17,6 +17,7 @@ from quill_agent.mcp import McpConnection
 from quill_agent.models import McpServer
 from quill_agent.tools.base import registry
 from server import stores
+from server.auth import REDACTED, redact_mapping
 from server.schemas import McpServerPayload
 
 router = APIRouter(tags=["mcp"])
@@ -57,7 +58,9 @@ def list_servers() -> dict:
         live = status.get(config.id)
         servers.append(
             {
-                **config.model_dump(),
+                **config.model_dump(exclude={"env"}),
+                "env": redact_mapping(config.env),
+                "env_configured": bool(config.env),
                 # 没连上的（停用、或管理器还没启动）也给一份空状态，前端不用判空
                 "connected": bool(live and live["connected"]),
                 "error": live["error"] if live else "",
@@ -84,7 +87,10 @@ def add_server(payload: McpServerPayload) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    return {"server": item.model_dump(), **_reload()}
+    data = item.model_dump(exclude={"env"})
+    data["env"] = redact_mapping(item.env)
+    data["env_configured"] = bool(item.env)
+    return {"server": data, **_reload()}
 
 
 @router.put("/mcp/servers/{server_id}")
@@ -94,13 +100,20 @@ def update_server(server_id: str, payload: McpServerPayload) -> dict:
     if current is None:
         raise HTTPException(status_code=404, detail=f"没有这个 MCP 服务器：{server_id}")
 
-    updated = _to_model(payload, server_id)
+    effective_env = {
+        key: current.env.get(key, value) if value == REDACTED else value
+        for key, value in payload.env.items()
+    }
+    updated = _to_model(payload, server_id).model_copy(update={"env": effective_env})
     try:
         stores.mcp_servers().update(updated)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    return {"server": updated.model_dump(), **_reload()}
+    data = updated.model_dump(exclude={"env"})
+    data["env"] = redact_mapping(updated.env)
+    data["env_configured"] = bool(updated.env)
+    return {"server": data, **_reload()}
 
 
 @router.delete("/mcp/servers/{server_id}")

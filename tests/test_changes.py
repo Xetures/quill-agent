@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -98,6 +100,64 @@ def test_diff_is_truncated(env: tuple[Path, Path, changes.ChangeRecorder]) -> No
 def test_save_returns_none_without_changes(env: tuple[Path, Path, changes.ChangeRecorder]) -> None:
     _, _, recorder = env
     assert changes.save(recorder) is None
+
+
+def test_parallel_records_keep_manifest_and_snapshots_consistent(
+    env: tuple[Path, Path, changes.ChangeRecorder], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """并行子代理共享记录器时，记录事务必须串行，manifest 不能丢文件。"""
+    home, work, recorder = env
+    count = 8
+    for index in range(count):
+        (work / f"file-{index}.txt").write_text(f"before-{index}\n", encoding="utf-8")
+
+    original_persist = changes._persist
+    active = 0
+    max_active = 0
+    state_lock = threading.Lock()
+
+    def slow_persist(rec, first):
+        nonlocal active, max_active
+        with state_lock:
+            active += 1
+            max_active = max(max_active, active)
+        try:
+            # 放大原实现里多个线程同时重写 manifest 的窗口。
+            time.sleep(0.01)
+            original_persist(rec, first)
+        finally:
+            with state_lock:
+                active -= 1
+
+    monkeypatch.setattr(changes, "_persist", slow_persist)
+    barrier = threading.Barrier(count)
+
+    def record(index: int) -> None:
+        token = changes.activate(recorder)
+        try:
+            barrier.wait(timeout=2)
+            changes.record_text(work / f"file-{index}.txt", f"after-{index}\n", kind="write")
+        finally:
+            changes.deactivate(token)
+
+    threads = [threading.Thread(target=record, args=(index,)) for index in range(count)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=3)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert max_active == 1
+    assert len(recorder.changes) == count
+
+    folder = home / "checkpoints" / "c1" / "run1"
+    manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
+    assert {entry["path"] for entry in manifest} == {
+        f"file-{index}.txt" for index in range(count)
+    }
+    for entry in manifest:
+        blob = folder / "files" / entry["before_hash"]
+        assert blob.exists()
 
 
 def test_restore_roundtrip(env: tuple[Path, Path, changes.ChangeRecorder]) -> None:

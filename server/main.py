@@ -16,14 +16,17 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import RedirectResponse
 
 from quill_agent import __version__, bootstrap, mcp, sandbox
 from quill_agent.config import get_settings
 from quill_agent.tools.base import registry
 from server import stores
+from server.auth import TOKEN_COOKIE, TOKEN_QUERY, AuthConfig, supplied_token, unauthorized
 from server.routes import chat, conversations, memory, models, search, tools, usage
 from server.routes import mcp as mcp_routes
 
@@ -33,6 +36,39 @@ from server.routes import mcp as mcp_routes
 from server.routes import sandbox as sandbox_routes
 
 logger = logging.getLogger(__name__)
+
+
+def _auth_config() -> AuthConfig:
+    import os
+
+    return AuthConfig(
+        host=os.environ.get("QUILL_AUTH_HOST", "127.0.0.1"),
+        token=os.environ.get("QUILL_ACCESS_TOKEN", ""),
+    )
+
+
+class AuthMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        config = _auth_config()
+        if request.url.path.startswith("/api/") or request.url.path == "/api":
+            if not config.valid(supplied_token(request)):
+                return unauthorized()
+            return await call_next(request)
+
+        response = await call_next(request)
+        token = request.query_params.get(TOKEN_QUERY)
+        if token and config.valid(token):
+            response = RedirectResponse(
+                url=str(request.url.remove_query_params(TOKEN_QUERY)), status_code=303
+            )
+            response.set_cookie(
+                TOKEN_COOKIE,
+                token,
+                httponly=True,
+                samesite="lax",
+                secure=request.url.scheme == "https",
+            )
+        return response
 
 # 前端构建产物（`make build` 生成）。存在就由后端一起托管 —— 发布形态下只需要
 # 一个进程：clone 下来跑 `make api`，浏览器打开 8000 就能用，不必装 Node。
@@ -95,8 +131,15 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         - **沙箱**：「配了沙箱、但这台机器上没有后端」是个危险状态 —— 命令会被
           拒绝，而用户可能以为是命令本身有问题。
     """
-    logger.info(bootstrap.startup_note(get_settings()))
-    logger.info(sandbox.startup_note())
+    # 用 print 而不是 logger：这个进程里 root logger 是 WARNING 级别，`logger.info`
+    # 会被直接挡掉 —— 而「数据根在哪、这次补了什么、迁了什么」是排障第一步要看的东西。
+    # 启动自检必须**跑在这里**（直接 `uvicorn server.main:app` 时没有别的入口来做
+    # 播种和迁移），但输出只有这一处，见 cli.serve 里对应删掉的那次
+    settings = get_settings()
+    print(bootstrap.startup_note(settings), flush=True)
+    # 传生效的工作目录而不是让它自己读 cwd：启动目录可能被回退过（见
+    # `config._default_work_dir`），那时按 cwd 报出来的沙箱边界是错的
+    print(sandbox.startup_note(settings.work_dir), flush=True)
     _prune_dangling_prompt_refs()
     _start_mcp_servers()
     yield
@@ -111,6 +154,8 @@ app = FastAPI(
     openapi_url="/api/openapi.json",
     lifespan=lifespan,
 )
+
+app.add_middleware(AuthMiddleware)
 
 # 开发时前端跑在 Vite 的 5173 端口，与后端不同源，必须显式放行；
 # 生产环境下前端会被构建成静态文件由同一个服务托管，那时是同源，走不到这里

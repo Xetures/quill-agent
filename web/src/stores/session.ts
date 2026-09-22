@@ -148,7 +148,7 @@ export const session = reactive({
    * 子代理的实时动静（它调了哪些工具）。
    *
    * 子代理的中间过程**不进这条消息**（那正是它存在的意义），所以单独播一份出来；
-   * 它跑完（`spawn_agent` 那一步到达）就清空 —— 成品在工具步骤里，看板没必要留着。
+   * 它跑完（`spawn_agents` 那一步到达）就清空 —— 成品在工具步骤里，看板没必要留着。
    */
   subagentEvents: [] as SubagentEvent[],
 
@@ -312,6 +312,24 @@ function syncRunState(run: ActiveRun): void {
   session.liveTodos = run.todos
   session.subagentEvents = run.subagentEvents
   session.pendingQuestion = run.question
+}
+
+/**
+ * 把一段流式增量并进 `parts`：接在**同类型**的最后一段后面，类型变了就另起一段。
+ *
+ * 这份顺序是界面穿插显示的唯一依据 —— `content` 和 `steps` 是分开存的，相对顺序在后
+ * 端落盘时就丢了（见 `MessagePart`）。这里和后端 `stream_round` 里的封段规则一致：
+ * 连续的正文分片合成一段，一次工具调用自成一格。
+ */
+function appendPart(reply: Message, type: 'text' | 'reasoning', text: string): void {
+  const parts = reply.parts ?? (reply.parts = [])
+  const last = parts[parts.length - 1]
+
+  if (last && last.type === type) {
+    last.content += text
+    return
+  }
+  parts.push({ type, content: text })
 }
 
 /**
@@ -549,7 +567,14 @@ export async function sendMessage(options: {
 
   // 一条「正在生成」的占位消息，流式内容直接往里填。
   // 改一个字段只重渲染这一条，不会整页重跑
-  const reply = reactive<Message>({ role: 'assistant', content: '', steps: [], notices: [] })
+  // `parts` 从一开始就是空数组：正文/思考/工具按发生顺序往里加（见 appendPart）
+  const reply = reactive<Message>({
+    role: 'assistant',
+    content: '',
+    steps: [],
+    notices: [],
+    parts: [],
+  })
   session.messages.push(reply)
 
   // 这一轮的全部状态。挂在 `runs` 里而不是散在 session 上：用户切走时它要跟着这一轮
@@ -601,9 +626,11 @@ export async function sendMessage(options: {
         // 注意这里**不看当前是哪个会话** —— 用户切走了也要照常累积，
         // 切回来时才能看到完整的这一轮（见 attachRun）
         reply.content += event.text
+        appendPart(reply, 'text', event.text)
         setPhase(run, { kind: 'generating' })
       } else if (event.type === 'reasoning') {
         reply.reasoning = (reply.reasoning ?? '') + event.text
+        appendPart(reply, 'reasoning', event.text)
         setPhase(run, { kind: 'thinking' })
       } else if (event.type === 'round') {
         // 第几圈了。它是**我们自己数的** —— 不像 `usage` 要等服务端返回用量
@@ -619,10 +646,13 @@ export async function sendMessage(options: {
         setPhase(run, { kind: 'tool', name: event.name })
       } else if (event.type === 'tool') {
         reply.steps?.push(event.step)
+        // 顺序：这一次调用自成一格，插在当前序列的末尾（见 appendPart 的说明）
+        const parts = reply.parts ?? (reply.parts = [])
+        parts.push({ type: 'tool', step: event.step })
         // 工具跑完了：下一步是「把结果发回模型、等它接着想」—— 阶段回到等待
         setPhase(run, { kind: 'waiting' })
         // 子代理那一步到了 = 它跑完了，实时看板收掉（成品已经在这个步骤里）
-        if (event.step.name === 'spawn_agent') {
+        if (event.step.name === 'spawn_agents') {
           run.subagentEvents = []
           syncRunState(run)
         }
@@ -630,7 +660,11 @@ export async function sendMessage(options: {
         run.todos = event.items
         syncRunState(run)
       } else if (event.type === 'subagent') {
-        run.subagentEvents.push(event.event)
+        // **换成新数组，不要原地 push。** `syncRunState` 是靠**赋值**把状态同步到界面的，
+        // 而给它喂同一个引用时 Vue 的 `hasChanged` 判定「没变」、不触发更新 —— 原地 push
+        // 之后看板永远不出现（这些事件明明都收到了）。
+        // 其余实时字段没这个问题：它们每次都是整个换掉（新值 / 新数组），引用一定会变
+        run.subagentEvents = [...run.subagentEvents, event.event]
         syncRunState(run)
       } else if (event.type === 'summary') {
         // 压缩发生在「组装上下文」阶段，比正文来得更早 —— 所以它插在当前这条正在生成的

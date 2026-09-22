@@ -34,8 +34,10 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
 
+from quill_agent import sandbox
 from quill_agent.models import McpServer
 from quill_agent.tools.base import ToolKind, ToolRegistry, ToolSpec
+from quill_agent.tools.files import current_work_dir
 
 logger = logging.getLogger(__name__)
 
@@ -218,11 +220,26 @@ class McpConnection:
         if self.server.transport == "http":
             return streamable_http_client(self.server.url)
 
+        work_dir = current_work_dir()
+        policy = sandbox.policy_for(work_dir)
+        argv = sandbox.build_process_argv(
+            [self.server.command, *self.server.args], policy
+        )
+        # MCP 是可执行的外部扩展，默认只给启动所需的环境，避免把 API keys、
+        # 云凭证和其它宿主秘密无意传给第三方进程。服务器配置中的 env 是显式授权。
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if key in {"PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "TEMP", "TMP"}
+            or key == "LANG"
+            or key.startswith("LC_")
+        }
+        env.update(self.server.env)
         params = StdioServerParameters(
-            command=self.server.command,
-            args=list(self.server.args),
-            # 继承当前环境再叠加用户配的：不继承的话，npx/uvx 这类命令找不到 PATH
-            env={**os.environ, **self.server.env},
+            command=argv[0],
+            args=argv[1:],
+            cwd=work_dir,
+            env=env,
         )
         return stdio_client(params)
 
@@ -369,8 +386,11 @@ def register_tools(target: ToolRegistry) -> list[str]:
                 )
             )
 
-        target.register_external(specs, source=connection.server.id)
-        registered.extend(spec[0].name for spec in specs)
+        accepted = target.register_external(specs, source=connection.server.id)
+        rejected = {spec.name for spec, _ in specs} - set(accepted)
+        for name in sorted(rejected):
+            logger.warning("MCP 工具名与其他来源冲突，已跳过：%s", name)
+        registered.extend(accepted)
 
     return registered
 

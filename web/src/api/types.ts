@@ -97,6 +97,21 @@ export interface TodoItem {
   status: TodoStatus
 }
 
+/**
+ * 一轮回答里的一个片段，**按发生顺序**排列。
+ *
+ * 为什么需要它：`content`（说过的所有话）和 `steps`（调过的所有工具）是分开存的，
+ * 两个字段各有消费方（下一轮上下文用前者，审阅用后者），但代价是**丢了它们的相对顺序** ——
+ * 界面拿不到「哪句话在哪个工具前面」，于是只能把工具堆在一块、正文堆在另一块。
+ * 这份顺序只有后端在流式过程中才记得住。
+ *
+ * 老消息没有这个字段，由界面按「思考 → 工具 → 正文」拼一个等价序列回退 ——
+ * 正好就是它当年存下来的那个样子。
+ */
+export type MessagePart =
+  | { type: 'text' | 'reasoning'; content: string }
+  | { type: 'tool'; step: ToolStep }
+
 export interface Message {
   /**
    * `summary` 是压缩产物（见 agent 的 `SummaryMade`）：它覆盖它之前的全部记录，
@@ -145,6 +160,13 @@ export interface Message {
    * 好让回看一条长任务时还看得见它当初打算做哪几步。老记录没有这个字段。
    */
   todos?: TodoItem[]
+  /**
+   * 这一轮各片段的**顺序**：正文、思考、工具调用按发生顺序穿插（见 `MessagePart`）。
+   *
+   * `content` 和 `steps` 仍然都在 —— 它们是别的用途（组装上下文 / 审阅），
+   * 这一份只补上顺序。老记录没有它。
+   */
+  parts?: MessagePart[]
 }
 
 export interface ModelConfig {
@@ -473,11 +495,18 @@ export interface Question {
  * 子代理干活时播报的一行动静。
  *
  * 子代理有自己的一份上下文，它的中间过程**不进这条消息** —— 所以单独播出来，
- * 否则一个几十秒的 `spawn_agent` 期间界面上什么都没有，看着像卡死了。
+ * 否则一个几十秒的 `spawn_agents` 期间界面上什么都没有，看着像卡死了。
+ */
+/**
+ * 子代理播出来的一个动作。
+ *
+ * `agent` 标明**是哪个子代理**（任务的短标签）。并行派多个时事件是交错着来的，
+ * 没有它，看板上就是一团混在一起的动静，分不清谁在干什么。单个子代理也带这个字段
+ * （保持一致）—— 它是后加的，旧记录里没有，所以是可选的。
  */
 export type SubagentEvent =
-  | { type: 'tool'; name: string; arguments: string }
-  | { type: 'notice'; text: string }
+  | { type: 'tool'; agent?: string; name: string; arguments: string }
+  | { type: 'notice'; agent?: string; text: string }
 
 /** 一轮对话里 SSE 推回来的事件。 */
 export type ChatEvent =

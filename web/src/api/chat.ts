@@ -11,6 +11,11 @@ import type { ChatEvent, Message, Question, SubagentEvent, TodoItem, ToolStep } 
 
 const BASE = '/api'
 
+function authHeaders(): HeadersInit {
+  const token = new URLSearchParams(window.location.search).get('access_token')
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
 export interface ChatPayload {
   conversation_id: string
   prompt: string
@@ -98,7 +103,13 @@ export async function* streamChat(
   body.append('thinking', payload.thinking ? 'true' : 'false')
   for (const file of payload.files) body.append('files', file)
 
-  const response = await fetch(`${BASE}/chat`, { method: 'POST', body, signal })
+  const response = await fetch(`${BASE}/chat`, {
+    method: 'POST',
+    body,
+    signal,
+    credentials: 'include',
+    headers: authHeaders(),
+  })
 
   if (!response.ok || !response.body) {
     throw new Error(`对话请求失败（${response.status}）`)
@@ -224,7 +235,8 @@ export async function answerQuestion(
 ): Promise<boolean> {
   const response = await fetch(`${BASE}/chat/answer`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    credentials: 'include',
     body: JSON.stringify({ run_id: runId, question_id: questionId, answer }),
   })
 
@@ -244,7 +256,8 @@ export async function answerQuestion(
 export async function cancelRun(runId: string): Promise<boolean> {
   const response = await fetch(`${BASE}/chat/cancel`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    credentials: 'include',
     body: JSON.stringify({ run_id: runId }),
   })
 

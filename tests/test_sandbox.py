@@ -110,9 +110,24 @@ def test_off_mode_does_not_wrap_anything(tmp_path: Path) -> None:
     assert "bwrap" not in argv
 
 
+def test_off_mode_preserves_direct_process_argv(tmp_path: Path) -> None:
+    argv = sandbox.build_process_argv(["python", "-m", "fake_mcp"], _policy("off", tmp_path))
+
+    assert argv == ["python", "-m", "fake_mcp"]
+
+
 # ---------------------------------------------------------------------------
 # argv 构造：workspace-write
 # ---------------------------------------------------------------------------
+
+
+def test_direct_process_is_wrapped_without_shell(tmp_path: Path, fake_bwrap: None) -> None:
+    argv = sandbox.build_process_argv(
+        ["node", "server.js", "--stdio"], _policy("read-only", tmp_path)
+    )
+
+    assert argv[-3:] == ["node", "server.js", "--stdio"]
+    assert "/bin/sh" not in argv
 
 
 def test_whole_filesystem_is_read_only_first(tmp_path: Path, fake_bwrap: None) -> None:

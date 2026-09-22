@@ -233,6 +233,34 @@ def stream_round(
     reasoning_parts: list[str] = []
     saver = _AnswerSaver(store, conversation_id, run_id)
 
+    # 这一轮发生的事，**按发生顺序**。
+    #
+    # `content` 和 `steps` 分开存是有理由的（前者给下一轮组装上下文用，后者给审阅用），
+    # 代价是**丢掉了它们的相对顺序** —— 前端拿不到「哪句话在哪个工具前面」，于是只能把
+    # 工具堆在一块、正文堆在另一块。穿插显示要的就是这份顺序，所以它必须在流式过程中
+    # 记下来。两个老字段照旧保留（老消息和别的消费方都还在用）。
+    parts: list[dict] = []
+    # 正在累积的那一段（正文或思考）。它是**流式**的：要等下一段开始、或工具到达才封进 parts
+    pending: list[str] = []
+    pending_kind = ""
+
+    def seal() -> None:
+        """把正在累积的那一段封进 `parts`。
+
+        空段不产生条目 —— 模型常常连着吐一大段纯思考而没有正文，不该留个空壳在那儿。
+        """
+        nonlocal pending_kind
+        if pending and pending_kind:
+            parts.append({"type": pending_kind, "content": "".join(pending)})
+            pending.clear()
+        pending_kind = ""
+
+    def current_parts() -> list[dict]:
+        """`parts` 加上「还在累积的那一段」—— 中间态渲染不能缺掉这一截。"""
+        if pending and pending_kind:
+            return [*parts, {"type": pending_kind, "content": "".join(pending)}]
+        return list(parts)
+
     def snapshot(*, partial: bool) -> dict:
         """把「到此刻为止」的这一轮做成一条助手消息。
 
@@ -245,6 +273,8 @@ def stream_round(
             "run_id": run_id,
             "content": "".join(text_parts),
             "steps": [asdict(step) for step in steps],
+            # 顺序：`content` 与 `steps` 的**交错版本**，给界面穿插显示用（见上面的 parts）
+            "parts": current_parts(),
             "notices": notices,
             "reasoning": "".join(reasoning_parts),
             "stats": asdict(stats),
@@ -279,6 +309,11 @@ def stream_round(
             yield "notice", {"text": item.text}
         elif isinstance(item, ReasoningDelta):
             reasoning_parts.append(item.text)
+            # 换段：上一段（正文，或更早的一次思考）到此为止
+            if pending_kind != "reasoning":
+                seal()
+            pending_kind = "reasoning"
+            pending.append(item.text)
             yield "reasoning", {"text": item.text}
         elif isinstance(item, Usage):
             # 运行中的用量播报：界面拿它在跑的过程中实时刷新上下文仪表盘。
@@ -300,6 +335,9 @@ def stream_round(
         elif isinstance(item, ToolStep):
             steps.append(item)
             stepped = True
+            # 这次调用**之前**说过的话、想过的东西先封段 —— 顺序就落在这一句上
+            seal()
+            parts.append({"type": "tool", "step": asdict(item)})
             yield "tool", asdict(item)
         elif isinstance(item, SummaryMade):
             # 摘要要**落盘**：它得活过这一轮，下一轮组装上下文时才能直接用上，
@@ -317,6 +355,10 @@ def stream_round(
             }
         else:
             text_parts.append(item)
+            if pending_kind != "text":
+                seal()
+            pending_kind = "text"
+            pending.append(item)
             yield "text", {"text": item}
 
         # 每个事件之后都问一次「到点了吗」。事件是几毫秒一个的，真写盘由 `_AnswerSaver`

@@ -60,28 +60,100 @@ def _default_sandbox_mode() -> str:
     return "workspace-write"
 
 
+# 平台数据目录里的应用文件夹名。macOS / Windows 按那边的惯例大写开头；
+# Linux 走 XDG，惯例是小写。
+APP_DIR_NAME = "Quill"
+
+# 「就地运行」的判据：源码树和解压出来的发布包**都同时有**这两样
+# （发布包由 scripts/make_release.py 打，src/ 与 pyproject.toml 都在里面）
+_CHECKOUT_MARKERS = ("pyproject.toml", "src/quill_agent")
+
+
+def _is_checkout(path: Path) -> bool:
+    """这个目录看起来是源码树 / 解压出来的发布包吗？"""
+    return all((path / marker).exists() for marker in _CHECKOUT_MARKERS)
+
+
+def _platform_data_home() -> Path:
+    """按平台惯例给出用户数据目录 —— 双击启动与桌面版的落点。
+
+    为什么不再用 `~/.quill`：主目录是用户的私人空间，谁都在那儿丢一个点目录，
+    久了就是一地鸡毛；而下面这三个位置是各平台**备份 / 迁移 / 卸载**时都会去看的地方：
+
+        macOS    ~/Library/Application Support/Quill
+        Windows  %APPDATA%\\Quill
+        Linux    $XDG_DATA_HOME/quill（默认 ~/.local/share/quill）
+
+    老版本的数据在 `~/.quill`，启动时会自动迁过来（见 `bootstrap.migrate_legacy_home`）。
+    """
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / APP_DIR_NAME
+
+    if sys.platform == "win32":
+        # APPDATA 在这边基本总是有；真没有（服务账户、精简环境）就退回等效路径
+        appdata = os.environ.get("APPDATA", "").strip()
+        base = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
+        return base / APP_DIR_NAME
+
+    xdg = os.environ.get("XDG_DATA_HOME", "").strip()
+    base = Path(xdg) if xdg else Path.home() / ".local" / "share"
+    return base / APP_DIR_NAME.lower()
+
+
+def legacy_home() -> Path:
+    """老版本的数据根，只为迁移而留（见 `bootstrap.migrate_legacy_home`）。"""
+    return Path.home() / ".quill"
+
+
 def _default_home() -> Path:
     """默认的数据根目录。
 
     优先级（**第 2 条是刻意的向后兼容**）：
 
-    1. `QUILL_HOME` 环境变量 —— 显式指定，永远听它的；
-    2. 当前目录下有 `data/` 或 `prompt/` —— 说明是「就地运行」（在仓库里开发，
-       或者从解压目录直接跑），沿用旧行为把数据放在旁边。早期版本所有路径都
-       相对 cwd，用户的数据本来就散在仓库里，直接改到 `~/.quill` 会让那些
-       配置看起来「消失」；
-    3. 其余情况用 `~/.quill` —— 打包 / 双击启动走的就是这条：cwd 不可控，
-       而用户的主目录一定可写。
+    1. `QUILL_HOME` 环境变量 —— 显式指定，永远听它的（桌面壳也走这条：
+       壳知道自己的数据该放哪，不指望 cwd 猜）；
+    2. **就地运行**：当前目录是个源码树 / 解压出来的发布包，**而且写得进去** ——
+       沿用旧行为把数据放在旁边。早期版本所有路径都相对 cwd，开发者的数据本来就
+       散在仓库里，直接改到平台目录会让那些配置看起来「消失」；
+    3. 其余情况用**平台数据目录**（见 `_platform_data_home`）。
+
+    第 2 条里「写得进去」这个限定是必需的：桌面 App 的安装目录里同样有源码
+    （打包时被带进去），但它在 macOS 的签名包内、Windows 的 Program Files 下
+    **都不可写** —— 不查可写性就会把数据往只读目录里写，而 Windows 上这一步还会
+    被**静默重定向到 VirtualStore**，用户完全看不出来。
+
+    判据也从「有 data/ 或 prompt/」收窄成了「确实是个源码 / 发布目录」：前者的
+    麻烦是首次运行时那两个目录还不存在（于是第一次跑到平台目录、第二次才就地，
+    同一个仓库两个位置），而它想表达的本来就是「这里是不是本项目的目录」。
     """
     explicit = os.environ.get(HOME_ENV, "").strip()
     if explicit:
         return Path(explicit).expanduser()
 
     here = Path.cwd()
-    if (here / "data").is_dir() or (here / "prompt").is_dir():
+    if _is_checkout(here) and os.access(here, os.W_OK):
         return here
 
-    return Path.home() / ".quill"
+    return _platform_data_home()
+
+
+def _default_work_dir() -> Path:
+    """文件工具的工作目录（同时是安全边界）的默认值。
+
+    取进程启动时的当前目录，但**只在它可用时**：双击启动时 cwd 可能是文件系统根
+    （macOS 的 Finder 就是给 `/`）或只读的安装目录 —— 前者的后果是「边界」变成整个
+    磁盘，后者是一动笔就失败。那两种情况下退到主目录下的 `Quill/`，那是用户一眼
+    找得到、也一定写得进去的地方。
+
+    桌面壳会显式传 `WORK_DIR`（它知道该用哪个工作区），这条只是兜底。
+
+    用 default_factory 而不是 Path(".")：它在实例化配置时求值一次，中途谁 chdir
+    都不会让边界跟着飘走 —— 这是个安全边界，不该有那种隐式行为。
+    """
+    here = Path.cwd()
+    if here.parent == here or not os.access(here, os.W_OK):
+        return Path.home() / "Quill"
+    return here
 
 
 class Settings(BaseSettings):
@@ -91,9 +163,13 @@ class Settings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        # 数据根里的 .env 排在后面 = 优先级更高：换台机器/换个发布目录时，
-        # 用户那一份配置不该被安装目录里的模板盖回去
-        env_file=(".env", str(_default_home() / ".env")),
+        # 两份 .env，都写成**绝对路径**：相对路径是按 cwd 解析的，而双击启动时
+        # cwd 不可控（可能是安装目录、也可能是 `/`），那种「换个启动方式就换了
+        # 配置文件」的行为排查起来极难。
+        #
+        # 列表靠后的优先级更高：数据根里那一份要盖过启动目录里的模板 ——
+        # 换台机器 / 换个发布目录时，用户自己的配置不该被安装包里的样例顶掉
+        env_file=(str(Path.cwd() / ".env"), str(_default_home() / ".env")),
         env_file_encoding="utf-8",
         extra="ignore",  # .env 里多余的键不会导致报错
     )
@@ -174,14 +250,10 @@ class Settings(BaseSettings):
     # 文件工具的工作目录 —— 同时是安全边界：
     # 模型给出的路径一律限制在这个目录内，越界直接拒绝。
     #
-    # 默认值取**进程启动时**的当前目录：default_factory 在实例化配置时求值一次，
-    # 不是每次访问都求值。用 Path(".") 的话，谁中途 chdir 一下边界就跟着飘走了 ——
-    # 而这是个安全边界，不该有这种隐式行为。
-    #
-    # 生产环境建议在 .env 里显式配 WORK_DIR：默认值取决于「从哪个目录启动」，
-    # 换个启动位置就等于换了个沙箱根目录。
+    # 默认值见 `_default_work_dir`：取启动目录，但启动目录不可用时（文件系统根、
+    # 只读的安装目录）退到主目录下的 `Quill/` —— 安全边界不能是「整个磁盘」。
     work_dir: Path = Field(
-        default_factory=Path.cwd,
+        default_factory=_default_work_dir,
         description="文件工具的工作目录（也是安全边界）",
     )
 

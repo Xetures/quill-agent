@@ -73,7 +73,7 @@ def _skill_group_hint(skill_name: str) -> str:
     """
     # 延迟导入：`quill_agent.agent` 在模块级 import 了 `quill_agent.tools`（取 registry），
     # 而本模块又是在 tools/__init__ 里被导入的 —— 模块级写 import 会拿到一个只执行了
-    # 一半的 agent 模块。subagent.spawn_agent 出于同样的原因也是延迟导入
+    # 一半的 agent 模块。subagent.spawn_agents 出于同样的原因也是延迟导入
     from quill_agent import agent
 
     environment = agent.current_environment()

@@ -14,7 +14,7 @@ import pytest
 
 from quill_agent import agent, mcp
 from quill_agent.models import McpServer
-from quill_agent.tools.base import ToolRegistry
+from quill_agent.tools.base import ToolKind, ToolRegistry, ToolSpec
 
 FAKE = str(Path(__file__).parent / "fake_mcp.py")
 
@@ -41,8 +41,12 @@ def isolated() -> Iterator[ToolRegistry]:
 
 
 @pytest.fixture
-def manager(server: McpServer) -> Iterator[mcp.McpManager]:
+def manager(server: McpServer, monkeypatch: pytest.MonkeyPatch) -> Iterator[mcp.McpManager]:
     """一个独立的连接管理器（不用全局那个，同样是为了不串）。"""
+    # MCP 隔离策略单独在 sandbox 测试；协议测试显式关闭沙箱，避免依赖本机后端。
+    monkeypatch.setattr(mcp.sandbox, "policy_for", lambda work_dir: mcp.sandbox.SandboxPolicy(
+        mode=mcp.sandbox.SandboxMode.OFF, work_dir=Path(work_dir)
+    ))
     manager = mcp.McpManager()
     manager.start([server])
     yield manager
@@ -99,6 +103,53 @@ def test_call_after_stop_says_unavailable(server: McpServer) -> None:
     assert "不可用" in text
 
 
+def test_stdio_open_uses_sandbox_and_a_minimal_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """stdio MCP 不应继承宿主秘密，并且启动 argv 必须经过沙箱包装。"""
+    captured: dict = {}
+    policy = object()
+    monkeypatch.setattr(mcp, "current_work_dir", lambda: tmp_path)
+    monkeypatch.setattr(mcp.sandbox, "policy_for", lambda work_dir: policy)
+    monkeypatch.setattr(
+        mcp.sandbox,
+        "build_process_argv",
+        lambda command, actual_policy: ["bwrap", "--", *command],
+    )
+    monkeypatch.setenv("PATH", "/bin")
+    monkeypatch.setenv("MCP_SECRET_FROM_HOST", "do-not-pass")
+
+    class FakeContext:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_stdio(params):
+        captured["params"] = params
+        return FakeContext()
+
+    monkeypatch.setattr(mcp, "stdio_client", fake_stdio)
+    connection = mcp.McpConnection(
+        McpServer(
+            id="isolated",
+            name="isolated",
+            command="node",
+            args=["server.js"],
+            env={"MCP_EXPLICIT": "yes"},
+        )
+    )
+
+    connection._open()
+    params = captured["params"]
+    assert params.command == "bwrap"
+    assert params.args == ["--", "node", "server.js"]
+    assert params.cwd == tmp_path
+    assert params.env["MCP_EXPLICIT"] == "yes"
+    assert "MCP_SECRET_FROM_HOST" not in params.env
+
+
 def test_bad_command_fails_only_itself() -> None:
     """连不上只是这一个不可用：要记下原因，且不能让 start 抛出去。"""
     broken = McpServer(id="broken", name="broken", command="/不存在的命令", timeout=5.0)
@@ -138,7 +189,6 @@ def test_register_and_unregister(
 
 def test_unregister_source_keeps_builtin(isolated: ToolRegistry) -> None:
     """摘掉外部来源时不能误伤内置工具（它们不挂在任何 source 之下）。"""
-    from quill_agent.tools.base import ToolSpec
 
     @isolated.tool(description="一个内置工具")
     def inner() -> str:
@@ -153,6 +203,29 @@ def test_unregister_source_keeps_builtin(isolated: ToolRegistry) -> None:
 
     assert [spec.name for spec in isolated.all()] == ["inner"]
     assert isolated.execute("inner", {}) == "ok"
+
+
+def test_external_name_collision_keeps_the_first_source(isolated: ToolRegistry) -> None:
+    """两个 MCP 来源同名时后注册者不能覆盖，注销它也不能误删先注册者。"""
+    first = ToolSpec(name="same", description="first", kind=ToolKind.MCP)
+    second = ToolSpec(name="same", description="second", kind=ToolKind.MCP)
+
+    accepted_first = isolated.register_external(
+        [(first, lambda **_: "from-a")], source="srv-a"
+    )
+    accepted_second = isolated.register_external(
+        [(second, lambda **_: "from-b")], source="srv-b"
+    )
+
+    assert accepted_first == ["same"]
+    assert accepted_second == []
+    assert isolated.execute("same", {}) == "from-a"
+
+    isolated.unregister_source("srv-b")
+
+    assert isolated.execute("same", {}) == "from-a"
+    isolated.unregister_source("srv-a")
+    assert isolated.execute("same", {}) == "未知工具：same"
 
 
 # ---------------------------------------------------------------------------

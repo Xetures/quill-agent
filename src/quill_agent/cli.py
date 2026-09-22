@@ -17,12 +17,12 @@
 from __future__ import annotations
 
 import argparse
+import os
 import socket
 import threading
 import webbrowser
 
 from quill_agent import __version__
-from quill_agent.bootstrap import startup_note
 from quill_agent.config import get_settings
 from quill_agent.memory import MemoryStore
 from quill_agent.skills import SkillLibrary
@@ -43,6 +43,9 @@ def build_parser() -> argparse.ArgumentParser:
     serve = subparsers.add_parser("serve", help="启动服务（浏览器打开即用）")
     serve.add_argument("--host", default="127.0.0.1", help="监听地址；填 0.0.0.0 可供局域网访问")
     serve.add_argument("--port", type=int, default=8000, help="监听端口（被占用时自动顺延）")
+    serve.add_argument(
+        "--token", default="", help="非本机监听时的 API 访问令牌；也可用 QUILL_ACCESS_TOKEN"
+    )
 
     # 两个参数都收：`--no-browser` 是给命令行用户的（默认就会开浏览器，所以他们需要
     # 一个「别开」的开关），而启动脚本里写的是 `--open-browser`（读脚本的人一眼能看出
@@ -88,32 +91,40 @@ def pick_port(host: str, port: int, attempts: int = PORT_ATTEMPTS) -> int:
     raise SystemExit(f"{port} 起连续 {attempts} 个端口都被占用了，用 --port 换一个再试。")
 
 
-def serve(host: str, port: int, *, open_browser: bool) -> None:
+def serve(host: str, port: int, *, open_browser: bool, token: str = "") -> None:
     """启动后端（`web/dist` 存在时会连前端一起托管）。"""
     # 延迟导入：只跑 `quill -t` 那种查看命令时不必把 Web 栈整个加载进来
     import uvicorn
 
     settings = get_settings()
+    access_token = token or os.environ.get("QUILL_ACCESS_TOKEN", "")
+    if host not in {"127.0.0.1", "localhost", "::1"} and not access_token:
+        raise SystemExit("非本机监听必须配置访问令牌：使用 --token 或 QUILL_ACCESS_TOKEN。")
     chosen = pick_port(host, port)
 
-    # 用 print 而不是 logger：uvicorn 默认只配置自己的 logger，
-    # 我们这边 logger.info 会被 root 的 WARNING 级别挡掉，用户就看不到数据根在哪了。
-    # flush 是为了重定向到日志文件时也能立刻看到 —— 那时的 stdout 是块缓冲的
-    print(startup_note(settings), flush=True)
+    # 启动自检（播种出厂资源、迁移旧数据、说清数据根在哪）由 `server.main` 的 lifespan
+    # 负责 —— 那里是**唯一**的入口：直接 `uvicorn server.main:app` 时没有 CLI，
+    # 而这里再调一次就会把同一份说明打两遍、副作用也白做第二遍（虽然都是幂等的）。
 
     # 监听 0.0.0.0 时，浏览器该打开的是本机地址而不是「0.0.0.0」
     display_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
     url = f"http://{display_host}:{chosen}"
+    os.environ["QUILL_AUTH_HOST"] = host
+    if access_token:
+        os.environ["QUILL_ACCESS_TOKEN"] = access_token
 
     if chosen != port:
         print(f"端口 {port} 被占用，改用 {chosen}。", flush=True)
 
     print(f"{settings.app_name} v{__version__} 已启动：{url}", flush=True)
+    if access_token:
+        print("API 访问认证已启用。", flush=True)
     print("按 Ctrl+C 结束。", flush=True)
 
     if open_browser:
         # 推迟一点再开：等 uvicorn 真的监听上，免得第一次打开是「无法连接」
-        threading.Timer(1.5, lambda: webbrowser.open(url)).start()
+        browser_url = f"{url}/?access_token={access_token}" if access_token else url
+        threading.Timer(1.5, lambda: webbrowser.open(browser_url)).start()
 
     uvicorn.run("server.main:app", host=host, port=chosen, log_level="info")
 
@@ -156,7 +167,7 @@ def main() -> None:
     args = build_parser().parse_args()
 
     if args.command == "serve":
-        serve(args.host, args.port, open_browser=args.open_browser)
+        serve(args.host, args.port, open_browser=args.open_browser, token=args.token)
         return
 
     if args.version:

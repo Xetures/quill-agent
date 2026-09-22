@@ -23,6 +23,7 @@ def test_serve_defaults() -> None:
     assert args.command == "serve"
     assert args.host == "127.0.0.1"
     assert args.port == 8000
+    assert args.token == ""
     assert args.open_browser is True
 
 
@@ -34,6 +35,12 @@ def test_serve_accepts_host_and_port() -> None:
     assert args.host == "0.0.0.0"
     assert args.port == 9123
     assert args.open_browser is False
+
+
+def test_serve_requires_token_for_non_loopback(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("QUILL_ACCESS_TOKEN", raising=False)
+    with pytest.raises(SystemExit, match="必须配置访问令牌"):
+        cli.serve("0.0.0.0", 8000, open_browser=False)
 
 
 def test_both_browser_flags_are_accepted() -> None:

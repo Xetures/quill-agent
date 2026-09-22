@@ -172,6 +172,16 @@ const recentSubagentEvents = computed(() =>
 )
 
 /**
+ * 现在有几个子代理在同时干活。
+ *
+ * 按标签去重 —— 一个子代理会播很多条事件，数事件数得到的是「动静有多大」，
+ * 而用户想知道的是「几个在跑」。并行派出去之后这两个数差得很远。
+ */
+const runningSubagentCount = computed(
+  () => new Set(recentSubagentEvents.value.map((item) => item.agent).filter(Boolean)).size,
+)
+
+/**
  * 这一轮现在卡在哪一步的提示文案；没在跑就是空串。
  *
  * 存在的意义是回答「是不是卡了」：请求发出到模型吐第一个字、工具执行中，事件流
@@ -496,11 +506,18 @@ function onKeydown(event: Event | KeyboardEvent): void {
         <div v-if="recentSubagentEvents.length" class="confirm subagent">
           <div class="confirm-head">
             <el-icon class="confirm-icon spin"><Loading /></el-icon>
-            <span>子代理正在工作</span>
+            <span>{{
+              runningSubagentCount > 1
+                ? `${runningSubagentCount} 个子代理正在工作`
+                : '子代理正在工作'
+            }}</span>
           </div>
 
           <div class="subagent-log">
             <div v-for="(item, index) in recentSubagentEvents" :key="index" class="subagent-line">
+              <!-- 是谁在动。几个子代理并行时事件是**交错**着来的：少了这一列，
+                   看到的就是一团混在一起的动静，分不清哪条属于谁 -->
+              <span v-if="item.agent" class="subagent-agent">{{ item.agent }}</span>
               <span v-if="item.type === 'tool'" class="mono">
                 → {{ item.name }} {{ abbreviate(item.arguments) }}
               </span>
@@ -881,6 +898,17 @@ function onKeydown(event: Event | KeyboardEvent): void {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text-soft);
+}
+
+/* 行标：这一条是哪个子代理播的。
+ * 做成一小块浅底前缀而不是混在正文里 —— 事件交错时它是唯一的归属线索，
+ * 得让人一眼能扫到，而不是读一遍才反应过来 */
+.subagent-agent {
+  margin-right: 6px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: rgba(127, 127, 127, 0.16);
+  font-size: 11px;
 }
 
 /* 图标转起来 —— 不转的话它看着像个静态装饰，传达不了「还在跑」 */

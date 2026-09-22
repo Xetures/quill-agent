@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from collections.abc import Iterator
 
 import pytest
 from server.routes import chat
-from server.routes.chat import Run, _close, _open, _sse
+from server.routes.chat import Run, _close, _find, _open, _pump, _sse
 
 
 @pytest.fixture
@@ -53,6 +54,37 @@ def test_client_disconnect_cancels_the_run(loop: asyncio.AbstractEventLoop) -> N
         _close(run)
 
 
+def test_disconnect_stops_the_real_runner(loop: asyncio.AbstractEventLoop) -> None:
+    """关闭 SSE 后，真实 pump 线程要看到取消并完成清理。"""
+    run = Run(conversation_id="c-runner", loop=loop)
+    _open(run)
+    stopped = threading.Event()
+
+    def events():
+        try:
+            while not run.channel.is_cancelled():
+                yield "tick", {"at": time.monotonic()}
+                time.sleep(0.01)
+        finally:
+            stopped.set()
+
+    runner = threading.Thread(target=_pump, args=(run, events()), daemon=True)
+    runner.start()
+
+    async def read_start_then_disconnect() -> None:
+        stream = _sse(run)
+        event = await stream.__anext__()
+        assert "event: start" in event
+        await stream.aclose()
+
+    asyncio.run_coroutine_threadsafe(read_start_then_disconnect(), loop).result(timeout=5)
+    runner.join(timeout=1)
+
+    assert stopped.is_set()
+    assert not runner.is_alive()
+    assert _find(run.id) is None
+
+
 def test_normal_finish_does_not_cancel(loop: asyncio.AbstractEventLoop) -> None:
     """正常跑完的那一轮不该被标记成「取消」—— 收尾已经做完了。"""
     run = Run(conversation_id="c2", loop=loop)
@@ -79,7 +111,7 @@ def test_a_quiet_stream_is_kept_alive(
 ) -> None:
     """静默超过心跳间隔时补一行 SSE 注释，别让对面以为连接死了。
 
-    真事（2026-09-21）：一次 `spawn_agent` 跑了整 360 秒，期间事件流一个字节都不走，
+    真事（2026-09-21）：一次 `spawn_agents` 跑了整 360 秒，期间事件流一个字节都不走，
     撞上前端那条 360 秒的静默保护（`web/src/api/chat.ts` 的 `IDLE_TIMEOUT_MS`）——
     整条流被当成死连接掐掉，`reader.cancel()` 一路传到服务端，**那一轮白跑**。
 

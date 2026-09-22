@@ -175,7 +175,9 @@ def _summarize(text: str, prompt: str, *, url: str, title: str) -> str | None:
 
     # 用量并进这一轮的账：不并的话这些 token 花了钱却不出现在用量页上
     # （和 subagent 的做法一致）
-    environment.stats.add_usage(getattr(response, "usage", None))
+    usage = getattr(response, "usage", None)
+    environment.stats.add_usage(usage)
+    environment.token_budget.add_usage(usage)
 
     content = (response.choices[0].message.content or "").strip()
     return content or None

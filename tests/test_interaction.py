@@ -144,6 +144,60 @@ def test_empty_answer_is_not_the_same_as_no_answer(loop: asyncio.AbstractEventLo
     assert sink == [""]
 
 
+def test_parallel_questions_are_published_and_answered_in_order(
+    loop: asyncio.AbstractEventLoop,
+) -> None:
+    """并行子代理同时确认时，后一个必须排队，不能覆盖当前问题。"""
+    channel = interaction.Interaction(loop)
+    first_answers: list = []
+    second_answers: list = []
+
+    first = _ask_in_thread(channel, first_answers, kind="confirm", text="第一个？")
+    first_event = _next(loop, channel)
+    assert first_event[1]["id"] == "q1"
+
+    second = _ask_in_thread(channel, second_answers, kind="confirm", text="第二个？")
+    # 第二个线程已进入 ask()，但第一题结束前不能向前端发布另一张卡。
+    second.join(timeout=0.05)
+    assert second.is_alive()
+    assert channel.queue.qsize() == 0
+
+    assert channel.answer("q1", "允许一") is True
+    first.join(timeout=1)
+    second_event = _next(loop, channel)
+
+    assert first_answers == ["允许一"]
+    assert second_event[1]["id"] == "q2"
+    assert second_event[1]["text"] == "第二个？"
+    assert channel.answer("q2", "允许二") is True
+    second.join(timeout=1)
+    assert second_answers == ["允许二"]
+
+
+def test_cancel_wakes_current_question_and_drops_queued_questions(
+    loop: asyncio.AbstractEventLoop,
+) -> None:
+    """取消要结束当前等待者，也要让排队中的提问不再发布。"""
+    channel = interaction.Interaction(loop)
+    first_answers: list = []
+    second_answers: list = []
+
+    first = _ask_in_thread(channel, first_answers, kind="confirm", text="第一个？")
+    _next(loop, channel)
+    second = _ask_in_thread(channel, second_answers, kind="confirm", text="第二个？")
+
+    channel.cancel()
+    first.join(timeout=1)
+    second.join(timeout=1)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert first_answers == [None]
+    assert second_answers == [None]
+    assert channel.queue.qsize() == 0
+    assert channel.waiting() is False
+
+
 def test_timeout_returns_none_and_then_refuses_late_answers(
     loop: asyncio.AbstractEventLoop,
 ) -> None:

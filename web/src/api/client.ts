@@ -7,6 +7,11 @@
 
 const BASE = '/api'
 
+function authHeaders(): HeadersInit {
+  const token = new URLSearchParams(window.location.search).get('access_token')
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
 /**
  * 后端返回了非 2xx 时抛的异常。
  *
@@ -25,7 +30,8 @@ class ApiError extends Error {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json', ...authHeaders(), ...(init?.headers ?? {}) },
     ...init,
   })
 

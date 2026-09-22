@@ -821,6 +821,28 @@ def test_run_stops_when_the_token_limit_is_exceeded(monkeypatch) -> None:
     assert any("超过上限" in text for text in _notices(events))
 
 
+def test_shared_budget_stops_another_agent_before_its_first_request(monkeypatch) -> None:
+    """父/子 Agent 复用同一预算时，前一个超限后另一个不能再发请求。"""
+    monkeypatch.setattr(agent, "run_token_limit", lambda: 100)
+    budget = agent.TokenBudget(limit=100)
+
+    first_events, first_requests = _run(
+        monkeypatch,
+        [[_text_chunk("第一份"), _usage_chunk(90, 20)]],
+        token_budget=budget,
+    )
+    second_events, second_requests = _run(
+        monkeypatch,
+        [[_text_chunk("不该发出")]],
+        token_budget=budget,
+    )
+
+    assert _texts(first_events) == "第一份"
+    assert len(first_requests) == 1
+    assert second_requests == []
+    assert any("超过上限" in text for text in _notices(second_events))
+
+
 def test_run_continues_when_the_limit_is_not_reached(monkeypatch) -> None:
     """没超上限就照常走：执行工具、继续下一轮。"""
     monkeypatch.setattr(agent, "run_token_limit", lambda: 10_000)

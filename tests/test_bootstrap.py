@@ -9,7 +9,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from quill_agent import bootstrap
+from quill_agent import bootstrap, config
+from quill_agent.store import ToolGroupStore
 
 
 def test_copy_missing_adds_new_files_only(tmp_path: Path) -> None:
@@ -98,3 +99,139 @@ def test_startup_note_mentions_where_the_data_lives(monkeypatch, tmp_path: Path)
     )
 
     assert str(tmp_path) in bootstrap.startup_note(settings)
+
+
+def test_migrate_legacy_home_copies_the_old_data(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """老数据根（`~/.quill`）里的东西要搬到新的平台数据目录。
+
+    不搬的话，老用户升级后看到的是「配置、会话、记忆全没了」—— 而它们还好端端
+    躺在原地。这条迁移就是为了让升级不产生这种错觉。
+    """
+    old = tmp_path / "old-home"
+    new = tmp_path / "new-home"
+    (old / "data" / "conversations").mkdir(parents=True)
+    (old / "data" / "models.json").write_text("{}", encoding="utf-8")
+    (old / "prompt").mkdir()
+    (old / "prompt" / "我的提示词.md").write_text("我改过的", encoding="utf-8")
+
+    monkeypatch.setattr(config, "legacy_home", lambda: old)
+    monkeypatch.setattr(config, "_platform_data_home", lambda: new)
+
+    note = bootstrap.migrate_legacy_home(SimpleNamespace(home=new))
+
+    assert note is not None and "复制" in note
+    assert (new / "data" / "models.json").is_file()
+    assert (new / "prompt" / "我的提示词.md").read_text(encoding="utf-8") == "我改过的"
+    # 旧目录保留：用户万一回退到老版本，那边还得是完整的一份
+    assert (old / "data" / "models.json").is_file()
+
+
+def test_migrate_legacy_home_leaves_an_explicit_home_alone(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """用户显式指定了数据根（QUILL_HOME，含桌面壳 / 就地运行）就别去搬。
+
+    那时「数据该在哪」是明确的；从别处搬一份进来，只会把两个位置搅在一起。
+    """
+    old = tmp_path / "old-home"
+    (old / "data").mkdir(parents=True)
+    (old / "data" / "models.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(config, "legacy_home", lambda: old)
+    monkeypatch.setattr(config, "_platform_data_home", lambda: tmp_path / "new-home")
+
+    explicit = tmp_path / "explicit-home"
+    assert bootstrap.migrate_legacy_home(SimpleNamespace(home=explicit)) is None
+    assert not (explicit / "data").exists()
+
+
+def test_migrate_legacy_home_does_not_merge_into_a_home_in_use(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """新位置已经有 data/ 就不动 —— 两边的会话和记忆混成一锅，比不迁更糟。"""
+    old = tmp_path / "old-home"
+    new = tmp_path / "new-home"
+    (old / "data").mkdir(parents=True)
+    (old / "data" / "models.json").write_text("{}", encoding="utf-8")
+    (new / "data").mkdir(parents=True)
+    (new / "data" / "models.json").write_text('{"已有":"这边的"}', encoding="utf-8")
+
+    monkeypatch.setattr(config, "legacy_home", lambda: old)
+    monkeypatch.setattr(config, "_platform_data_home", lambda: new)
+
+    assert bootstrap.migrate_legacy_home(SimpleNamespace(home=new)) is None
+    assert "这边" in (new / "data" / "models.json").read_text(encoding="utf-8")
+
+
+def test_migrate_legacy_home_is_a_noop_without_old_data(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """没有老数据就什么都不做 —— 它每次启动都会跑，不能凭空建目录、报假消息。"""
+    monkeypatch.setattr(config, "legacy_home", lambda: tmp_path / "old-home")
+    monkeypatch.setattr(config, "_platform_data_home", lambda: tmp_path / "new-home")
+
+    new = tmp_path / "new-home"
+    assert bootstrap.migrate_legacy_home(SimpleNamespace(home=new)) is None
+    assert not new.exists()
+
+
+def _settings(tmp_path: Path) -> SimpleNamespace:
+    return SimpleNamespace(tool_groups_path=tmp_path / "tool_groups.json")
+
+
+def test_migrate_tool_names_renames_the_merged_subagent_tool(tmp_path: Path) -> None:
+    """老数据里工具组的确认名单还写着 `spawn_agent`，要改成合并后的那个名字。
+
+    工具组的 `tools` 是从注册表现取的、自动就跟上了，但 **`confirm` 是写死存下来的** ——
+    不迁的话它永远匹配不上任何工具，表现是「派子代理再也不弹确认」，
+    而设计意图是「另外花钱、要等，值得打断一次」。静默失效，还毫无提示。
+    """
+    settings = _settings(tmp_path)
+    store = ToolGroupStore(settings.tool_groups_path)
+    store.add(
+        name="老组",
+        description="",
+        tools=["read_file"],
+        confirm=["delete_file", "spawn_agent"],
+    )
+
+    touched = bootstrap.migrate_tool_names(settings)
+
+    assert touched == ["老组"]
+    assert store.list()[0].confirm == ["delete_file", "spawn_agents"]
+
+
+def test_migrate_tool_names_leaves_other_groups_alone(tmp_path: Path) -> None:
+    """没提到旧名字的组不该被动 —— 只报真的改过的那几个。"""
+    settings = _settings(tmp_path)
+    store = ToolGroupStore(settings.tool_groups_path)
+    store.add(name="老组", description="", tools=["read_file"], confirm=["spawn_agent"])
+    store.add(name="无关组", description="", tools=["read_file"], confirm=["delete_file"])
+
+    touched = bootstrap.migrate_tool_names(settings)
+
+    assert touched == ["老组"]
+    untouched = next(item for item in store.list() if item.name == "无关组")
+    assert untouched.confirm == ["delete_file"]
+
+
+def test_migrate_tool_names_does_not_add_it_back(tmp_path: Path) -> None:
+    """用户自己从名单里删过「派子代理要确认」的话，不能替他加回来 —— 只做重命名。"""
+    settings = _settings(tmp_path)
+    store = ToolGroupStore(settings.tool_groups_path)
+    store.add(name="组", description="", tools=["read_file"], confirm=["delete_file"])
+
+    assert bootstrap.migrate_tool_names(settings) == []
+    assert store.list()[0].confirm == ["delete_file"]
+
+
+def test_migrate_tool_names_is_idempotent(tmp_path: Path) -> None:
+    """它每次启动都会跑，第二轮必须什么都不做（否则就是每次启动都写一遍盘）。"""
+    settings = _settings(tmp_path)
+    store = ToolGroupStore(settings.tool_groups_path)
+    store.add(name="老组", description="", tools=["read_file"], confirm=["spawn_agent"])
+
+    assert bootstrap.migrate_tool_names(settings) == ["老组"]
+    assert bootstrap.migrate_tool_names(settings) == []

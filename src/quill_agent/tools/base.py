@@ -115,8 +115,8 @@ class ToolRegistry:
         specs: list[tuple[ToolSpec, Callable[..., str]]],
         *,
         source: str,
-    ) -> None:
-        """运行时注册一批外部工具（MCP）。
+    ) -> list[str]:
+        """运行时注册一批外部工具（MCP），返回实际注册成功的名称。
 
         和 `tool` 装饰器的差别只有时机：那些在 import 时静态注册，这些要等连上服务器
         才知道有什么。
@@ -130,11 +130,16 @@ class ToolRegistry:
 
         names: list[str] = []
         for spec, func in specs:
+            # 任何已有名称都不能覆盖：它可能属于内置工具，也可能属于另一个 MCP 来源。
+            # 后者尤其危险，注销覆盖方时会把被覆盖方的路由一起删掉。
+            if spec.name in self._specs:
+                continue
             self._specs[spec.name] = spec
             self._funcs[spec.name] = func
             names.append(spec.name)
 
         self._sources[source] = names
+        return names
 
     def unregister_source(self, source: str) -> None:
         """摘掉某个来源注册过的全部工具；没注册过就什么都不做。

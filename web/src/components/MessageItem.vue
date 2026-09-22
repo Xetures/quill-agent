@@ -3,7 +3,7 @@ import { CopyDocument, Delete } from '@element-plus/icons-vue'
 import { computed, ref } from 'vue'
 
 import { api } from '../api/client'
-import type { FileChange, Message, ToolStep } from '../api/types'
+import type { FileChange, Message, MessagePart, ToolStep } from '../api/types'
 import { session } from '../stores/session'
 import { errorText } from '../utils/error'
 import { renderMarkdown } from '../utils/markdown'
@@ -85,10 +85,6 @@ async function deleteMessage(): Promise<void> {
 
 const html = computed(() => renderMarkdown(props.message.content))
 
-// 思考过程也走 computed，和正文一致 —— 原先它是在模板里直接调 renderMarkdown，
-// 结果是每次重渲染都会重新解析一遍
-const reasoningHtml = computed(() => renderMarkdown(props.message.reasoning ?? ''))
-
 /** 耗时展示：不到 1 秒用毫秒，够长的用秒。两个量级都要看得清。 */
 function formatElapsed(seconds: number | undefined): string {
   // 旧记录没有这个字段，按 0 处理 —— 总比显示 "undefineds" 好
@@ -97,36 +93,62 @@ function formatElapsed(seconds: number | undefined): string {
 }
 
 /**
- * 折叠块：思考过程一块，每个工具调用各一块。
+ * 这一轮要渲染的片段，**按发生顺序**：正文、思考、工具调用穿插在一起。
  *
- * 合成一个数组再渲染，比在模板里写两段 v-for 清楚 —— 尤其是两者都可能为空、
- * 也可能同时存在的时候。
+ * 以前是「工具全堆在一个折叠区、正文另起一块」—— 因为后端把 `content` 和 `steps`
+ * 分开存，相对顺序在落盘时就没了。后端现在会额外记一份有序的 `parts`；**老消息没有
+ * 这个字段**，那时由 `legacyParts` 拼一个等价序列，正好就是它当年存下来的样子。
+ * 两条路汇成一个数组，模板只有一套渲染逻辑。
  *
- * 用带判别字段（`kind`）的联合类型，而不是给「思考过程」也塞一个
- * `index: -1` 当哨兵：后者会让读的人去猜 -1 有什么含义，而模板根本不读它。
+ * markdown 在这里解析而不是在模板里调 `renderMarkdown`：模板每次重渲染都会跑一遍。
  */
-type Fold =
-  | { kind: 'reasoning'; key: string; title: string }
-  | { kind: 'step'; key: string; title: string; step: ToolStep }
+type Flow =
+  | { kind: 'text'; key: string; html: string }
+  | { kind: 'reasoning'; key: string; title: string; html: string }
+  | { kind: 'tool'; key: string; title: string; step: ToolStep }
 
-const folds = computed<Fold[]>(() => {
-  const items: Fold[] = []
+const flow = computed<Flow[]>(() => {
+  // 摘要的正文已经在上面那张卡片里了，这里跳过 —— 否则同一段显示两遍
+  if (props.message.role === 'summary') return []
+
+  const source = props.message.parts?.length ? props.message.parts : legacyParts()
+
+  return source.map((part, index) => {
+    const key = `part-${index}`
+
+    if (part.type === 'tool') {
+      return { kind: 'tool', key, title: stepTitle(part.step), step: part.step }
+    }
+    return part.type === 'reasoning'
+      ? { kind: 'reasoning', key, title: '思考过程', html: renderMarkdown(part.content) }
+      : { kind: 'text', key, html: renderMarkdown(part.content) }
+  })
+})
+
+/**
+ * 老消息没有 `parts` 时，按它当年存下来的顺序拼一个：思考 → 工具 → 正文。
+ *
+ * 这不是「凑合显示」—— **就是它当年的样子**，所以老会话不会因为这个改动变样。
+ */
+function legacyParts(): MessagePart[] {
+  const parts: MessagePart[] = []
 
   if (props.message.reasoning) {
-    items.push({ kind: 'reasoning', key: 'reasoning', title: '思考过程' })
+    parts.push({ type: 'reasoning', content: props.message.reasoning })
   }
+  for (const step of props.message.steps ?? []) {
+    parts.push({ type: 'tool', step })
+  }
+  if (props.message.content) {
+    parts.push({ type: 'text', content: props.message.content })
+  }
+  return parts
+}
 
-  props.message.steps?.forEach((step, index) => {
-    items.push({
-      kind: 'step',
-      key: `step-${index}`,
-      title: `🔧 ${step.name}　${formatElapsed(step.elapsed)}${stepStat(step)}`,
-      step,
-    })
-  })
-
-  return items
-})
+/** 折叠标题：`🔧 read_file　3ms　+12 −3`。 */
+function stepTitle(step: ToolStep): string {
+  return `🔧 ${step.name}　${formatElapsed(step.elapsed)}${stepStat(step)}`
+}
 
 /**
  * 折叠标题里的改动统计（`+12 −3`）。
@@ -288,25 +310,37 @@ const statsText = computed(() => {
       show-icon
     />
 
-    <el-collapse v-if="folds.length" class="folds">
-      <el-collapse-item v-for="fold in folds" :key="fold.key" :name="fold.key" :title="fold.title">
-        <!-- 判别字段是 kind：读代码时不必去推断这个 fold 到底装着什么 -->
-        <div v-if="fold.kind === 'reasoning'" class="md reasoning" v-html="reasoningHtml"></div>
+    <!-- 这一轮的过程与正文，**按发生顺序穿插**（见 script 里的 `flow`）。
 
-        <template v-else>
-          <!-- 这次调用改了什么。排在参数/结果**前面** —— 用户最想看的是改动本身，
-               而不是我们发给模型的参数长什么样 -->
-          <pre v-if="fold.step.changes?.length" class="diff mono"><span
-              v-for="line in diffLines(fold.step.changes)"
-              :key="line.key"
-              :class="line.cls"
-            >{{ line.text }}</span></pre>
+         以前是「工具全堆在一个折叠区、正文另起一块」—— 那是后端把 content 和 steps
+         分开存造成的，相对顺序根本没记下来。现在有了 `parts`，哪句话在哪个工具前面
+         才是可见的。 -->
+    <template v-for="item in flow" :key="item.key">
+      <!-- 正文不折叠：它就是结论 -->
+      <div v-if="item.kind === 'text'" class="md content" v-html="item.html"></div>
 
-          <pre class="mono code">{{ fold.step.arguments || '{}' }}</pre>
-          <pre class="mono code">{{ fold.step.result }}</pre>
-        </template>
-      </el-collapse-item>
-    </el-collapse>
+      <!-- 思考过程与工具调用：默认折叠。它们的价值是「看得见发生过什么」，
+           要细看再展开 —— 一次长任务里这两样能占满整个屏幕。
+           判别字段是 kind：读代码时不必去推断这块折叠装着什么 -->
+      <el-collapse v-else class="folds">
+        <el-collapse-item :name="item.key" :title="item.title">
+          <div v-if="item.kind === 'reasoning'" class="md reasoning" v-html="item.html"></div>
+
+          <template v-else>
+            <!-- 这次调用改了什么。排在参数/结果**前面** —— 用户最想看的是改动本身，
+                 而不是我们发给模型的参数长什么样 -->
+            <pre v-if="item.step.changes?.length" class="diff mono"><span
+                v-for="line in diffLines(item.step.changes)"
+                :key="line.key"
+                :class="line.cls"
+              >{{ line.text }}</span></pre>
+
+            <pre class="mono code">{{ item.step.arguments || '{}' }}</pre>
+            <pre class="mono code">{{ item.step.result }}</pre>
+          </template>
+        </el-collapse-item>
+      </el-collapse>
+    </template>
 
     <!-- 这一轮的任务清单（跑完落盘的定稿）。排在正文之前，和「思考过程」归为一组：
          它们都是「这条回答背后的过程」，正文才是结论。
@@ -322,13 +356,6 @@ const statsText = computed(() => {
         📎 {{ name }}
       </el-tag>
     </div>
-
-    <!-- 摘要的正文已经在上面那张卡片里了，这里跳过 —— 否则同一段显示两遍 -->
-    <div
-      v-if="message.content && message.role !== 'summary'"
-      class="md content"
-      v-html="html"
-    ></div>
 
     <!-- 这一轮改了哪些文件 + 还原入口。
          挂在消息上而不是工具步骤里：还原是**按轮次**的（一整轮的文件一起回去），

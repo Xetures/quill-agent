@@ -29,6 +29,7 @@ import difflib
 import hashlib
 import json
 import shutil
+import threading
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from functools import cached_property
@@ -120,9 +121,23 @@ class ChangeRecorder:
     conversation_id: str
     run_id: str
     changes: list[FileChange] = field(default_factory=list)
+    # 同一轮的并行子代理共享一个记录器。一次记录事务会读前像、追加内存记录并重写
+    # manifest，必须整体串行；RLock 允许 record_text() 持锁时调用同样受保护的 _flush()。
+    _lock: threading.RLock = field(
+        default_factory=threading.RLock, init=False, repr=False, compare=False
+    )
 
     def add(self, change: FileChange) -> None:
-        self.changes.append(change)
+        with self._lock:
+            self.changes.append(change)
+
+    def mark(self) -> int:
+        with self._lock:
+            return len(self.changes)
+
+    def taken(self, index: int) -> list[FileChange]:
+        with self._lock:
+            return list(self.changes[index:])
 
     def rel(self, target: Path) -> str:
         """转成界面用的路径。工作目录之外的（沙箱关掉时可能）就用绝对路径。"""
@@ -151,13 +166,13 @@ def current() -> ChangeRecorder | None:
 def mark() -> int:
     """记下现在的条数，配 `taken()` 用（见 agent 里「这次调用改了什么」）。"""
     recorder = _current.get()
-    return len(recorder.changes) if recorder else 0
+    return recorder.mark() if recorder else 0
 
 
 def taken(index: int) -> list[FileChange]:
     """`mark()` 之后新增的改动。"""
     recorder = _current.get()
-    return recorder.changes[index:] if recorder else []
+    return recorder.taken(index) if recorder else []
 
 
 def record_text(target: Path, after: str | None, *, kind: str) -> None:
@@ -169,36 +184,39 @@ def record_text(target: Path, after: str | None, *, kind: str) -> None:
     if recorder is None:
         return
 
-    before: str | None = None
-    binary = False
-    if target.is_file():
-        try:
-            raw = target.read_bytes()
-        except OSError:
-            binary = True
-        else:
-            if len(raw) > MAX_SNAPSHOT_BYTES:
+    # 并行子代理会从不同线程进入这里。锁覆盖完整事务：另一线程不能在“已追加内存记录、
+    # manifest 还没写完”之间插入，否则后写入的旧快照可能把新记录从 manifest 中抹掉。
+    with recorder._lock:
+        before: str | None = None
+        binary = False
+        if target.is_file():
+            try:
+                raw = target.read_bytes()
+            except OSError:
                 binary = True
             else:
-                try:
-                    before = raw.decode("utf-8")
-                except UnicodeDecodeError:
-                    # 二进制：解不出文本就没有 diff 也没有还原可言
+                if len(raw) > MAX_SNAPSHOT_BYTES:
                     binary = True
+                else:
+                    try:
+                        before = raw.decode("utf-8")
+                    except UnicodeDecodeError:
+                        # 二进制：解不出文本就没有 diff 也没有还原可言
+                        binary = True
 
-    recorder.add(
-        FileChange(
-            path=recorder.rel(target),
-            kind=kind,
-            before=before,
-            after=None if binary else after,
-            binary=binary,
+        recorder.add(
+            FileChange(
+                path=recorder.rel(target),
+                kind=kind,
+                before=before,
+                after=None if binary else after,
+                binary=binary,
+            )
         )
-    )
 
-    # 记完就落盘，不等这一轮跑完 —— 理由见模块开头。这里的一行是「改了就能退」
-    # 和「跑到一半重启就退不回去」的全部区别
-    _flush(recorder)
+        # 记完就落盘，不等这一轮跑完 —— 理由见模块开头。这里的一行是「改了就能退」
+        # 和「跑到一半重启就退不回去」的全部区别
+        _flush(recorder)
 
 
 def _persist(recorder: ChangeRecorder, first: dict[str, FileChange]) -> None:
@@ -244,26 +262,29 @@ def _flush(recorder: ChangeRecorder) -> list[dict] | None:
     一个小毛病换一个大毛病。但也不是完全没声音 —— 磁盘满这类事得留条线索，否则用户会发现
     「还原」悄悄不管用了，却不知道是从什么时候开始的。
     """
-    changes = recorder.changes
-    if not changes:
-        return None
+    with recorder._lock:
+        # 复制一份稳定视图再生成摘要和 manifest。虽然 record_text() 已经持锁，
+        # 这里仍自行保护，避免 save() 或未来新增的直接调用点重新引入竞态。
+        current = list(recorder.changes)
+        if not current:
+            return None
 
-    # 按文件去重，只留**最早**那一条：还原要的是「这一轮开始时它长什么样」。同一个文件
-    # 被改过几次的话，只有最早那条的 before 是对的 —— 用最后一条会把中间那次的结果当成原样。
-    first: dict[str, FileChange] = {}
-    for change in changes:
-        first.setdefault(change.path, change)
+        # 按文件去重，只留**最早**那一条：还原要的是「这一轮开始时它长什么样」。同一个文件
+        # 被改过几次的话，只有最早那条的 before 是对的 —— 用最后一条会把中间那次的结果当成原样。
+        first: dict[str, FileChange] = {}
+        for change in current:
+            first.setdefault(change.path, change)
 
-    # 摘要先算出来：它只依赖内存里的改动。界面显示的「改了哪几个文件」是已经发生的事实，
-    # 不该因为快照没写成功就变成「没改过」
-    summary = [{"path": c.path, "kind": c.kind, "binary": c.binary} for c in first.values()]
+        # 摘要先算出来：它只依赖内存里的改动。界面显示的「改了哪几个文件」是已经发生的事实，
+        # 不该因为快照没写成功就变成「没改过」
+        summary = [{"path": c.path, "kind": c.kind, "binary": c.binary} for c in first.values()]
 
-    try:
-        _persist(recorder, first)
-    except OSError as exc:
-        print(f"[changes] 快照落盘失败，这一轮将无法还原：{exc}", flush=True)
+        try:
+            _persist(recorder, first)
+        except OSError as exc:
+            print(f"[changes] 快照落盘失败，这一轮将无法还原：{exc}", flush=True)
 
-    return summary
+        return summary
 
 
 def save(recorder: ChangeRecorder) -> dict | None:

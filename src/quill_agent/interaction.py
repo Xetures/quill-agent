@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from collections.abc import Sequence
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
@@ -94,6 +95,9 @@ class Interaction:
         self.run_id = run_id
         self._loop = loop
         self._lock = threading.Lock()
+        # 前端一次运行只展示一张问题卡。并行子代理可能同时走到确认点，因此发布前
+        # 必须在这里排队；否则后一个 ask() 会覆盖前一个的 waiter / question id。
+        self._question_lock = threading.Lock()
         self._waiter: threading.Event | None = None
         self._pending: str = ""  # 正在等答案的问题 id；空串表示没有
         self._answer: str | None = None
@@ -128,42 +132,62 @@ class Interaction:
     ) -> str | None:
         """发一个问题并**阻塞**等答案。
 
+        并行调用会在发布前排队：前端每次运行只维护一张问题卡，后一个问题不能覆盖
+        前一个。`timeout` 从调用本方法时开始计算，包含排队时间。
+
         Returns:
-            用户给的答案；**问不到时返回 None**（超时 / 没有前端接住）。
+            用户给的答案；**问不到时返回 None**（超时 / 取消 / 没有前端接住）。
             调用方必须区分「None」和「用户回答了空字符串」：前者是没问到，
             后者是一个明确的（只是内容为空的）回答。
         """
-        with self._lock:
-            self._seq += 1
-            question = Question(
-                id=f"q{self._seq}",
-                kind=kind,
-                text=text,
-                detail=detail,
-                options=tuple(options),
-                timeout=timeout,
-            )
-            waiter = threading.Event()
-            self._waiter = waiter
-            self._pending = question.id
-            self._answer = None
+        timeout = max(0.0, timeout)
+        deadline = time.monotonic() + timeout
 
-        self.publish(("question", {**question.to_payload(), "run_id": self.run_id}))
+        # Lock.acquire() 不能同时等锁和取消，用短超时轮询给 cancel() 留检查点。
+        while not self._question_lock.acquire(
+            timeout=min(0.1, max(0.0, deadline - time.monotonic()))
+        ):
+            if self.is_cancelled() or time.monotonic() >= deadline:
+                return None
 
-        # 返回值不看 wait() 的结果，只看「有没有答案落进来」：
-        # 超时和「答案恰好在超时那一下写进来」之间有个窄窗口，
-        # answer() 已经认领了这次提问（清空了 _pending）并返回 True，
-        # 那这一轮就必须用它的答案，否则两边对这次提问的结论会不一致。
-        waiter.wait(timeout)
+        try:
+            with self._lock:
+                if self._cancelled:
+                    return None
 
-        with self._lock:
-            answered = self._answer is not None
-            value = self._answer
-            self._answer = None
-            self._waiter = None
-            self._pending = ""
+                self._seq += 1
+                remaining = max(0.0, deadline - time.monotonic())
+                question = Question(
+                    id=f"q{self._seq}",
+                    kind=kind,
+                    text=text,
+                    detail=detail,
+                    options=tuple(options),
+                    timeout=remaining,
+                )
+                waiter = threading.Event()
+                self._waiter = waiter
+                self._pending = question.id
+                self._answer = None
 
-        return value if answered else None
+            self.publish(("question", {**question.to_payload(), "run_id": self.run_id}))
+
+            # 返回值不看 wait() 的结果，只看「有没有答案落进来」：
+            # 超时和「答案恰好在超时那一下写进来」之间有个窄窗口，
+            # answer() 已经认领了这次提问（清空了 _pending）并返回 True，
+            # 那这一轮就必须用它的答案，否则两边对这次提问的结论会不一致。
+            waiter.wait(remaining)
+
+            with self._lock:
+                answered = self._answer is not None
+                value = self._answer
+                self._answer = None
+                self._waiter = None
+                self._pending = ""
+
+            return value if answered else None
+        finally:
+            self._question_lock.release()
 
     def answer(self, question_id: str, value: str) -> bool:
         """回填一个答案并唤醒等待中的提问。

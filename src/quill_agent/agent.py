@@ -27,10 +27,11 @@ build_memory_block / build_skill_catalog 那两段），不是拼进第一条里
 from __future__ import annotations
 
 import json
+import threading
 import time
 from collections.abc import Iterator
 from contextlib import suppress
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -346,6 +347,43 @@ class RunStats:
         self.total_tokens += other.total_tokens
 
 
+@dataclass
+class TokenBudget:
+    """父代理与所有子代理共享的单轮 token 安全阀。"""
+
+    limit: int
+    total: int = 0
+    warned: bool = False
+    _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+
+    def add_usage(self, usage) -> int:
+        """原子累加一次模型调用的总 token，返回累加后的运行总量。"""
+        amount = getattr(usage, "total_tokens", 0) or 0 if usage is not None else 0
+        with self._lock:
+            self.total += amount
+            return self.total
+
+    def used(self) -> int:
+        with self._lock:
+            return self.total
+
+    def exceeded(self) -> bool:
+        with self._lock:
+            return bool(self.limit and self.total > self.limit)
+
+    def claim_warning(self) -> int | None:
+        """到达预警线时只让一个父/子 Agent 发出提醒。"""
+        with self._lock:
+            if (
+                not self.limit
+                or self.warned
+                or self.total < self.limit * BUDGET_WARN_RATIO
+            ):
+                return None
+            self.warned = True
+            return self.total
+
+
 @dataclass(frozen=True)
 class Notice:
     """系统提示：配置缺失、调用失败、模型空回答这类情况。
@@ -491,6 +529,7 @@ class RunEnvironment:
     choice: ModelChoice | None
     stats: RunStats
     todos: TodoBoard
+    token_budget: TokenBudget = field(default_factory=lambda: TokenBudget(run_token_limit()))
     # 这一轮的历史记录，**全量、未截断**：给 recall_history 工具用。
     #
     # 给全量而不是截断后的那份，是因为那个工具的价值恰恰在于「捞回被截掉的部分」——
@@ -504,6 +543,22 @@ _environment: ContextVar[RunEnvironment | None] = ContextVar("quill_environment"
 def current_environment() -> RunEnvironment | None:
     """当前这一轮的环境；不在运行里（测试、直接调工具）时返回 None。"""
     return _environment.get()
+
+
+def activate_environment(environment: RunEnvironment) -> Token:
+    """把一份运行环境绑到当前线程，返回交给 `deactivate_environment` 的 token。
+
+    主循环是自己设的（见 `run_agent_stream`），这一对是专门给**并行子代理**用的：
+    它们跑在线程池的工作线程里，而 ContextVar **不跨线程继承** —— 新线程里
+    `current_environment()` 是 None，子代理拿不到父级的模型选择、账本和上下文，
+    一开口就撞上「不在一次运行里，派不了子代理」。
+    """
+    return _environment.set(environment)
+
+
+def deactivate_environment(token: Token) -> None:
+    """解绑。**必须放在 finally 里** —— 线程池会复用线程，留着会串到下一个任务。"""
+    _environment.reset(token)
 
 
 def _expand_mcp_refs(names: list[str]) -> list[str]:
@@ -868,6 +923,8 @@ def summarize_history(
     model: str,
     records: list[dict],
     previous: str = "",
+    tracker: RunStats | None = None,
+    token_budget: TokenBudget | None = None,
 ) -> str | None:
     """调模型把一段历史压成摘要；失败返回 None。
 
@@ -891,6 +948,11 @@ def summarize_history(
             messages=[{"role": "user", "content": prompt}],
             timeout=SUMMARY_TIMEOUT,
         )
+        usage = getattr(response, "usage", None)
+        if tracker is not None:
+            tracker.add_usage(usage)
+        if token_budget is not None:
+            token_budget.add_usage(usage)
         content = (response.choices[0].message.content or "").strip()
     except Exception:  # noqa: BLE001
         # 网络、超时、网关报错、返回结构不对 —— 全都不该让这一轮挂掉。
@@ -942,6 +1004,8 @@ def _compact_if_needed(
     budget: int,
     client: OpenAI,
     model: str,
+    tracker: RunStats | None = None,
+    token_budget: TokenBudget | None = None,
 ) -> Iterator[Notice | SummaryMade]:
     """需要就把早期历史压成摘要，顺便 yield 过程事件；最后 return 组装用的记录列表。
 
@@ -957,7 +1021,12 @@ def _compact_if_needed(
     yield Notice(f"上下文快满了，正在把更早的 {len(to_compress)} 条记录压缩成摘要……")
 
     summary = summarize_history(
-        client=client, model=model, records=to_compress, previous=previous
+        client=client,
+        model=model,
+        records=to_compress,
+        previous=previous,
+        tracker=tracker,
+        token_budget=token_budget,
     )
 
     if summary is None:
@@ -1289,6 +1358,7 @@ def run_agent_stream(
     stats: RunStats | None = None,
     board: TodoBoard | None = None,
     context: ModeContext | None = None,
+    token_budget: TokenBudget | None = None,
     thinking: bool = True,
 ) -> Iterator[str | ReasoningDelta | ToolStart | ToolStep | Notice | Usage | Round | SummaryMade]:
     """以流式方式跑一轮 Agent 对话。
@@ -1309,6 +1379,7 @@ def run_agent_stream(
             它要照搬父级的提示词和技能，但工具集要去掉几样（见 tools/subagent.py）。
             没有这个参数的话，「给谁用哪些工具」就只能靠运行时的拒绝来兜，
             而一个「看得见却永远调不通」的工具比不给它更让人困惑。
+        token_budget: 父级与子代理共享的运行级 token 预算；根运行不传时自动创建。
         thinking: 要不要让模型思考（推理模型的思维链）。**关闭**会带上
             `reasoning_effort="none"`（见 `_open_stream`）—— 小模型常常一思考就把
             输出预算花光、正文一个字都给不出来，这时候该关。有些服务不认这个参数，
@@ -1325,6 +1396,7 @@ def run_agent_stream(
     """
     tracker = stats if stats is not None else RunStats()
     todos = board if board is not None else TodoBoard()
+    budget = token_budget if token_budget is not None else TokenBudget(run_token_limit())
     started = time.monotonic()
 
     resolved = context if context is not None else resolve_mode(mode)
@@ -1337,6 +1409,7 @@ def run_agent_stream(
             choice=choice,
             stats=tracker,
             todos=todos,
+            token_budget=budget,
             # 传全量：截断发生在组装请求的时候（见 build_history_messages），
             # 而 recall_history 要能捞回被截掉的那部分
             history=list(history or []),
@@ -1351,6 +1424,7 @@ def run_agent_stream(
             history=history,
             context=resolved,
             tracker=tracker,
+            token_budget=budget,
             thinking=thinking,
         )
     finally:
@@ -1401,6 +1475,7 @@ def _run_stream(
     history: list[dict] | None,
     context: ModeContext,
     tracker: RunStats,
+    token_budget: TokenBudget,
     thinking: bool = True,
 ) -> Iterator[str | ReasoningDelta | ToolStart | ToolStep | Notice | Usage | Round | SummaryMade]:
     """run_agent_stream 的真实实现。
@@ -1461,6 +1536,8 @@ def _run_stream(
         budget=budget,
         client=client,
         model=choice.model,
+        tracker=tracker,
+        token_budget=token_budget,
     )
     messages.extend(build_history_messages(compacted, context_window=window))
 
@@ -1496,11 +1573,8 @@ def _run_stream(
     # 「上限是多少」，拿递减后的值会说出「已达到 0 轮上限」这种鬼话。
     round_limit = run_max_iterations()
     tool_budget = round_limit
-    # 开销上限也在这里读一次：这一轮开始时的值说了算，
-    # 中途改偏好文件不该影响正在跑的对话
-    limit = run_token_limit()
-    # 预算预警只提醒一次：重复堆进上下文既占地方，也只会让模型唠叨
-    budget_warned = False
+    # 父级和全部子代理共用同一个预算对象：并行不会把单轮上限按 Agent 数量放大。
+    limit = token_budget.limit
 
     # 循环一定终止：每次迭代要么直接 return（拿到回答 / 预算已耗尽），
     # 要么把 tool_budget 减一。所以最多请求 MAX_ITERATIONS + 1 次。
@@ -1511,22 +1585,24 @@ def _run_stream(
             yield Notice("已取消这一轮。")
             return
 
+        # 预算可能由并行子代理耗尽；每次请求前都检查共享闸门，避免继续放大费用。
+        if token_budget.exceeded():
+            yield Notice(
+                f"本轮已用 {token_budget.used()} tokens，超过上限 {limit}，已停止。"
+                "要放开的话去「偏好设置」里改「单轮开销上限」。"
+            )
+            return
+
         # 报一下「现在跑第几圈」。放在请求之前 —— 这一行是对这次请求的说明，
         # 而且就算请求失败，用户也已经知道它走到哪了
         yield Round(index=round_limit - tool_budget + 1, total=round_limit)
 
         # 快撞上预算就提醒模型收尾（见 BUDGET_WARNING）。检查点必须在**发出这次请求
         # 之前** —— 提醒要赶在这一轮送出去，模型才来得及把剩下的活收拢到预算之内。
-        if (
-            limit
-            and not budget_warned
-            and tracker.total_tokens >= limit * BUDGET_WARN_RATIO
-        ):
-            budget_warned = True
+        warned_at = token_budget.claim_warning()
+        if warned_at is not None:
             messages.append({"role": "user", "content": BUDGET_WARNING})
-            yield Notice(
-                f"本轮已用 {tracker.total_tokens} tokens（上限 {limit}），已提醒模型收尾。"
-            )
+            yield Notice(f"本轮已用 {warned_at} tokens（上限 {limit}），已提醒模型收尾。")
 
         # 预算用尽就不再提供工具；空列表也不能传，部分服务不接受空的 tools
         available_tools = tools if tool_budget > 0 else None
@@ -1578,6 +1654,7 @@ def _run_stream(
                 # 用量在流末尾单独一个 chunk 里，它通常是不带 choices 的
                 usage = getattr(chunk, "usage", None)
                 tracker.add_usage(usage)
+                token_budget.add_usage(usage)
 
                 # 拿到就播报（见 Usage）：这一轮里上下文是在**长**的，攒到最后才给的话，
                 # 界面整个过程都停在上一轮的读数上，跑完才跳一下
@@ -1675,9 +1752,9 @@ def _run_stream(
         # 那些副作用没人再消化。这里和 MAX_ITERATIONS 用尽时的做法**故意不同**：
         # 那边会再发一次「不带工具的收尾请求」（别浪费已经执行的工具结果），
         # 这边是直接停（别再花钱了）—— 目的相反，行为也就该相反。
-        if limit and tracker.total_tokens > limit:
+        if token_budget.exceeded():
             yield Notice(
-                f"本轮已用 {tracker.total_tokens} tokens，超过上限 {limit}，已停止。"
+                f"本轮已用 {token_budget.used()} tokens，超过上限 {limit}，已停止。"
                 "要放开的话去「偏好设置」里改「单轮开销上限」。"
             )
             return
@@ -1704,6 +1781,15 @@ def _run_stream(
             # 它们的副作用已经没人要了
             if interaction.cancelled():
                 yield Notice("已取消这一轮，剩下的工具调用没有执行。")
+                return
+
+            # 前一个工具可能自己调用了模型（web_fetch），也可能派了子代理。它们和父级
+            # 共用预算；刚超过上限时，这一批剩余的副作用也必须停下。
+            if token_budget.exceeded():
+                yield Notice(
+                    f"本轮已用 {token_budget.used()} tokens，超过上限 {limit}，"
+                    "剩下的工具调用没有执行。"
+                )
                 return
 
             # 先播「要跑什么」再跑：工具本身可能几秒到几十秒（联网搜索、扫目录），

@@ -29,10 +29,14 @@ class FakeClient:
     """
 
     def __init__(
-        self, reply: str | None = "【摘要】用户要求把认证改成 JWT。", error: Exception | None = None
+        self,
+        reply: str | None = "【摘要】用户要求把认证改成 JWT。",
+        error: Exception | None = None,
+        usage: Any = None,
     ) -> None:
         self.reply = reply
         self.error = error
+        self.usage = usage
         self.prompts: list[str] = []
         # 形状照着 openai SDK 的调用链摆：client.chat.completions.create(...)
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
@@ -43,7 +47,7 @@ class FakeClient:
             raise self.error
 
         message = SimpleNamespace(content=self.reply)
-        return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+        return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=self.usage)
 
 
 def _drain(gen: Iterator[Any]) -> tuple[list[Any], Any]:
@@ -216,6 +220,30 @@ def test_compaction_returns_a_summary_record_plus_the_recent_ones() -> None:
     assert result[0]["content"] == "【摘要】X"
     assert result[0]["covers"] == 40 - SUMMARY_KEEP_RECENT
     assert len(result) == 1 + SUMMARY_KEEP_RECENT
+
+
+def test_compaction_usage_counts_toward_the_shared_budget() -> None:
+    """历史压缩也是模型调用，必须进入账本和父子 Agent 共用的预算。"""
+    usage = SimpleNamespace(prompt_tokens=80, completion_tokens=20, total_tokens=100)
+    client = FakeClient("摘要", usage=usage)
+    history = _records(40)
+    stats = agent.RunStats()
+    budget = agent.TokenBudget(limit=90)
+
+    _drain(
+        agent._compact_if_needed(
+            history=history,
+            budget=500,
+            client=client,
+            model="m",
+            tracker=stats,
+            token_budget=budget,
+        )
+    )
+
+    assert stats.total_tokens == 100
+    assert budget.used() == 100
+    assert budget.exceeded()
 
 
 def test_compaction_failure_returns_the_history_untouched() -> None:
