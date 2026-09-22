@@ -44,6 +44,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
+from quill_agent import changes
 from quill_agent.config import get_settings
 from quill_agent.preferences import PreferenceStore
 from quill_agent.tools.base import registry
@@ -659,6 +660,10 @@ def write_file(path: str, content: str) -> str:
     except OSError as exc:
         return f"无法创建父目录：{exc}"
 
+    # 先记改动再动手：记录器读的是磁盘上那份旧内容，写完再读就没得记了。
+    # kind 区分「新建」和「覆盖」—— 界面上那两件事看着完全不同
+    changes.record_text(target, content, kind="write" if existed else "create")
+
     try:
         _atomic_write(target, content)
     except OSError as exc:
@@ -724,6 +729,8 @@ def edit_file(path: str, old_string: str, new_string: str) -> str:
         )
 
     updated = text.replace(old_string, new_string, 1)
+
+    changes.record_text(target, updated, kind="edit")
 
     try:
         _atomic_write(target, updated)
@@ -1059,6 +1066,11 @@ def move_file(source: str, destination: str) -> str:
 
     kind = "目录" if src.is_dir() else "文件"
 
+    # 移动 = 源没了 + 目标出现，两个都要记：还原时源要写回来、目标要删掉。
+    # 目标的 after 传 None —— 它要表达的是「原本不存在」，还原逻辑据此把它删掉
+    changes.record_text(src, None, kind="move")
+    changes.record_text(dst, None, kind="move")
+
     try:
         shutil.move(str(src), str(dst))
     except OSError as exc:
@@ -1112,6 +1124,9 @@ def copy_file(source: str, destination: str) -> str:
             return f"复制失败：{exc}"
         return f"已复制目录：{source} -> {destination}"
 
+    # 复制只动目标：源还在原处，记它没有意义（还原时也轮不到它）
+    changes.record_text(dst, None, kind="copy")
+
     try:
         shutil.copy2(src, dst)  # copy2 连时间戳一起带过去
     except OSError as exc:
@@ -1151,6 +1166,9 @@ def delete_file(path: str) -> str:
         except OSError as exc:
             return f"删除失败：{exc}（本工具只删除空目录，请先清空里面的内容）"
         return f"已删除空目录：{path}"
+
+    # 删之前把内容记下来 —— 否则「还原」对这条改动无能为力，而删除正是最想要后悔药的操作
+    changes.record_text(target, None, kind="delete")
 
     try:
         target.unlink()

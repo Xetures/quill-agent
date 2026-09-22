@@ -20,6 +20,7 @@ from pydantic import ValidationError
 
 from quill_agent.locking import atomic_write_text, file_lock
 from quill_agent.models import (
+    McpServer,
     Mode,
     ModelConfig,
     PromptGroup,
@@ -554,6 +555,93 @@ class ModeStore:
             self._save_all([item for item in items if item.id != mode_id])
 
     def _save_all(self, items: list[Mode]) -> None:
+        """整体覆写（须由调用方持锁进入，见 `file_lock`）。"""
+        atomic_write_text(
+            self._path,
+            json.dumps([item.model_dump() for item in items], ensure_ascii=False, indent=2),
+        )
+
+
+class McpServerStore:
+    """MCP 服务器配置的持久化。结构与 ToolGroupStore 一致（一列对象、按 id 增删改）。
+
+    这里**没有 `builtin` 那一套**：MCP 服务器全是用户自己配的，不存在「出厂自带的
+    服务器」——那等于我们替用户决定「这台机器上要跑哪些外部进程」，不该有这种默认值。
+    """
+
+    def __init__(self, path: str | Path) -> None:
+        self._path = Path(path)
+
+    def list(self) -> list[McpServer]:
+        """读取全部配置；文件缺失或损坏时返回空列表，单条不合法则跳过（见 load_items）。"""
+        return load_items(self._path, McpServer)
+
+    def get(self, server_id: str) -> McpServer | None:
+        """按 id 查找，找不到返回 None。"""
+        return next((item for item in self.list() if item.id == server_id), None)
+
+    def find_by_name(self, name: str) -> McpServer | None:
+        """按名字查找 —— 名字同时是工具名前缀，重名会让工具名撞车，必须拦。"""
+        return next((item for item in self.list() if item.name == name), None)
+
+    def add(
+        self,
+        *,
+        name: str,
+        description: str = "",
+        transport: str = "stdio",
+        command: str = "",
+        args: list[str] | None = None,
+        env: dict[str, str] | None = None,
+        url: str = "",
+        timeout: float = 30.0,
+    ) -> McpServer:
+        """新增一个服务器配置，id 由本方法生成并返回。
+
+        Raises:
+            ValueError: 名字已被占用。它同时是工具名前缀，重名会让两批工具撞在一起。
+        """
+        item = McpServer(
+            id=uuid4().hex,
+            name=name,
+            description=description,
+            transport=transport,  # type: ignore[arg-type]  # 由 pydantic 校验
+            command=command,
+            args=list(args or []),
+            env=dict(env or {}),
+            url=url,
+            timeout=timeout,
+        )
+
+        # 重名校验在锁内、对着同一份快照判（理由同 ToolGroupStore.add）
+        with file_lock(self._path):
+            items = self.list()
+            if any(server.name == name for server in items):
+                raise ValueError(f"已有叫「{name}」的 MCP 服务器，请换一个名字。")
+
+            self._save_all([*items, item])
+
+        return item
+
+    def update(self, item: McpServer) -> None:
+        """按 id 覆盖更新；id 不存在时静默忽略。改名冲突在这里拦。"""
+        with file_lock(self._path):
+            items = self.list()
+            if not any(server.id == item.id for server in items):
+                return
+
+            clash = any(server.name == item.name and server.id != item.id for server in items)
+            if clash:
+                raise ValueError(f"已有叫「{item.name}」的 MCP 服务器，请换一个名字。")
+
+            self._save_all([server if server.id != item.id else item for server in items])
+
+    def remove(self, server_id: str) -> None:
+        """按 id 删除；id 不存在时静默忽略。"""
+        with file_lock(self._path):
+            self._save_all([item for item in self.list() if item.id != server_id])
+
+    def _save_all(self, items: list[McpServer]) -> None:
         """整体覆写（须由调用方持锁进入，见 `file_lock`）。"""
         atomic_write_text(
             self._path,

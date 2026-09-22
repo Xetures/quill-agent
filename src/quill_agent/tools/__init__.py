@@ -9,7 +9,16 @@
 """
 
 # 导入这些模块会触发工具的注册（装饰器在模块加载时执行）
-from quill_agent.tools import builtin, files, shell, subagent, todo, web  # noqa: F401
+from quill_agent.tools import (  # noqa: F401
+    builtin,
+    files,
+    git,
+    shell,
+    subagent,
+    symbols,
+    todo,
+    web,
+)
 from quill_agent.tools.base import ToolKind, ToolRegistry, ToolSpec, registry
 
 __all__ = ["ToolKind", "ToolRegistry", "ToolSpec", "registry"]

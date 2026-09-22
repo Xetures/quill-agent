@@ -13,6 +13,28 @@ from quill_agent.sandbox import SandboxMode
 from quill_agent.search import DEFAULT_MAX_RESULTS, MAX_RESULTS_LIMIT, SearchBackend
 
 
+class McpServerPayload(BaseModel):
+    """添加 / 修改一个 MCP 服务器，或者拿它试连一次。
+
+    字段和 `McpServer` 对齐，但**没有 `id`**：新增时由存储层生成；试连时根本不需要
+    （那是一次性的，不落盘）。
+    """
+
+    name: str = Field(
+        min_length=1,
+        pattern=r"^[A-Za-z0-9_-]+$",
+        description="显示名，也是工具名前缀（只能是字母、数字、下划线、短横）",
+    )
+    description: str = Field(default="", description="功能简介")
+    transport: str = Field(default="stdio", description="stdio 或 http")
+    command: str = Field(default="", description="stdio：要执行的命令")
+    args: list[str] = Field(default_factory=list, description="stdio：命令参数")
+    env: dict[str, str] = Field(default_factory=dict, description="stdio：额外的环境变量")
+    url: str = Field(default="", description="http：服务器地址")
+    enabled: bool = Field(default=True, description="停用后不连接、不注册工具")
+    timeout: float = Field(default=30.0, description="连接与单次调用的秒数上限")
+
+
 class ChatRequest(BaseModel):
     """发一条消息，用 SSE 把整轮过程推回去。"""
 

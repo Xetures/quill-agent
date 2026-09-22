@@ -21,18 +21,18 @@ from pydantic import BaseModel, Field
 class ToolKind(str, Enum):
     """工具的实现形态。
 
-    目前只有「本地函数」一种：注册表里存的就是可调用的 Python 函数。
-    将来接 MCP 或远程工具时在这里加成员，注册表和页面都不用改结构 ——
-    但没有实际实现之前不预置占位成员：一个永远取不到的枚举值，只会让读的人
-    以为「远程工具这条路已经通了」。
+    `LOCAL` 是注册表里存着一个可调用的 Python 函数；`MCP` 是「调用要转发给某个 MCP
+    服务器」—— 对注册表来说两者没区别（都是往 `_funcs` 里放一个函数），区别只在
+    来源，界面拿它做提示和筛选。
     """
 
     LOCAL = "local"
+    MCP = "mcp"
 
     @property
     def label(self) -> str:
         """界面展示用的名称。"""
-        return {ToolKind.LOCAL: "本地"}[self]
+        return {ToolKind.LOCAL: "本地", ToolKind.MCP: "MCP"}[self]
 
 
 class ToolSpec(BaseModel):
@@ -74,6 +74,8 @@ class ToolRegistry:
     def __init__(self) -> None:
         self._specs: dict[str, ToolSpec] = {}
         self._funcs: dict[str, Callable[..., str]] = {}
+        #: 外部来源（MCP 服务器 id）→ 它注册了哪些工具名。注销时整批摘掉用。
+        self._sources: dict[str, list[str]] = {}
 
     def tool(
         self,
@@ -107,6 +109,50 @@ class ToolRegistry:
             return func
 
         return decorator
+
+    def register_external(
+        self,
+        specs: list[tuple[ToolSpec, Callable[..., str]]],
+        *,
+        source: str,
+    ) -> None:
+        """运行时注册一批外部工具（MCP）。
+
+        和 `tool` 装饰器的差别只有时机：那些在 import 时静态注册，这些要等连上服务器
+        才知道有什么。
+
+        Args:
+            specs: (声明, 调用函数) 列表。
+            source: 来源标识（服务器 id）。**按来源整批注销**，而不是逐个名字摘 ——
+                服务器重连之后工具集可能变了，逐个摘会留下已不存在的幽灵工具。
+        """
+        self.unregister_source(source)
+
+        names: list[str] = []
+        for spec, func in specs:
+            self._specs[spec.name] = spec
+            self._funcs[spec.name] = func
+            names.append(spec.name)
+
+        self._sources[source] = names
+
+    def unregister_source(self, source: str) -> None:
+        """摘掉某个来源注册过的全部工具；没注册过就什么都不做。
+
+        内置工具**不在任何来源之下**，所以这个方法动不到它们。
+        """
+        for name in self._sources.pop(source, []):
+            self._specs.pop(name, None)
+            self._funcs.pop(name, None)
+
+    def sources(self) -> list[str]:
+        """当前挂着的外部来源 id 列表。
+
+        调用方拿它做「这次还有谁在」的比对：服务器被删掉或停用之后，管理器里已经没有
+        它了，但注册表里还挂着它上次注册的那批工具 —— 不主动摘，那些工具会一直占着
+        上下文，模型也还会去调（然后收到一句「不可用」）。
+        """
+        return list(self._sources)
 
     def all(self) -> list[ToolSpec]:
         """全部工具（按注册顺序）。"""

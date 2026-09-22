@@ -25,6 +25,35 @@ export interface ToolStep {
    * 而 TS 什么都不会提示。
    */
   elapsed?: number
+  /**
+   * 这次调用改动的文件（含 diff）。空或没有 = 这个工具没碰文件。
+   *
+   * 可选同 `elapsed`：后加的字段，之前落盘的记录里没有。
+   */
+  changes?: FileChange[]
+}
+
+/**
+ * 一次文件改动。后端 `changes.FileChange.payload()` 的直接投影。
+ *
+ * `diff` 是 unified diff 文本（可能被截断，末尾会有一行「… 还有 N 行未显示」）。
+ * 新建文件时它是空串 —— 内容就是全文，没有「变化」可看。
+ */
+export interface FileChange {
+  path: string
+  kind: string
+  added: number
+  removed: number
+  /** 二进制或过大：只记了「改过」，没有内容，也就还原不回去。 */
+  binary: boolean
+  diff: string
+}
+
+/** 一轮里所有改动的汇总，挂在助手消息上。 */
+export interface RunChanges {
+  /** 这一轮运行 id ——「还原」要靠它定位检查点。 */
+  run_id: string
+  files: { path: string; kind: string; binary: boolean }[]
 }
 
 export interface RunStats {
@@ -88,6 +117,14 @@ export interface Message {
    */
   files?: string[]
   steps?: ToolStep[]
+  /**
+   * 这一轮改动的汇总（没有改动时是 null）。
+   *
+   * 和 `steps[].changes` 是**两种粒度**：后者是「这一次调用改了什么」（含 diff 正文），
+   * 前者是「这一轮一共动了哪些文件」—— 界面上的「还原」按钮依据它，因为还原是按轮次的。
+   * 两者都由后端的改动记录器产出，不是两套账。
+   */
+  changes?: RunChanges | null
   /** 系统提示（不是模型输出），界面上标黄展示。 */
   notices?: string[]
   /** 推理模型的思维链，只用于回看。 */

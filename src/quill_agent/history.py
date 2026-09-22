@@ -24,6 +24,8 @@ from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
+from quill_agent.locking import atomic_write_text, file_lock
+
 # 标题取首条用户消息的前多少个字
 TITLE_MAX_CHARS = 20
 
@@ -151,6 +153,33 @@ class ConversationStore:
         path = self._active / f"{conv_id}{SUFFIX}"
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(message, ensure_ascii=False) + "\n")
+
+    def delete_at(self, conv_id: str, index: int) -> bool:
+        """删掉第 index 条消息（从 0 数）。索引越界或会话不存在时返回 False。
+
+        **重写整个文件**，而不是想办法挖个洞：这个格式靠**行号**定位消息，留一个空洞会让
+        「第几条」这个约定失效 —— 而前端的删除按钮正是按索引传进来的。
+
+        删掉之后，这条消息就不再参与后续对话的上下文组装（下一轮不会带上它）。
+
+        Raises:
+            ValueError: 会话不存在。
+        """
+        path = self._active / f"{conv_id}{SUFFIX}"
+        if not path.is_file():
+            raise ValueError(f"会话不存在：{conv_id}")
+
+        with file_lock(path):
+            messages = self._read(path)
+            if index < 0 or index >= len(messages):
+                return False
+
+            del messages[index]
+            atomic_write_text(
+                path,
+                "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in messages),
+            )
+        return True
 
     def archive(self, conv_id: str) -> bool:
         """归档会话；不存在时静默忽略。

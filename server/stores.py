@@ -16,6 +16,7 @@ from quill_agent.prompts import PromptLibrary
 from quill_agent.search import SearchStore
 from quill_agent.skills import SkillLibrary
 from quill_agent.store import (
+    McpServerStore,
     ModelStore,
     ModeStore,
     PromptGroupStore,
@@ -68,6 +69,11 @@ def prompts() -> PromptLibrary:
 def tool_groups() -> ToolGroupStore:
     """工具组（工具的搭配方案，模式的组成部分之一）。"""
     return ToolGroupStore(get_settings().tool_groups_path)
+
+
+def mcp_servers() -> McpServerStore:
+    """MCP 服务器配置（外部工具来源）。默认空 —— 全由用户显式添加。"""
+    return McpServerStore(get_settings().mcp_servers_path)
 
 
 def skills() -> SkillLibrary:

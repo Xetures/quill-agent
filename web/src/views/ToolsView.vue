@@ -10,6 +10,19 @@ import { errorText } from '../utils/error'
 // 数据
 // ---------------------------------------------------------------------------
 
+/** 工具组里引用「整个 MCP 服务器」的前缀。和后端 `agent.MCP_REF_PREFIX` 是同一口径。 */
+const MCP_REF = 'mcp:'
+
+/** MCP 服务器在工具组界面里只需要这几个字段。 */
+interface McpServerBrief {
+  id: string
+  name: string
+  connected: boolean
+  tools: string[]
+}
+
+const mcpServers = ref<McpServerBrief[]>([])
+
 const tools = ref<ToolSpec[]>([])
 const categories = ref<string[]>([])
 const groups = ref<ToolGroup[]>([])
@@ -38,13 +51,33 @@ const visibleGroups = computed(() => {
 })
 
 async function load(): Promise<void> {
-  const [toolData, groupData] = await Promise.all([
+  const [toolData, groupData, mcpData] = await Promise.all([
     api.get<{ tools: ToolSpec[]; categories: string[] }>('/tools'),
     api.get<{ groups: ToolGroup[] }>('/tool-groups'),
+    // MCP 服务器：工具组里可以「引入整个服务器」，所以这里也要拉一份
+    api.get<{ servers: McpServerBrief[] }>('/mcp/servers'),
   ])
   tools.value = toolData.tools
   categories.value = toolData.categories
   groups.value = groupData.groups
+  mcpServers.value = mcpData.servers
+}
+
+/**
+ * 表单里引用了哪些 MCP 服务器。
+ *
+ * 值形如 `mcp:<server_id>`，和真工具名放在同一个列表里 —— 后端在 `resolve_mode` 里
+ * 展开它（见 `agent._expand_mcp_refs`）。这样工具组的数据结构不用为新概念改形状。
+ */
+const selectedServers = computed(() =>
+  form.tools.filter((name) => name.startsWith(MCP_REF)).map((name) => name.slice(MCP_REF.length)),
+)
+
+function toggleServer(serverId: string, checked: boolean): void {
+  const ref = `${MCP_REF}${serverId}`
+  form.tools = checked
+    ? [...form.tools.filter((name) => name !== ref), ref]
+    : form.tools.filter((name) => name !== ref)
 }
 
 // ---------------------------------------------------------------------------
@@ -290,6 +323,31 @@ onMounted(() => {
           />
         </el-form-item>
 
+        <!-- 「引入整个服务器」放在逐个勾选**前面**：它是更粗的粒度，先决定要不要这批能力 -->
+        <el-form-item label="MCP 服务器">
+          <div v-if="!mcpServers.length" class="hint">
+            还没有配置 MCP 服务器 —— 去「偏好设置 → MCP」添加。
+          </div>
+          <div v-else class="mcp-refs">
+            <el-checkbox
+              v-for="server in mcpServers"
+              :key="server.id"
+              :model-value="selectedServers.includes(server.id)"
+              @update:model-value="(value: boolean | string | number) => toggleServer(server.id, Boolean(value))"
+            >
+              {{ server.name }}
+              <span class="muted">
+                （{{ server.connected ? `${server.tools.length} 个工具` : '未连接' }}）
+              </span>
+            </el-checkbox>
+          </div>
+          <div class="hint">
+            引入的是<strong>整个服务器</strong>：它以后新增的工具会自动跟上 —— 逐个勾选的话，
+            服务器升级后多出来的工具不会出现在名单里，而没人会知道为什么。只想给其中几个的话，
+            就别在这里勾，改从下面的工具列表里逐个选。
+          </div>
+        </el-form-item>
+
         <el-form-item label="工具列表">
           <div class="select-block">
             <div class="select-bar">
@@ -427,6 +485,20 @@ onMounted(() => {
   display: block;
   margin-bottom: 6px;
   font-size: 12px;
+}
+
+/* MCP 服务器引用：竖排复选框，每个一行 */
+.mcp-refs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.hint {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-soft);
 }
 
 /* 工具列表：一行「已选 x/y」+ 全选 / 清空，再下面是多选下拉 */

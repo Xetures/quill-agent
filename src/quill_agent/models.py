@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, model_validator
@@ -352,3 +352,37 @@ class Mode(BaseModel):
     memory_enabled: bool = Field(default=True, description="是否启用记忆")
     preferred_model: str = Field(default="", description="偏好模型的稳定标识；空表示沿用当前")
     builtin: bool = Field(default=False, description="是否应用自带的出厂资源（不可删除）")
+
+
+class McpServer(BaseModel):
+    """一个 MCP 服务器（外部工具来源）的配置。
+
+    **添加一个 MCP 服务器 = 允许它在这台机器上执行任意代码。** stdio 传输会起一个进程，
+    而且那个进程在**沙箱之外** —— 沙箱管的是 agent 自己执行的命令，管不到它。所以这里的
+    每个字段都会原样显示在界面上（命令、参数、环境变量），让用户在保存前看清它要跑什么。
+
+    Attributes:
+        name: 显示名，同时也是工具名前缀的来源（`mcp__<name>__<tool>`）。**限 `[A-Za-z0-9_-]`**：
+            它会被拼进发给模型的工具名，而模型 API 对名字有字符集限制。要写中文说明放
+            `description`。
+        transport: `stdio`（本地起进程）/ `http`（远程服务器）。
+        command / args / env: stdio 用 —— 执行的命令、参数、额外环境变量。
+        url: http 用 —— 服务器地址。
+        enabled: 停用的服务器不连接、也不注册工具。留配置但停用，比删掉再重建省事。
+        timeout: 连接与单次调用的秒数上限。
+    """
+
+    id: str = Field(description="唯一标识")
+    name: str = Field(
+        min_length=1,
+        pattern=r"^[A-Za-z0-9_-]+$",
+        description="显示名，也是工具名前缀（只能是字母、数字、下划线、短横）",
+    )
+    description: str = Field(default="", description="功能简介")
+    transport: Literal["stdio", "http"] = Field(default="stdio", description="连接方式")
+    command: str = Field(default="", description="stdio：要执行的命令")
+    args: list[str] = Field(default_factory=list, description="stdio：命令参数")
+    env: dict[str, str] = Field(default_factory=dict, description="stdio：额外的环境变量")
+    url: str = Field(default="", description="http：服务器地址")
+    enabled: bool = Field(default=True, description="停用后不连接、不注册工具")
+    timeout: float = Field(default=30.0, description="连接与单次调用的秒数上限")

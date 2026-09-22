@@ -20,10 +20,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
-from quill_agent import __version__, bootstrap, sandbox
+from quill_agent import __version__, bootstrap, mcp, sandbox
 from quill_agent.config import get_settings
+from quill_agent.tools.base import registry
 from server import stores
 from server.routes import chat, conversations, memory, models, search, tools, usage
+from server.routes import mcp as mcp_routes
 
 # `sandbox` 这个名字上面已经给了 `quill_agent.sandbox`（启动自检要用它，
 # 见 `sandbox.startup_note()`）。并进上一行会把它盖掉 —— 而且只在启动自检那一刻
@@ -39,6 +41,30 @@ logger = logging.getLogger(__name__)
 # 接口不受任何影响。这条路径也是「release 里该不该带 dist」的答案：
 # 带上就能一键跑，不带也不影响开发。
 WEB_DIST = Path(__file__).resolve().parent.parent / "web" / "dist"
+
+
+def _start_mcp_servers() -> None:
+    """按配置连接 MCP 服务器，并把它们的工具挂进注册表。
+
+    **连不上只是那一个不可用**，不影响应用启动 —— 一个第三方服务器的网络问题，
+    不该让整个应用打不开。失败原因留在管理器里，界面上能看到。
+
+    这一步是**同步**的：MCP 客户端要连上才知道有哪些工具，而「有哪些工具」会影响
+    界面（工具组里能勾什么）。所以宁可启动多等一会儿，也不要在工具列表上空着。
+    多个服务器之间是并发连接的，等待时间不是简单叠加。
+    """
+    servers = stores.mcp_servers().list()
+    if not servers:
+        return
+
+    mcp.manager.start(servers)
+    names = mcp.register_tools(registry)
+    connected = sum(1 for item in mcp.manager.all() if item.connected)
+    print(f"MCP：{connected}/{len(servers)} 个服务器已连接，注册了 {len(names)} 个工具", flush=True)
+
+    for item in mcp.manager.all():
+        if not item.connected:
+            print(f"MCP：{item.server.name} 连接失败 —— {item.error}", flush=True)
 
 
 def _prune_dangling_prompt_refs() -> None:
@@ -72,7 +98,10 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     logger.info(bootstrap.startup_note(get_settings()))
     logger.info(sandbox.startup_note())
     _prune_dangling_prompt_refs()
+    _start_mcp_servers()
     yield
+    # 退出时断开：stdio 传输起的那些子进程要跟着一起收掉，否则会变成孤儿进程
+    mcp.manager.stop()
 
 
 app = FastAPI(
@@ -104,6 +133,7 @@ app.include_router(memory.router, prefix="/api")
 app.include_router(usage.router, prefix="/api")
 app.include_router(search.router, prefix="/api")
 app.include_router(sandbox_routes.router, prefix="/api")
+app.include_router(mcp_routes.router, prefix="/api")
 
 
 @app.get("/api/health")

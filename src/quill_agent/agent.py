@@ -36,7 +36,7 @@ from datetime import datetime
 
 from openai import OpenAI
 
-from quill_agent import interaction
+from quill_agent import changes, interaction, mcp
 from quill_agent.config import get_settings
 from quill_agent.memory import MemoryStore
 from quill_agent.models import Mode, ModelChoice
@@ -257,6 +257,9 @@ class ToolStep:
     arguments: str
     result: str
     elapsed: float = 0.0
+    # 这次调用改动的文件（含 diff）。空列表 = 这个工具没碰文件（读、搜、问用户…）。
+    # 它和 `result` 是两回事：result 是给模型看的（会被截断），changes 是给人看的
+    changes: list[dict] = field(default_factory=list)
 
 
 def _cached_tokens(usage) -> int:
@@ -503,6 +506,31 @@ def current_environment() -> RunEnvironment | None:
     return _environment.get()
 
 
+def _expand_mcp_refs(names: list[str]) -> list[str]:
+    """把工具组里的 `mcp:<server_id>` 展开成那个服务器**当前**的全部工具。
+
+    为什么按服务器整体引入、而不是逐个勾选工具：服务器上有什么工具由它自己决定，而且
+    它升级之后会变 —— 逐个勾选的名单不会自动跟上，于是新工具静默不可用，用户完全不知道
+    为什么。「我要引入这个服务器」也正是用户的心智模型。
+
+    连不上的服务器展开成**空**：这里如实反映「此刻有什么」，而不是替用户保留一个
+    用不了的名单。`mcp.register_tools` 那边同样不会注册它的工具，两边口径一致。
+    """
+    expanded: list[str] = []
+
+    for name in names:
+        if not name.startswith(mcp.MCP_REF_PREFIX):
+            expanded.append(name)
+            continue
+
+        server_id = name[len(mcp.MCP_REF_PREFIX) :]
+        connection = mcp.manager.get(server_id)
+        if connection is not None and connection.connected:
+            expanded.extend(tool.local_name for tool in connection.tools)
+
+    return expanded
+
+
 def resolve_mode(mode: Mode | None) -> ModeContext:
     """把模式解析成这一轮实际要用的资源。
 
@@ -531,7 +559,7 @@ def resolve_mode(mode: Mode | None) -> ModeContext:
     if mode.tool_group_id:
         group = ToolGroupStore(settings.tool_groups_path).get(mode.tool_group_id)
         if group is not None:
-            tools = list(group.tools)
+            tools = _expand_mcp_refs(group.tools)
             # 只认在组里的那些：即使存储层被手工改出「要求确认一个不在场的工具」，
             # 这里也不过是多一条永不命中的判断，不该让它影响别的工具
             confirm = frozenset(name for name in group.confirm if name in set(tools))
@@ -1684,6 +1712,10 @@ def _run_stream(
             yield ToolStart(name=slot["name"], arguments=slot["arguments"])
 
             call_started = time.monotonic()
+            # 这次调用改了哪些文件 = 执行前后各取一次记录条数，差集就是它。
+            # 这样不必去猜每个工具的语义（write 改一个、move 改两个、子代理改一堆）——
+            # 记录是文件工具自己写进去的，谁改的、改了几处，它比外层清楚
+            change_mark = changes.mark()
             result = _execute(slot, context.confirm)
 
             yield ToolStep(
@@ -1691,6 +1723,7 @@ def _run_stream(
                 arguments=slot["arguments"],
                 result=result,
                 elapsed=time.monotonic() - call_started,
+                changes=[item.payload() for item in changes.taken(change_mark)],
             )
 
             messages.append(

@@ -17,6 +17,7 @@ import { renderMarkdown } from '../utils/markdown'
 import {
   answerQuestion,
   loadDraft,
+  loadMessages,
   persistMode,
   persistModel,
   persistThinking,
@@ -355,6 +356,30 @@ function onFilesPicked(event: Event): void {
   input.value = ''
 }
 
+/**
+ * 删掉一条消息之后，重新拉一遍消息列表。
+ *
+ * **不就地改本地数组**：删掉一条之后，后面每条的索引都往前挪了一位，而删除按钮正是按
+ * 索引传给后端的 —— 就地改很容易漏掉这一点，于是下一次点删除会删错一条。
+ * 重拉一次是最省心也最不容易错的做法，代价只是一次请求。
+ */
+async function onMessageDeleted(): Promise<void> {
+  if (session.currentId) await loadMessages(session.currentId)
+}
+
+/**
+ * 这条消息在服务端历史里的位置；不该有操作按钮时返回 undefined。
+ *
+ * **判据是「是不是正在生成的那条」，不是看有没有 `ts`。** 正在生成的回复还没进服务端
+ * 历史，给它传索引会指向别的一条 —— 它在列表里一定是最后一条，而且此刻正是 `busy`。
+ * 反过来，刚发出去的用户消息是前端就地 push 的，那时它也没有 `ts`（要等下一轮拉取
+ * 服务端那份才带上），按 `ts` 判断会让它一直少两个按钮。
+ */
+function messageIndex(index: number): number | undefined {
+  const generating = session.busy && index === session.messages.length - 1
+  return generating ? undefined : index
+}
+
 async function send(): Promise<void> {
   const text = draft.value.trim()
   if (!text || session.busy) return
@@ -424,7 +449,15 @@ function onKeydown(event: Event | KeyboardEvent): void {
         class="stream-inner"
         :style="{ paddingBottom: `${floaterPad}px` }"
       >
-        <MessageItem v-for="(message, index) in session.messages" :key="index" :message="message" />
+        <!-- `index` 只给**已落盘**的消息（判据见 messageIndex）：正在生成的那条不在
+             服务端历史里，给它传索引只会指向别的一条，删除按钮会删错东西 -->
+        <MessageItem
+          v-for="(message, index) in session.messages"
+          :key="index"
+          :message="message"
+          :index="messageIndex(index)"
+          @deleted="onMessageDeleted"
+        />
 
         <!-- 执行前确认、子代理看板、任务清单都不在这里了：它们挪到了输入区上方的
              浮层里，理由见 .floater 那段样式说明 -->

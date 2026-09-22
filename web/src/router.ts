@@ -44,6 +44,11 @@ export const router = createRouter({
           component: () => import('./views/SearchView.vue'),
         },
         {
+          path: 'mcp',
+          name: 'settings-mcp',
+          component: () => import('./views/McpView.vue'),
+        },
+        {
           path: 'about',
           name: 'settings-about',
           component: () => import('./views/SettingsAboutView.vue'),

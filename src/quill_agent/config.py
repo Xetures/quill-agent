@@ -33,6 +33,7 @@ _PATH_FIELDS = (
     "prompt_groups_path",
     "modes_path",
     "tool_groups_path",
+    "mcp_servers_path",
     "skill_groups_path",
     "memory_path",
     "search_path",
@@ -144,6 +145,12 @@ class Settings(BaseSettings):
     tool_groups_path: Path = Field(
         default=Path("data/tool_groups.json"),
         description="工具组 JSON 路径",
+    )
+
+    # MCP：外部工具来源。默认**空** —— 加一个服务器等于允许它在这台机器上跑进程，
+    # 所以不预置任何默认值，全部由用户显式添加（见 README 的 MCP 一节）。
+    mcp_servers_path: Path = Field(
+        default=Path("data/mcp_servers.json"), description="MCP 服务器配置 JSON 路径"
     )
 
     # 技能：一个技能 = 一个目录（内含 SKILL.md），正文由用户维护；

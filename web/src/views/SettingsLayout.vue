@@ -17,6 +17,7 @@ const SECTIONS = [
   { to: '/settings/theme', label: '主题' },
   { to: '/settings/chat', label: '对话' },
   { to: '/settings/search', label: '联网搜索' },
+  { to: '/settings/mcp', label: 'MCP' },
   { to: '/settings/about', label: '关于' },
 ]
 </script>

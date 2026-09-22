@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 
+from quill_agent import mcp
 from quill_agent.config import get_settings
 from quill_agent.models import SkillGroup, ToolGroup
 from quill_agent.tools import registry
@@ -45,9 +46,25 @@ def _check_tool_names(names: list[str]) -> None:
 
     拼错的工具名意味着「这个组引用了一个不存在的东西」—— 模型端的工具
     菜单按组生成时会静默少一个工具，用户还以为它在。宁可保存时就报错。
+
+    **例外：`mcp:<server_id>` 这种引用**。它不是一个工具名，而是「引入整个 MCP
+    服务器」—— 展开发生在 `agent.resolve_mode` 里（见 `_expand_mcp_refs`），
+    到不了这张注册表。这里放行，但要确认那个服务器**确实存在**，否则就是同一个
+    「引用了一个不存在的东西」的问题，只不过换了个对象。
     """
     known = {spec.name for spec in registry.all()}
-    unknown = [name for name in names if name not in known]
+    servers = {server.id for server in stores.mcp_servers().list()}
+
+    unknown: list[str] = []
+    for name in names:
+        if name.startswith(mcp.MCP_REF_PREFIX):
+            server_id = name[len(mcp.MCP_REF_PREFIX) :]
+            if server_id not in servers:
+                unknown.append(f"{name}（没有这个 MCP 服务器）")
+            continue
+        if name not in known:
+            unknown.append(name)
+
     if unknown:
         raise HTTPException(status_code=400, detail=f"未知的工具名：{'、'.join(unknown)}")
 
@@ -58,6 +75,15 @@ def _check_confirm(names: list[str], tools: list[str]) -> None:
     「不在场却要求确认」是自相矛盾的配置：那个工具压根不会发给模型，
     这条确认规则永远不会被触发 —— 与其静默失效，不如保存时就报错。
     """
+    # `mcp:<id>` 不能出现在这里：它展开成一批**名字不同**的工具，这条规则永远命中不了 ——
+    # 与其静默失效，不如要求逐个指定（那批工具在工具列表里是可见、可勾的）
+    refs = [name for name in names if name.startswith(mcp.MCP_REF_PREFIX)]
+    if refs:
+        raise HTTPException(
+            status_code=400,
+            detail="「需要确认」只能逐个指定工具，不能引用整个 MCP 服务器 —— 请从工具列表里挑。",
+        )
+
     stray = [name for name in names if name not in set(tools)]
     if stray:
         raise HTTPException(

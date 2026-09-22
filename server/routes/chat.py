@@ -35,7 +35,7 @@ from uuid import uuid4
 from fastapi import APIRouter, File, Form, UploadFile
 from fastapi.responses import StreamingResponse
 
-from quill_agent import interaction
+from quill_agent import changes, interaction
 from quill_agent.agent import (
     Notice,
     ReasoningDelta,
@@ -47,9 +47,11 @@ from quill_agent.agent import (
     Usage,
     run_agent_stream,
 )
+from quill_agent.config import get_settings
 from quill_agent.history import ConversationStore
 from quill_agent.interaction import Interaction
 from quill_agent.models import Mode, ModelChoice
+from quill_agent.tools.files import current_work_dir
 from quill_agent.tools.todo import TodoBoard
 from server import stores
 from server.schemas import AnswerPayload, CancelPayload, ChatRequest
@@ -231,6 +233,11 @@ def stream_round(request: ChatRequest, files: list) -> Iterator[tuple[str, dict[
         # 事后也没法反推（会话里可以中途换模型），所以必须在落盘时就记下
         "model": request.model,
     }
+    # 这一轮改了哪些文件，顺手存一份快照供「还原」。
+    # 没有改动时是 None —— 前端据此不显示那一行，也不该有空荡荡的「还原」按钮
+    recorder = changes.current()
+    answer["changes"] = changes.save(recorder) if recorder else None
+
     _remember(store, conversation_id, answer)
 
     yield "done", answer
@@ -284,7 +291,16 @@ def _pump(run: Run, events: Iterator[tuple[str, dict[str, Any]]]) -> None:
     生成器被确认题阻塞时，`interaction.ask()` 会绕过它直接往队列里塞问题，
     所以这里的阻塞不会卡住前端。
     """
+    # 改动记录器也在这里激活：它和交互通道一样，是「这一轮运行的上下文」——
+    # 文件工具在别的线程/别的模块里执行，靠 ContextVar 找到当前这一轮
+    recorder = changes.ChangeRecorder(
+        work_dir=current_work_dir(),
+        home=get_settings().home,
+        conversation_id=run.conversation_id,
+        run_id=run.id,
+    )
     token = interaction.activate(run.channel)
+    changes_token = changes.activate(recorder)
     try:
         # 先报一次「我是谁」。前端要靠 run_id 才能取消这一轮，而 run_id 是运行开始时
         # 才生成的。**从 pump 里发而不是在端点里发**，是为了保证它排在这条流的最前面 ——
@@ -305,6 +321,7 @@ def _pump(run: Run, events: Iterator[tuple[str, dict[str, Any]]]) -> None:
     finally:
         run.channel.close()
         # 必须解绑：线程池会复用线程，留着会串到下一轮
+        changes.deactivate(changes_token)
         interaction.deactivate(token)
         _close(run)
 

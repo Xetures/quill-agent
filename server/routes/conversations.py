@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, Body, HTTPException, Response
 
+from quill_agent import changes
+from quill_agent.config import get_settings
 from quill_agent.history import ConversationMeta, render_markdown
 from quill_agent.preferences import draft_key, mode_key
+from quill_agent.tools.files import current_work_dir
 from server import stores
 
 router = APIRouter(tags=["conversations"])
@@ -100,7 +103,48 @@ def delete_conversation(conversation_id: str) -> dict[str, bool]:
     # 会话真的没了，它记住的模式也一并清掉 —— 别在偏好文件里留孤儿键。
     # 归档 / 恢复不清：会话还在，只是搬了个目录，恢复后模式应该原样回来
     stores.preferences().remove(mode_key(conversation_id))
+    # 改动快照同理：会话都没了，还留着它的历史版本没有意义（而且会一直占着磁盘）。
+    # 归档 / 恢复同样不清 —— 那个会话还能回来，它的「还原」也该还能用
+    changes.forget_conversation(get_settings().home, conversation_id)
     return {"removed": removed}
+
+
+# 路径里带 `/changes/`：`/conversations/{id}/restore` 已经归「从归档恢复」了
+# （见上面那个端点）。两者语义也完全不同 —— 一个是把会话搬回来，一个是把文件改回去，
+# 挤在同一个路径上迟早会有人调错
+@router.post("/conversations/{conversation_id}/changes/restore")
+def restore_changes(conversation_id: str, run_id: str = Body(embed=True)) -> dict:
+    """把某一轮改过的文件还原到改动前。
+
+    这里**不再确认一次**：前端那个按钮本来就要用户点两下（按钮 + 确认框），后端再加一道
+    只会让确认变成噪音。但要把话说清楚 —— **命令的副作用不在还原范围内**（见
+    `changes` 模块开头），所以返回值里带着没还原成功的文件，界面得如实转告。
+    """
+    restored, skipped = changes.restore(
+        get_settings().home, conversation_id, run_id, current_work_dir()
+    )
+    return {"restored": restored, "skipped": skipped}
+
+
+@router.delete("/conversations/{conversation_id}/messages/{index}")
+def delete_message(conversation_id: str, index: int) -> dict[str, bool]:
+    """删掉会话里的一条消息（按位置，从 0 数）。
+
+    是**真删**，不是界面上藏起来：删掉之后它不再参与后续对话的上下文组装，模型下一轮
+    就看不到它了。只藏不删的话，用户以为「删掉了」，而模型还记得 —— 那种「删了但没删」
+    比不给删更糟。
+    """
+    try:
+        removed = stores.conversations().delete_at(conversation_id, index)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    if not removed:
+        raise HTTPException(
+            status_code=400,
+            detail="这条消息不在会话里（可能已经被删过一次了），刷新一下看看。",
+        )
+    return {"removed": True}
 
 
 @router.delete("/conversations")
