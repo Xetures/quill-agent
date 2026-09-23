@@ -31,7 +31,8 @@ git、搜网页 —— 而且每一步都摊开给你看：调了哪个工具、
 
 ## 在 Mac 上安装（推荐）
 
-从 [Releases](../../releases) 下载最新的 `Quill-<版本>.dmg`，双击打开，把 **Quill**
+从 [Releases](https://github.com/Xetures/quill-agent/releases) 下载最新的
+`Quill-<版本>.dmg`，双击打开，把 **Quill**
 拖到旁边的 **Applications** 上 —— 装完了。DMG 里那个 Applications 是快捷方式，拖上去
 等于拷贝过去。
 
