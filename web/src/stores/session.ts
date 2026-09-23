@@ -26,7 +26,13 @@ import type {
 import { adoptStoredLocale, i18n, PREF_LANGUAGE } from '../locales'
 import { errorText } from '../utils/error'
 import { adoptStoredFontSize, PREF_FONT_SIZE } from './font-size'
-import { adoptStoredTheme, PREF_THEME } from './theme'
+import {
+  adoptStoredAutoThemes,
+  adoptStoredTheme,
+  PREF_AUTO_DARK,
+  PREF_AUTO_LIGHT,
+  PREF_THEME,
+} from './theme'
 
 /* 这里不是组件，取不到 useI18n() —— 用实例上的全局 t */
 const t = i18n.global.t
@@ -433,6 +439,8 @@ export async function loadPreferences(): Promise<void> {
   // 用的，偏好是换环境之后还在的那一份；两边都在时听本地的。
   adoptStoredTheme(prefs[PREF_THEME])
   adoptStoredFontSize(prefs[PREF_FONT_SIZE])
+  // 「跟随系统」时深浅各用哪两套，同上
+  adoptStoredAutoThemes(prefs[PREF_AUTO_LIGHT], prefs[PREF_AUTO_DARK])
 
   // 这里不解析模式：它是按会话记的，而此刻还不知道会落到哪个会话。
   // `loadMessages` 会负责把它取回来

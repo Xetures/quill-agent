@@ -21,7 +21,6 @@ export default {
 
   sidebar: {
     newTask: '新建任务',
-    tagline: '本地 Agent 工作台',
     section: '会话',
     empty: '还没有会话，点上面的「新建任务」开始',
     updatedAt: '最后更新：{time}',
@@ -708,10 +707,22 @@ export default {
 
   display: {
     theme: {
-      title: '明暗',
-      light: { label: '浅色', hint: '米白纸感' },
-      dark: { label: '深色', hint: '靛蓝夜色' },
+      title: '外观主题',
+      light: { label: '晴空', hint: '冰蓝晨曦' },
+      forest: { label: '翠竹', hint: '晨雾青玉' },
+      amber: { label: '暖阳', hint: '琥珀流金' },
+      sakura: { label: '樱雪', hint: '早春落樱' },
+      dark: { label: '靛蓝', hint: '星夜深蓝' },
+      twilight: { label: '暮光', hint: '紫霞流光' },
+      ember: { label: '赤焰', hint: '余烬熔火' },
+      aurora: { label: '极光', hint: '深空碧翠' },
       auto: { label: '跟随系统', hint: '随系统的深浅色设置自动切换' },
+      /** 「跟随系统」那张卡角上的齿轮：选定深浅各用哪一套 */
+      autoGear: '选择深浅各用哪一套',
+      autoDialogTitle: '跟随系统时的两套主题',
+      autoDialogNote: '系统处于浅色时用上面那一套，深色时用下面那一套。',
+      autoLightLabel: '系统浅色时',
+      autoDarkLabel: '系统深色时',
     },
     fontSize: {
       title: '字号',
@@ -722,7 +733,7 @@ export default {
     language: {
       title: '语言',
       'zh-CN': { label: '简体中文', hint: '界面与内置提示词都是中文' },
-      'en-US': { label: 'English', hint: '界面文案迁移中，部分位置仍是中文' },
+      'en-US': { label: 'English', hint: '界面已是英文；内置提示词仍是中文' },
     },
   },
 }

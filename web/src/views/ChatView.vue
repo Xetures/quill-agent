@@ -737,11 +737,6 @@ function onKeydown(event: Event | KeyboardEvent): void {
   flex: 1;
   min-height: 0;
   overflow: hidden;
-
-  /* 底色与投影由全局那条规则给、模糊在 .shell 那一层做一次（见 style.css 的
-   * 「玻璃的底色与模糊，分在两层上」）；这里只留描边与圆角 */
-  border: 1px solid var(--glass-border);
-  border-radius: var(--glass-radius);
 }
 
 .stream {
@@ -1073,7 +1068,7 @@ function onKeydown(event: Event | KeyboardEvent): void {
   --el-button-active-text-color: var(--ice-text);
   --el-button-active-border-color: transparent;
   --el-button-disabled-bg-color: transparent;
-  --el-button-disabled-text-color: rgba(46, 74, 107, 0.38);
+  --el-button-disabled-text-color: rgba(255, 255, 255, 0.45);
   --el-button-disabled-border-color: transparent;
 }
 
@@ -1083,7 +1078,7 @@ function onKeydown(event: Event | KeyboardEvent): void {
 
 /* 禁用时把渐变也调淡：背景是我们自己画的，Element 的 disabled 只管它自己那几个变量 */
 .send.el-button--primary.is-disabled {
-  background: linear-gradient(135deg, rgba(234, 242, 248, 0.55), rgba(200, 220, 232, 0.55));
+  background: linear-gradient(135deg, rgba(50, 94, 138, 0.35), rgba(27, 60, 96, 0.35));
   box-shadow: none;
 }
 </style>

@@ -111,8 +111,6 @@ onMounted(async () => {
   /* 桌面壳里顶边**多让出一截**给系统红绿灯 + 一道余量（见下面那段 :global） */
   padding-top: calc(20px + var(--titlebar-band, 0px) + var(--titlebar-gap, 0px));
   background: var(--seam-tint);
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
   overflow: hidden;
 }
 
@@ -167,15 +165,8 @@ onMounted(async () => {
   flex-direction: column;
   gap: 20px;
   min-width: 0;
-
-  /* 这两行是「输入框跑出视口」的修复关键。
-   * .main 是 grid item，而 grid item 的 min-height 默认是 auto —— 会被内容顶破
-   * grid 行，把整个主区撑得比视口还高。外层 .shell 又是 overflow: hidden，
-   * 超出的部分被直接裁掉，输入框就这么消失了（连滚动条都没有）。
-   * 置 0 才允许它收缩回行高以内。 */
   min-height: 0;
   height: 100%;
-  overflow: hidden;
 }
 
 .boot-error {
@@ -194,13 +185,7 @@ onMounted(async () => {
   height: var(--topbar-height);
   flex-shrink: 0;
   padding: 0 22px; /* 和侧栏板的内边距取齐，标题不会看着比别处缩进一格 */
-
-  /* 底色由全局那条规则给、模糊在 .shell 那一层做一次、投影也由它统一给
-   * （见 style.css 的「玻璃的底色与模糊，分在两层上」，那里也讲了四块板
-   * 为什么不投外投影）；这里只留描边与圆角 */
   overflow: hidden;
-  border: 1px solid var(--glass-border);
-  border-radius: var(--glass-radius);
 }
 
 .topbar-slot {

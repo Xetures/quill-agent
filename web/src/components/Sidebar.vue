@@ -13,14 +13,14 @@ import {
   Stamp,
   Tools,
 } from '@element-plus/icons-vue'
-import { computed, type Component } from 'vue'
+import { computed, onMounted, ref, type Component } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 
 // 毛玻璃蓝版图标（小尺寸简化版：这一格只有 40px，设计稿给的 02c 就是为小尺寸准备的
 // —— 大尺寸那一版细节多，缩到 40px 会糊成一团灰）。换图标的理由见 Quill Glass Blue
 // 的说明：同一页面里不要混用深蓝与柔蓝两版图标
-import quillIcon from '../assets/quill-icon-glass.svg'
+import { api } from '../api/client'
 import { archiveConversation, loadMessages, session, startNewConversation } from '../stores/session'
 import { formatTime } from '../utils/format'
 import HelpButton from './HelpButton.vue'
@@ -32,6 +32,23 @@ import HelpButton from './HelpButton.vue'
 const route = useRoute()
 const router = useRouter()
 const { t } = useI18n()
+
+/**
+ * 品牌区第二行放版本号（原先是一句副标题）。
+ *
+ * 只取**主版本.次版本**：补丁号对使用者没有意义，写全了反而像要他记一串数。拿不到
+ * （后端没起、接口不通）就整行不显示 —— 空着比留一个孤零零的 `v` 强。
+ */
+const version = ref('')
+
+onMounted(async () => {
+  try {
+    const data = await api.get<{ version: string }>('/health')
+    version.value = data.version.split('.').slice(0, 2).join('.')
+  } catch {
+    version.value = ''
+  }
+})
 
 interface NavItem {
   to: string
@@ -106,10 +123,12 @@ async function onArchive(id: string, title: string): Promise<void> {
          常驻信息 —— 挨着 LOGO 比挤在任务页标题旁边更说得通，那边也就能空出来给
          和当前任务真正相关的操作（比如执行权限） -->
     <div class="brand">
-      <img class="logo" :src="quillIcon" alt="Quill" />
+      <!-- 透明底的单色剪影：**颜色不给在文件里**，由主题主色给（见 .logo-mark）——
+           换主题就换色。原先那份是自带底板的彩色图标，颜色是死的 -->
+      <span class="logo-mark" role="img" aria-label="Quill" />
       <div class="brand-text">
         <div class="app-name">Quill</div>
-        <div class="tagline">{{ t('sidebar.tagline') }}</div>
+        <div v-if="version" class="version">v{{ version }}</div>
       </div>
       <HelpButton />
     </div>
@@ -209,17 +228,11 @@ async function onArchive(id: string, title: string): Promise<void> {
   flex-direction: column;
   gap: 20px;
   height: 100%;
-  overflow: hidden;
 }
 
-/* 玻璃配方（与顶边栏、任务区同一份，见 style.css 里的 --glass-* 变量）。
- * 底色与投影由全局那条规则统一给、模糊在 .shell 那一层做一次（见 style.css 的
- * 「玻璃的底色与模糊，分在两层上」）；这里只留描边与圆角 */
 .brand,
 .panel {
   overflow: hidden;
-  border: 1px solid var(--glass-border);
-  border-radius: var(--glass-radius);
 }
 
 /* 侧栏板：吃掉品牌板之外的全部高度，内部由 .scroll-body 自己滚 */
@@ -259,14 +272,31 @@ async function onArchive(id: string, title: string): Promise<void> {
   padding: 0 16px;
 }
 
-.logo {
+/**
+ * LOGO：透明底的单色剪影当**遮罩**，颜色由 `background-color` 给 —— 也就是主题主色
+ * （`--accent`，每套主题各有一份，见 style.css）。换主题时这边跟着换色。
+ *
+ * 为什么用遮罩而不是 `<img>`：img 里的 SVG 是独立文档，拿不到外层的 currentColor，
+ * 想让颜色跟着主题走只能换字体色那种办法 —— 遮罩把「形状」和「颜色」彻底分开，
+ * 换色只改一个属性。
+ */
+.logo-mark {
   flex-shrink: 0;
-  width: 40px;
-  height: 40px;
-  /* 玻璃版图标本身就是一块圆角玻璃板，这里只补一点投影让它从玻璃板上浮起来；
-   * 圆角交给图标自己（SVG 里的 rx 和这个值是同一个比例） */
-  border-radius: 11px;
-  box-shadow: var(--shadow-sm);
+  width: 36px;
+  height: 36px;
+  background-color: var(--accent);
+  transition: background-color 0.2s ease;
+
+  /* 用长写属性而不是 `mask` 简写：`position / size` 那种简写语法在老一点的 WebKit
+     （桌面壳用的就是它）上解析不稳，拆开来写两边都稳 */
+  -webkit-mask-image: url('../assets/quill-logo-mark-mono.svg');
+  mask-image: url('../assets/quill-logo-mark-mono.svg');
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
 }
 
 /* flex: 1 让它占满剩余宽度，右侧的说明入口因此自然贴到边上（不必给那边加 margin）。
@@ -278,7 +308,7 @@ async function onArchive(id: string, title: string): Promise<void> {
 }
 
 .app-name,
-.tagline {
+.version {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -291,7 +321,7 @@ async function onArchive(id: string, title: string): Promise<void> {
   line-height: 1.25;
 }
 
-.tagline {
+.version {
   font-size: var(--fs-2xs);
   line-height: 1.3;
   color: var(--text-soft);
@@ -412,6 +442,7 @@ async function onArchive(id: string, title: string): Promise<void> {
 .conv.active {
   background: var(--ice-bg);
   color: var(--ice-text);
+  box-shadow: 0 2px 8px rgba(27, 58, 92, 0.18);
 }
 
 /* 正在跑的标记。跟着行文本色走（currentColor）：选中行是主色底，

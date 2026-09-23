@@ -17,7 +17,6 @@ export default {
   sidebar: {
     newTask: 'New task',
     // 品牌区那一栏很窄，长文案会被省略号截掉（实测 "Local agent workbench" 就截了）
-    tagline: 'Agent workbench',
     section: 'Conversations',
     empty: 'No conversations yet — start one with “New task” above',
     updatedAt: 'Last updated: {time}',
@@ -725,9 +724,20 @@ export default {
   display: {
     theme: {
       title: 'Theme',
-      light: { label: 'Light', hint: 'Warm paper' },
-      dark: { label: 'Dark', hint: 'Indigo night' },
+      light: { label: 'Clear Sky', hint: 'Ice blue morning' },
+      forest: { label: 'Forest', hint: 'Jade mist' },
+      amber: { label: 'Amber', hint: 'Warm golden glow' },
+      sakura: { label: 'Sakura', hint: 'Spring blossom' },
+      dark: { label: 'Indigo', hint: 'Midnight blue' },
+      twilight: { label: 'Twilight', hint: 'Violet sunset' },
+      ember: { label: 'Ember', hint: 'Obsidian flame' },
+      aurora: { label: 'Aurora', hint: 'Deep emerald sky' },
       auto: { label: 'System', hint: 'Follows your system setting' },
+      autoGear: 'Pick the theme for light and for dark',
+      autoDialogTitle: 'Themes when following the system',
+      autoDialogNote: 'The top one is used when the system is light, the bottom one when it is dark.',
+      autoLightLabel: 'When the system is light',
+      autoDarkLabel: 'When the system is dark',
     },
     fontSize: {
       title: 'Font size',
@@ -738,7 +748,7 @@ export default {
     language: {
       title: 'Language',
       'zh-CN': { label: '简体中文', hint: 'Interface and built-in prompts are in Chinese' },
-      'en-US': { label: 'English', hint: 'Translation in progress — some screens are still Chinese' },
+      'en-US': { label: 'English', hint: 'Interface is in English; built-in prompts stay Chinese' },
     },
   },
 }

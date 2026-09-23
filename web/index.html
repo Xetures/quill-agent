@@ -18,9 +18,32 @@
           var saved = localStorage.getItem('quill:theme') || 'auto'
           var dark =
             saved === 'dark' ||
+            saved === 'twilight' ||
+            saved === 'ember' ||
+            saved === 'aurora' ||
             (saved === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches)
           document.documentElement.classList.toggle('dark', dark)
-          document.documentElement.dataset.theme = dark ? 'dark' : 'light'
+          // 「跟随系统」时深浅各用用户选的那一套（见 stores/theme.ts）。没存过、写坏了
+          // 就退回最基础的两档 —— 与 store 里那份校验一致
+          var autoLight = localStorage.getItem('quill:auto-light')
+          var autoDark = localStorage.getItem('quill:auto-dark')
+          var theme =
+            saved === 'auto'
+              ? dark
+                ? autoDark === 'dark' ||
+                  autoDark === 'twilight' ||
+                  autoDark === 'ember' ||
+                  autoDark === 'aurora'
+                  ? autoDark
+                  : 'dark'
+                : autoLight === 'light' ||
+                    autoLight === 'forest' ||
+                    autoLight === 'amber' ||
+                    autoLight === 'sakura'
+                  ? autoLight
+                  : 'light'
+              : saved
+          document.documentElement.dataset.theme = theme
 
           // 字号：只认这两个值，其余（没选过、写坏了）一律标准档 —— 与 stores/font-size.ts 一致
           var size = localStorage.getItem('quill:font-size')

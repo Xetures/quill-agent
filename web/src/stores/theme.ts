@@ -29,11 +29,16 @@ export type ThemeMode =
   | 'auto'
 
 const STORAGE_KEY = 'quill:theme'
+const STORAGE_AUTO_LIGHT = 'quill:auto-light'
+const STORAGE_AUTO_DARK = 'quill:auto-dark'
 
 /** 后端偏好里的键名（与 quill_agent.preferences 那套键并存） */
 export const PREF_THEME = 'theme'
+export const PREF_AUTO_LIGHT = 'auto-light'
+export const PREF_AUTO_DARK = 'auto-dark'
 
 const DARK_THEMES = new Set<string>(['dark', 'twilight', 'ember', 'aurora'])
+const LIGHT_THEMES = new Set<string>(['light', 'forest', 'amber', 'sakura'])
 const VALID_THEMES = new Set<string>([
   'light',
   'forest',
@@ -49,6 +54,15 @@ const VALID_THEMES = new Set<string>([
 /** 用户的选择，可能是「跟随系统」或指定主题。 */
 export const themeMode = ref<ThemeMode>(readStored())
 
+/**
+ * 「跟随系统」时深浅各用哪一套。
+ *
+ * 原先跟随系统固定落在最基础的两档（晴空 / 靛蓝）—— 选了「跟随系统」的人就没法用别的
+ * 配色了，而那恰恰是「我懒得手动切」的那批人。现在深浅各记一套，系统一变就换过去。
+ */
+export const autoLight = ref<ThemeMode>(readStoredAuto(STORAGE_AUTO_LIGHT, LIGHT_THEMES, 'light'))
+export const autoDark = ref<ThemeMode>(readStoredAuto(STORAGE_AUTO_DARK, DARK_THEMES, 'dark'))
+
 /** 实际生效的明暗。auto 时跟随系统，并且会随系统变化。 */
 export const isDark = ref(false)
 
@@ -62,9 +76,28 @@ function readStored(): ThemeMode {
   return 'auto' // 没选过就跟随系统：这是最不需要用户操心的默认
 }
 
+/** 读「跟随系统」时用的那一档：必须是对应明暗里的一个，否则退回默认值。 */
+function readStoredAuto(key: string, allowed: Set<string>, fallback: ThemeMode): ThemeMode {
+  const saved = localStorage.getItem(key)
+  return saved && allowed.has(saved) ? (saved as ThemeMode) : fallback
+}
+
 export function setTheme(mode: ThemeMode): void {
   themeMode.value = mode
   localStorage.setItem(STORAGE_KEY, mode)
+}
+
+/**
+ * 设定「跟随系统」时深浅各用哪一套。
+ *
+ * 两个一起设：它们是一对（系统亮时用这个、暗时用那个），分开设没有意义 —— 界面上也是
+ * 一个弹窗里同时选两个。
+ */
+export function setAutoThemes(light: ThemeMode, dark: ThemeMode): void {
+  autoLight.value = light
+  autoDark.value = dark
+  localStorage.setItem(STORAGE_AUTO_LIGHT, light)
+  localStorage.setItem(STORAGE_AUTO_DARK, dark)
 }
 
 function apply(): void {
@@ -77,7 +110,12 @@ function apply(): void {
   const root = document.documentElement
   // EP 的暗色主题靠 html.dark 生效；再挂一个 data-theme，让自定义 CSS 有精确的判别依据
   root.classList.toggle('dark', isDark.value)
-  const resolved = themeMode.value === 'auto' ? (isDark.value ? 'dark' : 'light') : themeMode.value
+  const resolved =
+    themeMode.value === 'auto'
+      ? isDark.value
+        ? autoDark.value
+        : autoLight.value
+      : themeMode.value
   root.dataset.theme = resolved
 }
 
@@ -101,6 +139,18 @@ watch(
   { immediate: true },
 )
 
+// 深浅那两套：两个值凑一趟请求。immediate 那一次同样是补种。
+watch(
+  [autoLight, autoDark],
+  ([light, dark]) => {
+    apply()
+    void api
+      .put('/preferences', { values: { [PREF_AUTO_LIGHT]: light, [PREF_AUTO_DARK]: dark } })
+      .catch(() => {})
+  },
+  { immediate: true },
+)
+
 /**
  * 本地没存过时采纳后端那份。
  *
@@ -112,3 +162,17 @@ export function adoptStoredTheme(value: string | undefined): void {
   if (!value || !VALID_THEMES.has(value)) return
   themeMode.value = value as ThemeMode
 }
+
+/** 同上：本地没存过「跟随系统用哪两套」时，采纳后端那份。 */
+export function adoptStoredAutoThemes(light: string | undefined, dark: string | undefined): void {
+  if (!localStorage.getItem(STORAGE_AUTO_LIGHT) && light && LIGHT_THEMES.has(light)) {
+    autoLight.value = light as ThemeMode
+  }
+  if (!localStorage.getItem(STORAGE_AUTO_DARK) && dark && DARK_THEMES.has(dark)) {
+    autoDark.value = dark as ThemeMode
+  }
+}
+
+/** 供设置页列出「可以选哪几套」。 */
+export const LIGHT_THEME_LIST = [...LIGHT_THEMES] as ThemeMode[]
+export const DARK_THEME_LIST = [...DARK_THEMES] as ThemeMode[]

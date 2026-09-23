@@ -1,10 +1,20 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { Setting } from '@element-plus/icons-vue'
 
 import { locale, setLocale, type Locale } from '../locales'
 import { fontSize, setFontSize, type FontSize } from '../stores/font-size'
-import { setTheme, themeMode, type ThemeMode } from '../stores/theme'
+import {
+  autoDark,
+  autoLight,
+  DARK_THEME_LIST,
+  LIGHT_THEME_LIST,
+  setAutoThemes,
+  setTheme,
+  themeMode,
+  type ThemeMode,
+} from '../stores/theme'
 
 /**
  * 显示设置：明暗 / 字号 / 语言。
@@ -21,7 +31,17 @@ import { setTheme, themeMode, type ThemeMode } from '../stores/theme'
 const { t } = useI18n()
 
 const THEMES = computed<{ value: ThemeMode; label: string; hint: string }[]>(() =>
-  (['light', 'dark', 'auto'] as const).map((value) => ({
+  ([
+    'light',
+    'forest',
+    'amber',
+    'sakura',
+    'dark',
+    'twilight',
+    'ember',
+    'aurora',
+    'auto',
+  ] as const).map((value) => ({
     value,
     label: t(`display.theme.${value}.label`),
     hint: t(`display.theme.${value}.hint`),
@@ -43,6 +63,27 @@ const LANGUAGES = computed<{ value: Locale; label: string; hint: string }[]>(() 
     hint: t(`display.language.${value}.hint`),
   })),
 )
+
+/**
+ * 「跟随系统」那张卡角上的齿轮：系统浅色时用哪一套、深色时用哪一套。
+ *
+ * 弹窗里改的是**草稿**，点了保存才落 —— 否则改一半关掉就已经生效了，而用户并没有
+ * 确认。每次打开都从当前真值起手，免得上次那半个改动还留在框里。
+ */
+const autoDialogOpen = ref(false)
+const autoLightDraft = ref<ThemeMode>(autoLight.value)
+const autoDarkDraft = ref<ThemeMode>(autoDark.value)
+
+watch(autoDialogOpen, (open) => {
+  if (!open) return
+  autoLightDraft.value = autoLight.value
+  autoDarkDraft.value = autoDark.value
+})
+
+function saveAutoThemes(): void {
+  setAutoThemes(autoLightDraft.value, autoDarkDraft.value)
+  autoDialogOpen.value = false
+}
 </script>
 
 <template>
@@ -50,22 +91,41 @@ const LANGUAGES = computed<{ value: Locale; label: string; hint: string }[]>(() 
     <section>
       <h2 class="group-title">{{ t('display.theme.title') }}</h2>
       <div class="cards">
-        <button
+        <!-- 卡片是 `div + role=button` 而不是 `<button>`：只有「跟随系统」这张要在标签
+             那一行里再放一个齿轮按钮，而 HTML 不允许按钮里再套按钮（解析器会把外层的
+             那个提前合上）。为此加了 tabindex 与回车/空格两个按键处理，别把它退化成
+             「只能点」 -->
+        <div
           v-for="item in THEMES"
           :key="item.value"
-          type="button"
           class="card"
           :class="{ active: themeMode === item.value }"
+          role="button"
+          tabindex="0"
           @click="setTheme(item.value)"
+          @keydown.enter.prevent="setTheme(item.value)"
+          @keydown.space.prevent="setTheme(item.value)"
         >
           <!-- 用两个色块示意「侧边栏 + 主区」，比放一张真截图轻，换主题时也不用维护 -->
           <span class="preview" :class="item.value">
             <span class="preview-side" />
             <span class="preview-main" />
           </span>
-          <span class="label">{{ item.label }}</span>
+          <span class="label-row">
+            <span class="label">{{ item.label }}</span>
+            <!-- 只有「跟随系统」这张卡有：它决定深浅各用哪一套，其余卡自己就是那一套 -->
+            <button
+              v-if="item.value === 'auto'"
+              type="button"
+              class="gear"
+              :title="t('display.theme.autoGear')"
+              @click.stop="autoDialogOpen = true"
+            >
+              <el-icon><Setting /></el-icon>
+            </button>
+          </span>
           <span class="hint">{{ item.hint }}</span>
-        </button>
+        </div>
       </div>
     </section>
 
@@ -106,6 +166,45 @@ const LANGUAGES = computed<{ value: Locale; label: string; hint: string }[]>(() 
         </button>
       </div>
     </section>
+
+    <!-- 「跟随系统」用哪两套。append-to-body 必须留着：页面在玻璃板里，弹窗若渲染在
+         板内会被 backdrop-filter 影响（见 HelpButton.vue 里那段说明） -->
+    <el-dialog
+      v-model="autoDialogOpen"
+      :title="t('display.theme.autoDialogTitle')"
+      width="420px"
+      append-to-body
+    >
+      <p class="auto-note">{{ t('display.theme.autoDialogNote') }}</p>
+      <el-form label-position="top">
+        <el-form-item :label="t('display.theme.autoLightLabel')">
+          <el-select v-model="autoLightDraft" class="auto-select">
+            <el-option
+              v-for="value in LIGHT_THEME_LIST"
+              :key="value"
+              :label="t(`display.theme.${value}.label`)"
+              :value="value"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item :label="t('display.theme.autoDarkLabel')">
+          <el-select v-model="autoDarkDraft" class="auto-select">
+            <el-option
+              v-for="value in DARK_THEME_LIST"
+              :key="value"
+              :label="t(`display.theme.${value}.label`)"
+              :value="value"
+            />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button size="small" @click="autoDialogOpen = false">{{ t('common.cancel') }}</el-button>
+        <el-button size="small" type="primary" @click="saveAutoThemes">
+          {{ t('common.save') }}
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -148,6 +247,43 @@ const LANGUAGES = computed<{ value: Locale; label: string; hint: string }[]>(() 
     transform 0.15s ease;
 }
 
+/* 标签那一行：齿轮跟在文字**右边**。早先把它压在卡片右上角，正好盖住了预览色块，
+   看不清 —— 挪到文字旁边，既指得明白也不挡东西 */
+.label-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.gear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  opacity: 0.65;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+.gear:hover {
+  opacity: 1;
+}
+
+.auto-note {
+  margin: 0 0 14px;
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+}
+
+.auto-select {
+  width: 100%;
+}
+
 .card:hover {
   border-color: var(--accent);
   box-shadow: var(--shadow);
@@ -186,27 +322,68 @@ const LANGUAGES = computed<{ value: Locale; label: string; hint: string }[]>(() 
   inset: 0 0 0 30%;
 }
 
-/* 三种预览各用一组写死的颜色 —— 这里刻意不用主题变量：
- * 卡片要展示的正是「另一套主题长什么样」，跟着当前主题走就没意义了 */
+/* 预览卡片各用一组写死的颜色：展示各主题基调，不随当前主题变化 */
 .preview.light .preview-side {
-  background: #f3ecdf;
+  background: #d8e7f4;
 }
 .preview.light .preview-main {
-  background: #faf6ee;
+  background: #edf4fa;
+}
+
+.preview.forest .preview-side {
+  background: #cee3d5;
+}
+.preview.forest .preview-main {
+  background: #eaf4ed;
+}
+
+.preview.amber .preview-side {
+  background: #f2dec2;
+}
+.preview.amber .preview-main {
+  background: #fcf6eb;
+}
+
+.preview.sakura .preview-side {
+  background: #f7d8e2;
+}
+.preview.sakura .preview-main {
+  background: #fdf3f6;
 }
 
 .preview.dark .preview-side {
-  background: #152836;
+  background: #284260;
 }
 .preview.dark .preview-main {
-  background: #0f1e2b;
+  background: #192e45;
+}
+
+.preview.twilight .preview-side {
+  background: #3c1e57;
+}
+.preview.twilight .preview-main {
+  background: #201131;
+}
+
+.preview.ember .preview-side {
+  background: #3d1b17;
+}
+.preview.ember .preview-main {
+  background: #220f0d;
+}
+
+.preview.aurora .preview-side {
+  background: #133535;
+}
+.preview.aurora .preview-main {
+  background: #091d1e;
 }
 
 .preview.auto .preview-side {
-  background: linear-gradient(160deg, #152836 50%, #f3ecdf 50%);
+  background: linear-gradient(160deg, #284260 50%, #d8e7f4 50%);
 }
 .preview.auto .preview-main {
-  background: linear-gradient(160deg, #0f1e2b 50%, #faf6ee 50%);
+  background: linear-gradient(160deg, #192e45 50%, #edf4fa 50%);
 }
 
 /* 字号与语言的预览：一块浅底，中间放示例字 */
