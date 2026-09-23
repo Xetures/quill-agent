@@ -425,31 +425,26 @@ function onKeydown(event: Event | KeyboardEvent): void {
     <!-- 投递到顶栏。Teleport 不产生实际节点，所以不影响下面 .chat 的 flex 布局 -->
     <Teleport to="#page-head-slot">
       <h1>任务</h1>
-      <span v-if="currentTitle" class="hint">{{ currentTitle }}</span>
-      <!-- 这一轮现在卡在哪一步（见 runPhaseText），以及跑了多久 / 跑到第几圈
-           （见 runMetaText）。
-           放在顶栏会话名后面：它是「我现在为什么不能打字」的答案，也是最容易被
-           当成「卡住了」的时段 —— 贴在视线常驻的顶栏比压在输入框上方更直观，
-           功能区那一排也少了随运行出现消失的一行 -->
-      <span
-        v-if="runPhaseText"
-        class="run-phase"
-        :class="{ asking: session.phase?.kind === 'asking' }"
-      >
-        <el-icon class="spin"><Loading /></el-icon>
-        <span>{{ runPhaseText }}</span>
-        <span v-if="runMetaText" class="run-meta">{{ runMetaText }}</span>
-      </span>
-      <!-- 导出当前会话。用普通链接让浏览器自己下载：进度、保存对话框、大文件
-           都是它的事，不必为此写一段 fetch -->
-      <a
-        v-if="session.currentId && session.messages.length"
-        class="export"
-        :href="`/api/conversations/${session.currentId}/export`"
-        download
-      >
-        导出
-      </a>
+      <!-- 会话名 + 运行状态：**居中**挂在顶栏正中，状态折在名字下面一行（见 .head-center）。
+           两样都是随会话切换、随运行出现消失的东西，参与排布的话每换一次会话、
+           每跑一轮，左边的「任务」都要被推一下。 -->
+      <div v-if="currentTitle || runPhaseText" class="head-center">
+        <span v-if="currentTitle" class="hint" :title="currentTitle">{{ currentTitle }}</span>
+        <!-- 这一轮现在卡在哪一步（见 runPhaseText），以及跑了多久 / 跑到第几圈
+             （见 runMetaText）。放在名字下面：名字回答「在跑哪个任务」，
+             它回答「跑到哪一步了」—— 上下两行，一次看全 -->
+        <span
+          v-if="runPhaseText"
+          class="run-phase"
+          :class="{ asking: session.phase?.kind === 'asking' }"
+        >
+          <el-icon class="spin"><Loading /></el-icon>
+          <span>{{ runPhaseText }}</span>
+          <span v-if="runMetaText" class="run-meta">{{ runMetaText }}</span>
+        </span>
+      </div>
+      <!-- 导出入口不在这里了：它挪到了侧栏每个会话行上（归档按钮左边）。
+           在顶栏只有当前这一条能导出，而「把某次对话拿走」这个动作对每一条都成立 -->
     </Teleport>
 
     <el-scrollbar class="stream">
@@ -729,18 +724,8 @@ function onKeydown(event: Event | KeyboardEvent): void {
 </template>
 
 <style scoped>
-/* 导出入口。靠 margin-left:auto 推到标题栏右侧 */
-.export {
-  margin-left: auto;
-  color: var(--text-soft);
-  font-size: 13px;
-  text-decoration: none;
-}
-
-.export:hover {
-  color: var(--accent);
-}
-
+/* 任务区：应用层的第四块玻璃板（另三块是 LOGO 板、顶边栏、侧栏板）。
+ * overflow: hidden 是给圆角用的 —— 里头的滚动区与输入区分隔线否则会从圆角处冒出来 */
 .chat {
   display: flex;
   flex-direction: column;
@@ -748,6 +733,12 @@ function onKeydown(event: Event | KeyboardEvent): void {
    * 高度写死成 100% 就会被它顶出去（同样是「看不见输入框」的成因之一） */
   flex: 1;
   min-height: 0;
+  overflow: hidden;
+
+  /* 底色与投影由全局那条规则给、模糊在 .shell 那一层做一次（见 style.css 的
+   * 「玻璃的底色与模糊，分在两层上」）；这里只留描边与圆角 */
+  border: 1px solid var(--glass-border);
+  border-radius: var(--glass-radius);
 }
 
 .stream {
@@ -762,13 +753,44 @@ function onKeydown(event: Event | KeyboardEvent): void {
   padding: 16px 20px;
 }
 
-/* 这一轮现在卡在哪一步（见 runPhaseText）。挂在顶栏会话名后面（见模板）。
- * 不折行不收缩：提示被折成两行比让它撑一下顶栏更难看，窄窗口宁可让会话名省略 */
+/* 顶栏正中那一格：上面会话名、下面运行状态（见模板）。
+ *
+ * 绝对定位而不是参与那一行的排布：名字随会话切换、状态随运行出现消失，
+ * 参与排布的话每换一次会话、每跑一轮，左边的「任务」都要被推一下。
+ *
+ * max-width 用的是「两边各留够」的算法：左边是页面标题、右边是顶栏的执行权限按钮，
+ * 中间这一格只能在它们之间展开（会话名太长时靠 .hint 自己省略，悬停能看全）。
+ * 取 min 而不是一个百分比：窗口越窄，两侧的固定宽度占比越大。 */
+.head-center {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  max-width: min(70%, calc(100% - 320px));
+}
+
+/* 会话名：一行，长了省略。它顶多是个参照物，不该把顶栏撑变形。
+ *
+ * 字号比各页顶栏的说明（12px）大一档：这里是「当前在哪个任务」，是顶栏中间的主角，
+ * 说明文字才是配角 */
+.head-center .hint {
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 这一轮现在卡在哪一步（见 runPhaseText）。不折行：提示被折成两行比让它撑一下
+ * 顶栏更难看，窄窗口宁可让上面那行名字先省略 */
 .run-phase {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex-shrink: 0;
   font-size: 12px;
   color: var(--text-soft);
   white-space: nowrap;
@@ -1024,5 +1046,41 @@ function onKeydown(event: Event | KeyboardEvent): void {
   position: absolute;
   right: 8px;
   bottom: 8px;
+}
+
+/* 发送按钮走**冰雾高光**（和侧栏的「新建任务」同一副样子，取值见 style.css
+ * 的 --ice-*）：浅底压深墨字。
+ * 只认 `.el-button--primary` 那一个 —— 运行中这个位置换成的是「停止」按钮（默认样式），
+ * 它不该跟着变浅。 */
+.send.el-button--primary {
+  border: none;
+  background: var(--ice-bg);
+  box-shadow: var(--ice-shadow);
+  color: var(--ice-text);
+
+  /* Element 的 hover / active / disabled 各有一份底色，得逐个按住，
+   * 否则鼠标一上去底色就被刷回主色 */
+  --el-button-bg-color: transparent;
+  --el-button-text-color: var(--ice-text);
+  --el-button-border-color: transparent;
+  --el-button-hover-bg-color: transparent;
+  --el-button-hover-text-color: var(--ice-text);
+  --el-button-hover-border-color: transparent;
+  --el-button-active-bg-color: transparent;
+  --el-button-active-text-color: var(--ice-text);
+  --el-button-active-border-color: transparent;
+  --el-button-disabled-bg-color: transparent;
+  --el-button-disabled-text-color: rgba(46, 74, 107, 0.38);
+  --el-button-disabled-border-color: transparent;
+}
+
+.send.el-button--primary:hover {
+  filter: brightness(1.03);
+}
+
+/* 禁用时把渐变也调淡：背景是我们自己画的，Element 的 disabled 只管它自己那几个变量 */
+.send.el-button--primary.is-disabled {
+  background: linear-gradient(135deg, rgba(234, 242, 248, 0.55), rgba(200, 220, 232, 0.55));
+  box-shadow: none;
 }
 </style>

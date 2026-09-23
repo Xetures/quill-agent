@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import socket
 import threading
 import webbrowser
 
@@ -28,8 +27,20 @@ from quill_agent.memory import MemoryStore
 from quill_agent.skills import SkillLibrary
 from quill_agent.tools import registry
 
-# 双击启动时若默认端口被占，往后顺延多少个端口
-PORT_ATTEMPTS = 20
+
+def __getattr__(name: str):
+    """按需转发「起服务」那一层的东西（`pick_port`、`start_server`…）。
+
+    存在的理由是那两条要求凑在一起了：`pick_port` 的行为属于命令行（测试与
+    排障都从 `cli` 这个门进来找它），而 `server_runner` 会连带把 uvicorn 拉进来 ——
+    可只跑 `quill -t` 那种查看命令的人不该为此付一次 Web 栈的导入开销（见模块
+    开头「其余几个是只读的查看命令」那条）。转发只在真正访问时才触发导入。
+    """
+    if name in {"PORT_ATTEMPTS", "RunningServer", "pick_port", "start_server"}:
+        from quill_agent import server_runner
+
+        return getattr(server_runner, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -69,64 +80,36 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def pick_port(host: str, port: int, attempts: int = PORT_ATTEMPTS) -> int:
-    """找一个能用的端口：从 `port` 开始往上试。
-
-    为什么不让 uvicorn 自己报错退出：双击启动的用户看不到命令行报错 ——
-    窗口一闪就没了，他只会觉得「打不开」。顺延一个端口并把地址打出来，好得多。
-
-    Raises:
-        SystemExit: 连续 attempts 个端口都被占用。
-    """
-    for candidate in range(port, port + attempts):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-            # 不加这一句的话，刚被别的进程关掉的端口会因为 TIME_WAIT 被判成「占用」
-            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                probe.bind((host, candidate))
-            except OSError:
-                continue
-            return candidate
-
-    raise SystemExit(f"{port} 起连续 {attempts} 个端口都被占用了，用 --port 换一个再试。")
-
-
 def serve(host: str, port: int, *, open_browser: bool, token: str = "") -> None:
-    """启动后端（`web/dist` 存在时会连前端一起托管）。"""
+    """启动后端（`web/dist` 存在时会连前端一起托管）。
+
+    这里只做「命令行特有」的那部分：打印、开浏览器、阻塞等结束。挑端口、校验令牌、
+    跑 uvicorn 都在 `server_runner` 里 —— 桌面壳用的是同一份（见那里的模块说明）。
+
+    启动自检（播种出厂资源、迁移旧数据、说清数据根在哪）由 `server.main` 的 lifespan
+    负责 —— 那里是**唯一**的入口：直接 `uvicorn server.main:app` 时没有 CLI，
+    而这里再调一次就会把同一份说明打两遍、副作用也白做第二遍（虽然都是幂等的）。
+    """
     # 延迟导入：只跑 `quill -t` 那种查看命令时不必把 Web 栈整个加载进来
-    import uvicorn
+    from quill_agent.server_runner import start_server
 
     settings = get_settings()
-    access_token = token or os.environ.get("QUILL_ACCESS_TOKEN", "")
-    if host not in {"127.0.0.1", "localhost", "::1"} and not access_token:
-        raise SystemExit("非本机监听必须配置访问令牌：使用 --token 或 QUILL_ACCESS_TOKEN。")
-    chosen = pick_port(host, port)
+    running = start_server(host, port, token=token)
 
-    # 启动自检（播种出厂资源、迁移旧数据、说清数据根在哪）由 `server.main` 的 lifespan
-    # 负责 —— 那里是**唯一**的入口：直接 `uvicorn server.main:app` 时没有 CLI，
-    # 而这里再调一次就会把同一份说明打两遍、副作用也白做第二遍（虽然都是幂等的）。
-
-    # 监听 0.0.0.0 时，浏览器该打开的是本机地址而不是「0.0.0.0」
-    display_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
-    url = f"http://{display_host}:{chosen}"
-    os.environ["QUILL_AUTH_HOST"] = host
-    if access_token:
-        os.environ["QUILL_ACCESS_TOKEN"] = access_token
-
-    if chosen != port:
-        print(f"端口 {port} 被占用，改用 {chosen}。", flush=True)
-
-    print(f"{settings.app_name} v{__version__} 已启动：{url}", flush=True)
+    print(f"{settings.app_name} v{__version__} 已启动：{running.url}", flush=True)
+    access_token = os.environ.get("QUILL_ACCESS_TOKEN", "")
     if access_token:
         print("API 访问认证已启用。", flush=True)
     print("按 Ctrl+C 结束。", flush=True)
 
     if open_browser:
         # 推迟一点再开：等 uvicorn 真的监听上，免得第一次打开是「无法连接」
-        browser_url = f"{url}/?access_token={access_token}" if access_token else url
+        browser_url = (
+            f"{running.url}/?access_token={access_token}" if access_token else running.url
+        )
         threading.Timer(1.5, lambda: webbrowser.open(browser_url)).start()
 
-    uvicorn.run("server.main:app", host=host, port=chosen, log_level="info")
+    running.wait()
 
 
 def show_tools() -> None:

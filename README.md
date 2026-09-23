@@ -78,6 +78,51 @@ make web                   # 终端 B：前端，浏览器打开 http://localhos
 | `make fmt` | 格式化代码 |
 | `make clean` | 清理缓存与虚拟环境 |
 
+### 桌面壳（可选，开发中）
+
+```bash
+uv sync --extra desktop    # 装可选依赖（pywebview）
+uv run quill-desktop       # 起服务 + 开一个原生窗口
+```
+
+它和浏览器版是**同一个后端、同一个地址**：窗口只是把 `quill serve` 那个页面装进系统
+WebView（macOS 是 WKWebView、Windows 是 WebView2、Linux 是 WebKitGTK），前端与后端
+一行都不用改 —— 调试时照旧可以用浏览器打开同一个地址。
+
+几个行为值得知道：
+
+- **重复启动不会起第二个后端**：先扫一遍默认端口段，认出已经在跑的 Quill 就复用它的
+  服务（判据是 `/api/health` 的应答，不是「端口通不通」—— 那会把碰巧占了同一端口的
+  别的程序认成自己人）；
+- **窗口等服务就绪才开**：首启要播种出厂资源、迁移老数据、连 MCP，耗时不确定，所以按
+  `/api/health` 轮询而不是猜一个秒数；
+- **关窗带走服务**：走 uvicorn 的退出流程，MCP 用 stdio 起的子进程在 lifespan 里收掉；
+- **日志在数据根下的 `desktop.log`**：双击启动没有终端，启动自检与报错只能落到文件里。
+
+打包成 macOS App（未签名，本机试用）：
+
+```bash
+make build                                  # 先构建前端产物（打包要带上它）
+uv run python scripts/make_desktop.py       # 产出 release/Quill.app
+open release/Quill.app                      # 首次要「右键 → 打开」（未签名）
+```
+
+`make_desktop.py` 会先找**本机 uv 装过的 Python**当运行时（uv 下的就是
+python-build-standalone 的 `install_only` 包，和脚本自己要下的是同一个东西），找不到才去
+GitHub 下载 —— 那条路在国内经常只有几十 KB/s。装依赖优先用 uv（并行 + 全局缓存），
+没有才退回 pip。
+
+装完会做一次**导入自检**（用随包的运行时导入 pywebview / quill_agent / server）：缺包或
+路径摆错当场就报，不必等双击才发现。
+
+产物约 **101 MB**（Python 运行时 + 依赖树 + 前端产物）。脚本会做一轮体积裁剪：`bin/` 里
+三份同样的 18 MB 可执行文件合成一份加符号链接、删掉运行时自带的 pip、`libpython` 的
+dylib（`bin/python3` 是静态链接的，`otool -L` 验过）、pyobjc 的测试包、tcl/tk 与 tkinter
+等 —— 每条都只删「运行时不会碰」的东西，而**裁完必须真跑一次**：自检只验证 import，
+WebView 后端要到开窗口那一刻才加载。
+
+Windows / Linux 的打包、代码签名与公证在后面的阶段。
+
 ### 发布前检查
 
 ```bash

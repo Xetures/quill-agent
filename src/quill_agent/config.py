@@ -30,6 +30,7 @@ HOME_ENV = "QUILL_HOME"
 _PATH_FIELDS = (
     "models_path",
     "model_catalog_path",
+    "providers_path",
     "prompt_groups_path",
     "modes_path",
     "tool_groups_path",
@@ -203,6 +204,13 @@ class Settings(BaseSettings):
     model_catalog_url: str = Field(
         default="https://models.dev/api.json",
         description="模型规格快照的下载地址，默认取自 models.dev",
+    )
+
+    # 服务商目录：服务商 id -> 官方端点地址 + 协议。和上面那份快照**同一次下载**
+    # 写出来（见 model_catalog.refresh），所以没有单独的下载地址
+    providers_path: Path = Field(
+        default=Path("data/providers.json"),
+        description="服务商清单 JSON 路径",
     )
 
     # 提示词：正文文件放 prompt/ 目录（用户可直接维护），配置存 data/

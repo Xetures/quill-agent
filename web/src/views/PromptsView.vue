@@ -344,8 +344,7 @@ onMounted(() => {
     <Teleport to="#page-head-slot">
       <h1>提示词</h1>
       <span class="hint">
-        提示词组是从六类提示词里各挑一个拼成的搭配方案，是模式的组成部分之一；正文是 prompt/
-        目录下的 .md 文件，也可以在这里直接编辑
+        六类提示词各挑一条拼成一个组，供模式引用；正文存在 prompt/ 目录
       </span>
     </Teleport>
 
@@ -511,10 +510,13 @@ onMounted(() => {
     </section>
 
     <!-- 新建 / 编辑弹窗。编辑复用同一张表单，只多带一份初值 -->
+    <!-- append-to-body 必须留着：玻璃板的 backdrop-filter 会改掉弹窗 fixed 的参考系
+         （详见 HelpButton.vue 里那段说明） -->
     <el-dialog
       v-model="dialogOpen"
       :title="editingId ? '编辑提示词组' : '新建提示词组'"
       width="520px"
+      append-to-body
     >
       <el-form label-width="90px" size="default" @submit.prevent>
         <el-form-item label="组名" required>
@@ -567,6 +569,7 @@ onMounted(() => {
       :title="editingPrompt ? '编辑提示词' : '添加提示词'"
       width="760px"
       top="6vh"
+      append-to-body
     >
       <el-form label-width="70px" size="default" @submit.prevent>
         <el-form-item label="名称" required>

@@ -167,8 +167,7 @@ onMounted(() => {
     <Teleport to="#page-head-slot">
       <h1>模式</h1>
       <span class="hint">
-        模式是 Agent 的一套完整配置：提示词组 + 工具组 + 技能组 + 记忆开关 + 偏好模型；
-        任务页必须选一个
+        提示词组 + 工具组 + 技能组 + 记忆开关 + 偏好模型；任务页必选一个
       </span>
     </Teleport>
 
@@ -287,7 +286,14 @@ onMounted(() => {
     </section>
 
     <!-- 新建 / 编辑弹窗。编辑复用同一张表单，只多带一份初值 -->
-    <el-dialog v-model="dialogOpen" :title="editingId ? '编辑模式' : '添加模式'" width="520px">
+    <!-- append-to-body 必须留着：玻璃板的 backdrop-filter 会改掉弹窗 fixed 的参考系
+         （详见 HelpButton.vue 里那段说明） -->
+    <el-dialog
+      v-model="dialogOpen"
+      :title="editingId ? '编辑模式' : '添加模式'"
+      width="520px"
+      append-to-body
+    >
       <el-form label-width="90px" size="default" @submit.prevent>
         <el-form-item label="模式名" required>
           <el-input v-model="form.name" placeholder="例如：标准 Agent" maxlength="30" />

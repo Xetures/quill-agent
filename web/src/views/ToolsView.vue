@@ -201,7 +201,7 @@ onMounted(() => {
     <Teleport to="#page-head-slot">
       <h1>工具</h1>
       <span class="hint">
-        工具组是给模型的工具搭配方案，是模式的组成部分之一；下方列表是全部工具，启用与否由模式决定
+        工具组供模式引用；下方列出全部工具，启用与否由模式决定
       </span>
     </Teleport>
 
@@ -305,10 +305,13 @@ onMounted(() => {
     </section>
 
     <!-- 新建 / 编辑弹窗。编辑复用同一张表单，只多带一份初值 -->
+    <!-- append-to-body 必须留着：玻璃板的 backdrop-filter 会改掉弹窗 fixed 的参考系
+         （详见 HelpButton.vue 里那段说明） -->
     <el-dialog
       v-model="dialogOpen"
       :title="editingId ? '编辑工具组' : '新建工具组'"
       width="480px"
+      append-to-body
     >
       <el-form label-width="80px" size="default" @submit.prevent>
         <el-form-item label="工具组名" required>

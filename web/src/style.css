@@ -1,59 +1,116 @@
 /* 全局样式。
  *
- * 三件事：
- *   1. 两套主题的颜色变量（浅色 / 深色）
- *   2. 页面骨架（整页撑满、字体、排版基调）
- *   3. 消息里的 Markdown 排版
+ * 四件事：
+ *   1. 毛玻璃的两层：背景层（渐变 + 柔光斑）与应用层（四块玻璃板）
+ *   2. 两套主题的颜色变量（浅色 / 深色）
+ *   3. 页面骨架（整页撑满、字体、排版基调）
+ *   4. 消息里的 Markdown 排版
  *
- * 配色取自 `quill-source/color.jpg` 与图标 SVG：**深海军蓝 + 米白 + 赭金**。
- * 整体走「纸感」—— 浅色像米白纸张，深色像靛蓝夜色。
+ * 配色取自 `Quill Glass Blue/`（毛玻璃低饱和蓝版设计稿）：**柔蓝 + 白玻璃 + 琥珀金**。
+ * 背景层是渐变加四块柔光斑，应用层是 LOGO 区 / 顶边栏 / 侧边栏 / 任务区四块圆角玻璃板。
  *
- * 铁律：组件里不写死颜色，一律用这里的变量。要加一套主题，只需要在下面补
- * 一组语义色，不必去每个组件里改样式。
+ * 两条铁律：
+ *   - 组件里不写死颜色，一律用这里的变量（换主题就只需要改这一处）；
+ *   - **光斑不能删**：`backdrop-filter` 模糊的是它背后的东西 —— 纯色背景上的玻璃
+ *     只是一块半透明的灰，看不出磨砂。设计稿特意给了四个错开的光斑（暖金一个、
+ *     冷白一个、两档蓝各一个），玻璃的层次就是它们撑起来的。
  */
 
 /* ---------------------------------------------------------------------------
  * 品牌色：两套主题共用，来自设计稿，不要随手改
  * ------------------------------------------------------------------------- */
 :root {
-  --quill-navy: #1b3a5c; /* 深海军蓝：图标底色，也是浅色模式的主色 */
-  --quill-blue: #3a6588; /* 中蓝：次级 */
-  --quill-gold: #c8933f; /* 赭金：强调色、笔尖 */
+  --quill-navy: #1b3a5c; /* 深海军蓝：图标底色 */
+  --quill-blue: #6e8ebc; /* 柔蓝：毛玻璃版主色（原版是 #3a6588 的中蓝） */
+  --quill-deep: #3d5c7e; /* 深柔蓝：暗部、文字 */
+  --quill-gold: #c8933f; /* 赭金：强调色、笔尖（毛玻璃版**刻意保留**，是品牌锚点） */
   --quill-cream: #f5f0e6; /* 米白：图标里的羽毛 */
   --quill-sand: #e0ccaf; /* 浅米：分隔、次级底 */
   --quill-slate: #535762; /* 灰蓝：中性 */
 
-  /* 侧边栏品牌区与主区顶栏共用一个高度。
-   * 两者在视觉上是同一条横带，各写一个数就会错位 —— 差 4px 都看得出来 */
-  --topbar-height: 60px;
+  /* 侧边栏品牌板与主区顶边栏共用一个高度。
+   * 两者在视觉上是并排的两块板，各写一个数就会错位 —— 差 4px 都看得出来
+   * （设计稿给的是 72px） */
+  --topbar-height: 72px;
+
+  /* 玻璃配方：四块板共用这一份（设计稿的规格，改动前先看看整体是否还成立）。
+   * 底板是**白玻璃**：不是纯白，而是在 135° 上从 78% 淡到 56% —— 一层平的半透明白
+   * 看上去像塑料膜，渐变才像玻璃 */
+  --glass-radius: 12px;
+  --glass-blur: blur(30px) saturate(160%);
+  --glass-bg: linear-gradient(135deg, rgba(255, 255, 255, 0.78), rgba(255, 255, 255, 0.56));
+  --glass-border: rgba(255, 255, 255, 0.66);
+
+  /* 板上边缘那道亮线。四块板用它（见下面「四块板」那条规则里的 --glass-highlight） */
+  --glass-highlight: rgba(255, 255, 255, 0.72);
+
+  /* **浮在板之上**的东西（公共剪贴板面板）才用带外投影的这一份。
+   * 四块板自己**不投外投影** —— 那条投影的去向是不对称的：左右两条缝落在
+   * `.sidebar` / `.main` 的盒子里、照常画出来，上下两条缝与窗口四周落在盒子外、
+   * 被那两个容器的 `overflow: hidden` 裁掉。于是四条缝里只有两条被染暗一档，
+   * 看着就是「这两条的颜色和背景对不上」（用户报的）。见下面「四块板」那条规则。 */
+  --glass-shadow: 0 8px 28px rgba(27, 58, 92, 0.12), inset 0 1px 0 var(--glass-highlight);
+
+  /* 板与板之间那道缝里垫的底色（铺在 .shell 上）。
+   *
+   * 缝里露出的是**没经过玻璃的原始背景**，比板内暗一档 —— 在深色模式下这一档
+   * 拉得很大，四条缝就成了四道凹槽，板像陷在沟里。垫一层很淡的白把缝提一点，
+   * 明度差收窄，缝仍然看得见（板还浮着），但不再是「沟」。
+   *
+   * 浅色模式不用垫：那边背景本来就近白，板与背景的差本来就小。 */
+  --seam-tint: transparent;
+
+  /* 板内元素的底色（菜单悬停、会话行、代码块等）。和玻璃一样是半透明的 ——
+   * 用实色会在板上糊出一块「贴纸」，板子就不像玻璃了 */
+  --bg: #eef5fb; /* 板内最深的那一档：代码块、进度槽 */
+  --bg-soft: rgba(255, 255, 255, 0.56);
+  --bg-card: rgba(255, 255, 255, 0.72);
+  --bg-hover: rgba(255, 255, 255, 0.9);
+
+  /* 按钮与开关槽自己的底色。深色那份**比这里深得多**（见 html.dark）——
+   * 普通按钮原先是半透明白，彩色文字（编辑 / 删除 / 三档权限）压在上面读不出来，
+   * 底色一加深字才立得住 */
+  --btn-bg: rgba(255, 255, 255, 0.72);
+  --btn-bg-hover: rgba(255, 255, 255, 0.95);
+
+  /* 弹窗与下拉**要比板子实**：它们浮在板上，再叠一层半透明就看不清内容了 */
+  --overlay-bg: rgba(255, 255, 255, 0.94);
 }
 
 /* ---------------------------------------------------------------------------
- * 浅色模式（默认）：米白纸感
+ * 浅色模式（默认）：浅蓝玻璃
+ *
+ * 设计稿给的是深蓝渐变白玻璃（见下面的 html.dark，那一份是原样）。浅色主题
+ * 对应地做成「浅蓝渐变 + 白玻璃 + 深蓝文字」—— 同一套配方，只是把明度整体抬上去，
+ * 保证正文仍然是深色压在浅底上（浅底上写白字读不了）。
  * ------------------------------------------------------------------------- */
 :root {
-  --bg: #faf6ee; /* 页面底色：比纯白暖一点，贴近纸 */
-  --bg-soft: #f3ecdf; /* 次级底：侧边栏、代码块 */
-  --bg-card: #fffdf8; /* 卡片：接近白，但和页面底色留一点区分 */
-  --bg-hover: #ece4d5; /* 悬停底 */
-
-  /* 正文用深蓝而不是纯黑：与品牌色同源，整页更统一，
+  /* 正文用柔蓝深档而不是纯黑：与品牌色同源，整页更统一，
    * 也比 #000 柔和 —— 大段文字读起来不刺眼 */
-  --text: #1b3a5c;
-  --text-soft: #6d7a86;
-  --text-faint: #9aa5b0;
+  --text: #22405f;
+  --text-soft: #5a7592;
+  --text-faint: #8ba3ba;
 
-  --border: #e7ddca;
+  /* 玻璃描边是白的，这里的分隔线就不能再用白 —— 那样在板上什么也看不见。
+   * 取淡蓝，压在玻璃上有界线又不抢眼 */
+  --border: rgba(120, 158, 196, 0.32);
 
-  --accent: #1b3a5c; /* 主色：按钮、选中、链接 */
-  --accent-hover: #26507a;
-  --accent-soft: #e9eff5; /* 主色的浅底：选中的导航项 */
-  --on-accent: #f5f0e6; /* 压在 accent 上的文字色 */
+  --accent: #3d5c7e; /* 主色：按钮、选中、链接（设计稿的 Deep） */
+  --accent-hover: #4e739b;
+  --accent-soft: rgba(61, 92, 126, 0.12); /* 主色的浅底：选中的导航项 */
+  --on-accent: #f4f8fc; /* 压在 accent 上的文字色 */
   --gold: #c8933f; /* 强调：只用在小面积上，铺大会腻 */
+
+  /* 「冰雾高光」：**实底高亮**共用的一套 —— 主按钮、会话行的选中块、用户消息气泡。
+   * 浅灰蓝渐变压深墨字（#2E4A6B 压在 #EAF2F8 上对比度 7.9:1，AAA），投影用暗色。
+   * 从前压在这几处的琥珀金已经全部换成它，金色只留小面积（笔尖、行内代码）。 */
+  --ice-bg: linear-gradient(135deg, #eaf2f8, #c8dce8);
+  --ice-text: #2e4a6b;
+  --ice-shadow: 0 4px 14px rgba(15, 34, 51, 0.3);
 
   /* 执行权限（沙箱）三档各自的颜色。单开一组，而不是复用主色或语义色：
    *
-   *   - 不能复用 --accent：浅色模式下它和正文色是同一个深蓝，标上去等于没标；
+   *   - 不能复用 --accent：浅色模式下它是深柔蓝，标上去和正文色分不开；
    *   - 也不套 --el-color-success / warning 那套：三档之间不是「好 / 坏 / 危险」
    *     的关系，硬套会让「只读」看起来像出了错。
    *
@@ -75,42 +132,89 @@
   --chart-4: #8c5a9e;
   --chart-5: #b5523f;
   --chart-6: #6b7d8c;
+
+  /* 背景层：低饱和蓝对角渐变 + 四个柔光斑（理由见文件开头「光斑不能删」） */
+  --app-bg:
+    radial-gradient(620px 480px at 88% 6%, rgba(200, 147, 63, 0.2), transparent 70%),
+    radial-gradient(720px 580px at 4% 98%, rgba(205, 228, 240, 0.6), transparent 70%),
+    radial-gradient(560px 480px at 30% 18%, rgba(120, 158, 196, 0.3), transparent 72%),
+    radial-gradient(640px 520px at 72% 78%, rgba(58, 88, 124, 0.2), transparent 72%),
+    linear-gradient(152deg, #eef4fa 0%, #dce8f3 34%, #c9daea 62%, #b6cce0 84%, #a9c4dc 100%);
 }
 
 /* ---------------------------------------------------------------------------
- * 深色模式：靛蓝夜色
+ * 深色模式：靛蓝夜色（设计稿原本的那一份）
  *
- * 只覆盖语义色，品牌色不动。两处刻意的调整：
- *   - 主色换成暖金：深蓝在深底上对比度不够，而亮蓝又偏冷、面积一大就发刺
+ * 只覆盖语义色与玻璃配方，品牌色不动。三处刻意的调整：
+ *   - 主色换成暖金：柔蓝在深底上对比度不够，而亮蓝又偏冷、面积一大就发刺
  *   - 金色提亮一档：它在这套底色上反而更出彩，适合做强调
+ *   - 玻璃改成半透明白（浅色那份是白玻璃），文字整体抬到白
  * ------------------------------------------------------------------------- */
 html.dark {
-  --bg: #0f1e2b;
-  --bg-soft: #152836;
-  --bg-card: #1a3244;
-  --bg-hover: #223d52;
+  --glass-bg: linear-gradient(135deg, rgba(255, 255, 255, 0.17), rgba(255, 255, 255, 0.07));
+  --glass-border: rgba(255, 255, 255, 0.22);
 
-  --text: #eae3d5;
-  --text-soft: #97a7b6;
-  --text-faint: #6b7d8c;
+  /* 板上边缘的亮线（见 :root 那份说明）。深色这边收一档：全亮的白线压在深玻璃上
+   * 会亮成一条灯带 */
+  --glass-highlight: rgba(255, 255, 255, 0.34);
+  --glass-shadow: 0 8px 26px rgba(15, 34, 51, 0.2), inset 0 1px 0 var(--glass-highlight);
 
-  /* 比 accent-soft 再亮一点：深色下表格分隔线、输入框描边都要靠它才看得清 */
-  --border: #2d4a61;
+  /* 缝里垫的那层（见 :root 那份说明）。深色这边板与背景差得远，得垫一档才不像沟 */
+  --seam-tint: rgba(255, 255, 255, 0.06);
+  --overlay-bg: rgba(26, 50, 68, 0.94);
 
-  /* 高亮用暖金，不用亮蓝：亮蓝在深底上偏冷、面积一大就发刺（用户反馈）。
-     金色本是品牌强调色，铺在深靛蓝上既暖又稳。 */
-  --accent: #c79a4e;
-  --accent-hover: #d9ac63;
-  --accent-soft: #362c1c;
-  /* 主色是暖金（明度高），压在上面的字要用深色才不糊 —— 与浅色模式相反 */
-  --on-accent: #101d2a;
-  --gold: #d9a04a;
+  --bg: #16303f;
+  --bg-soft: rgba(255, 255, 255, 0.09);
+  --bg-card: rgba(255, 255, 255, 0.11);
+  --bg-hover: rgba(255, 255, 255, 0.16);
+
+  /* 按钮的底：**保持半透明白**，不靠压暗来解决可读性 —— 深底确实能让彩字更立，
+   * 但整排按钮会变成一块块深色牌子，观感太重（用户反馈）。可读性改由
+   * 「字加粗 + 语义色提亮」负责（见下面的 --sandbox-* 与 .el-tag 那几条）。 */
+  --btn-bg: rgba(255, 255, 255, 0.12);
+  --btn-bg-hover: rgba(255, 255, 255, 0.2);
+
+  --text: rgba(255, 255, 255, 0.95);
+  --text-soft: rgba(255, 255, 255, 0.72);
+  --text-faint: rgba(255, 255, 255, 0.5);
+
+  /* 深色这边是白玻璃，分隔线用半透明白 —— 与浅色模式相反 */
+  --border: rgba(255, 255, 255, 0.18);
+
+  /* 强调色用**冰雾蓝**。原先这里是暖金（#c79a4e）：它作为实底高亮很好看，
+   * 但一旦当文字用（链接、编辑 / 删除、导航选中）就出问题 —— 金色亮度只有 0.36，
+   * 压在玻璃板上的对比度约 2.2:1，用户反馈「看不清」。亮冰蓝约 3.6:1，
+   * 和「冰雾高光」那套按钮也是同一个色系。
+   * 金色没删，只是提亮一档、只留给小面积（行内代码、笔尖）。 */
+  --accent: #a9cbe8;
+  --accent-hover: #c3dcf1;
+  --accent-soft: rgba(169, 203, 232, 0.2); /* 菜单选中底 */
+  /* 主色是浅色（明度高），压在上面的字要用深色才不糊 —— 与浅色模式相反 */
+  --on-accent: #10283a;
+  --gold: #e6c887;
+
+  /* 冰雾高光（见 :root 那份说明）。深色这边把不透明度收一点：全亮的浅蓝块在深靛蓝
+   * 界面里会亮成一块灯箱，收一点才像同一层玻璃上的高光。
+   * **注意**：`--ice-bg` 是浅色块，用它当底的地方字必须是深的（--ice-text），
+   * 别跟着 `--text` 走 —— 白字压冰蓝看不清。 */
+  --ice-bg: linear-gradient(135deg, rgba(234, 242, 248, 0.92), rgba(200, 220, 232, 0.8));
+  --ice-text: #1b3a5c;
+  --ice-shadow: 0 4px 14px rgba(0, 0, 0, 0.32);
+
+  /* 背景层：设计稿原样 —— 深蓝渐变压底，四块光斑（暖金 / 冷白 / 两档蓝） */
+  --app-bg:
+    radial-gradient(620px 480px at 88% 6%, rgba(200, 147, 63, 0.42), transparent 70%),
+    radial-gradient(720px 580px at 4% 98%, rgba(205, 228, 240, 0.46), transparent 70%),
+    radial-gradient(560px 480px at 30% 18%, rgba(120, 158, 196, 0.3), transparent 72%),
+    radial-gradient(640px 520px at 72% 78%, rgba(58, 88, 124, 0.42), transparent 72%),
+    linear-gradient(152deg, #2e4a6b 0%, #3d5c7e 32%, #56779f 58%, #7ea3c4 82%, #a9c4dc 100%);
 
   /* 执行权限三档色（浅色那份的深色版本，见 :root）：整体提亮一档，
-     否则压在深靛蓝底上会发闷、三者之间也难区分 */
-  --sandbox-off: #e5825a;
-  --sandbox-workspace-write: #6aa9dd;
-  --sandbox-read-only: #6cbf8b;
+     否则压在深靛蓝底上会发闷、三者之间也难区分。
+     按钮底色回到半透明白之后再提一档 —— 这三档是彩色文字，亮度不够就读不出来 */
+  --sandbox-off: #ffa77d;
+  --sandbox-workspace-write: #8ec4f0;
+  --sandbox-read-only: #8fd8ab;
 
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
@@ -144,8 +248,17 @@ html.dark {
   --el-color-primary-dark-2: var(--accent-hover);
 
   --el-bg-color: var(--bg-card);
-  --el-bg-color-overlay: var(--bg-card);
+  /* 弹窗/下拉用 overlay 那一档：它比板内的半透明底更实（见 --overlay-bg 的说明），
+   * 否则弹窗叠在玻璃板上，两边都半透明，内容读不清 */
+  --el-bg-color-overlay: var(--overlay-bg);
   --el-bg-color-page: var(--bg);
+
+  /* 表格自己不带底色、跟着板走 —— 默认那层白底压在玻璃上就是一块贴纸 */
+  --el-table-bg-color: transparent;
+  --el-table-tr-bg-color: transparent;
+  --el-table-header-bg-color: transparent;
+  --el-table-border-color: var(--border);
+  --el-table-row-hover-bg-color: var(--bg-hover);
 
   --el-text-color-primary: var(--text);
   --el-text-color-regular: var(--text);
@@ -161,16 +274,202 @@ html.dark {
   --el-fill-color-light: var(--bg-soft);
   --el-fill-color: var(--bg-soft);
 
+  /* 普通按钮的底：跟着 --btn-bg 走（深色那份更深，理由见变量处）。
+   * 各组件里更具体的写法（沙箱按钮、主按钮、会话行图标）会盖过这几条 */
+  --el-button-bg-color: var(--btn-bg);
+  --el-button-hover-bg-color: var(--btn-bg-hover);
+  --el-button-active-bg-color: var(--btn-bg-hover);
+  --el-button-border-color: var(--border);
+  --el-button-hover-border-color: var(--border);
+
   --el-mask-color: rgba(15, 30, 43, 0.6);
   --el-font-family: inherit;
 }
 
-/* 深色下主色是暖金，明度比原来的亮蓝高；Element 主按钮默认的白字压上去
- * 对比度不够，换成深色的 --on-accent（浅色模式不受影响，那边主色是深蓝） */
-html.dark .el-button--primary {
-  --el-button-text-color: var(--on-accent);
-  --el-button-hover-text-color: var(--on-accent);
-  --el-button-active-text-color: var(--on-accent);
+/* 深色下 Element 的主按钮原本是暖金实底（白字压不住，得换深字）。
+ * 现在统一成**冰雾高光**：浅灰蓝渐变压深墨字，和侧栏那个主按钮同一副样子。
+ *
+ * :not(...) 三个变体必须排掉 —— 「编辑 / 删除」这类文字按钮也带 `--primary`，
+ * 不排的话它们会被刷上一块底色，看着像块牌子。
+ * 还要连 --el-button-* 一串变量一起改：只写 background 的话，hover / active
+ * 会把底色刷回暖金。 */
+html.dark .el-button--primary:not(.is-text):not(.is-link):not(.is-plain) {
+  border: none;
+  background: var(--ice-bg);
+  box-shadow: var(--ice-shadow);
+  color: var(--ice-text);
+
+  --el-button-bg-color: transparent;
+  --el-button-text-color: var(--ice-text);
+  --el-button-border-color: transparent;
+  --el-button-hover-bg-color: transparent;
+  --el-button-hover-text-color: var(--ice-text);
+  --el-button-hover-border-color: transparent;
+  --el-button-active-bg-color: transparent;
+  --el-button-active-text-color: var(--ice-text);
+  --el-button-active-border-color: transparent;
+}
+
+html.dark .el-button--primary:not(.is-text):not(.is-link):not(.is-plain):hover {
+  filter: brightness(1.03);
+}
+
+/* 文字按钮（编辑 / 删除 / 复制 / 导出…）：**无框无底**，只有 hover 时才浮出一层
+ * 淡玻璃底。上一轮给它们加过深色底，观感太重 —— 一排小牌子盖在表格上，
+ * 读起来像按钮组而不是行内动作（设计稿那版同样标注的是「无框无底」，见评审图）。
+ * 改成把字与图标做粗一档来保证可读性。
+ *
+ * `.conv-action`（侧栏会话行里那两个小图标）也走这一套 —— 它是纯图标按钮，
+ * 加粗由下面那条 stroke 规则负责。 */
+.el-button.is-text {
+  font-weight: 600;
+}
+
+/* 纯图形按钮：Element 的图标是**填充路径**，没有描边，所以「线条加粗」得靠给
+ * 同色描边 —— stroke 会把轮廓往外撑开一点，视觉上就是线条粗了一档。
+ * viewBox 是 1024×1024，所以这个数字看着大（约等于 1~2 个 CSS 像素）。 */
+.el-button .el-icon svg {
+  stroke: currentColor;
+  stroke-width: 32;
+  stroke-linejoin: round;
+}
+
+/* 主按钮、冰雾按钮里的图标不描边：那一套是浅底深字，已经够实 */
+.el-button--primary .el-icon svg,
+.new-task-btn .el-icon svg {
+  stroke: none;
+}
+
+/* 开关：开态换成中间调的冰蓝（白圆点压得住），关态的槽压暗一档 ——
+ * 不然在深玻璃上几乎看不出那里有个开关 */
+html.dark .el-switch {
+  --el-switch-on-color: #4f86bd;
+  --el-switch-off-color: rgba(0, 0, 0, 0.35);
+}
+
+/* 单选按钮组（提示词页那排类别）：主色换成亮冰蓝之后，Element 默认的白字压上去
+ * 读不清，改成压在主色上的深字 —— 和主按钮同一个口径 */
+html.dark .el-radio-button__original-radio:checked + .el-radio-button__inner {
+  color: var(--on-accent);
+}
+
+/* 复选框选中的勾是白色的，同样换成深色 */
+html.dark .el-checkbox__input.is-checked .el-checkbox__inner::after {
+  border-color: var(--on-accent);
+}
+
+/* 标签：深色下几乎都读不清 —— 模式页的「启用 / 关闭」那一列、技能页的技能名、
+ * API 设置的模型名都是它。
+ *
+ * 根因是 Element 的两种效果都与底色同色系：
+ *   - `light`：主色淡化当底 + 主色当字 —— 底和字糊成一片；
+ *   - `plain`：透明底 + 彩色字 —— 彩色字直接压在玻璃板上，对比不够。
+ * 统一「色相不动、文字亮度提一档 + 加粗」：语义照旧认得出，对比度也上来。 */
+html.dark .el-tag {
+  font-weight: 600;
+  /* 边框：Element 的 `plain` 取的是 `--el-color-*-light-5`，深色主题下那几个值是往
+   * 黑里混的 —— 于是标签描了一圈**黑边**（用户反馈「怎么是黑色边框」）。
+   * 统一换成半透明白：和标签自己的文字同色系，压在深玻璃上是「亮线」而不是黑框 */
+  --el-tag-border-color: rgba(255, 255, 255, 0.3);
+  --el-tag-text-color: #cfe3f5;
+}
+
+html.dark .el-tag--primary {
+  --el-tag-text-color: #bcd9f2;
+  --el-tag-border-color: rgba(169, 203, 232, 0.55);
+}
+
+html.dark .el-tag--success {
+  --el-tag-text-color: #8fd8ab;
+  --el-tag-border-color: rgba(143, 216, 171, 0.55);
+}
+
+html.dark .el-tag--warning {
+  --el-tag-text-color: #f0cc8a;
+  --el-tag-border-color: rgba(240, 204, 138, 0.55);
+}
+
+html.dark .el-tag--danger {
+  --el-tag-text-color: #ffb0b0;
+  --el-tag-border-color: rgba(255, 176, 176, 0.55);
+}
+
+html.dark .el-tag--info {
+  --el-tag-text-color: rgba(255, 255, 255, 0.9);
+  --el-tag-border-color: rgba(255, 255, 255, 0.34);
+}
+
+/* 弹窗宽度跟着视口收：各页写的都是固定值（640 / 760 / 560px…），窗口比它窄时
+ * 弹窗会被挤出屏幕 —— 表现就是「点了按钮只看见背景变暗，弹窗本体在屏幕外」。
+ * 这条统一收进来，最小留 16px 边距。确认框同理。 */
+.el-dialog,
+.el-message-box {
+  max-width: calc(100vw - 32px);
+}
+
+/* 弹窗与确认框的底**必须是实底**。
+ *
+ * Element 默认让它取 `--el-bg-color`（我们映射成了 --bg-card，深色下只有 11% 的白）
+ * —— 于是弹窗是半透明的：背后的正文直接透进来，和弹窗里的字糊成一片。
+ * 用 --overlay-bg（94% 不透明）压住，这才是「浮在板上」该有的样子。 */
+.el-dialog,
+.el-message-box {
+  background: var(--overlay-bg);
+}
+
+/* 弹窗外面的那一层**不滚**：滚动只发生在弹窗内容区里。
+ *
+ * Element 默认让 `.el-overlay-dialog` 可滚 —— 弹窗整体比视口高时，滚的是整个弹窗，
+ * 标题栏和底部按钮会跟着滑出屏幕（用户反馈「弹窗还能相对窗口滚动」）。
+ * 关掉它，配合下面 body 的高度上限，弹窗整体永远不超出视口。 */
+.el-overlay-dialog {
+  overflow: hidden;
+}
+
+/* 弹窗内容过长时在**弹窗内部**滚。
+ * 高度按视口算：减掉的 300px 是标题栏 + 底部按钮 + 上下留白（margin-top: 15vh、
+ * 底部 50px），这样它加上去不会超过视口，外层也就不需要滚了 */
+.el-dialog__body {
+  max-height: max(160px, calc(100vh - 300px));
+  overflow-y: auto;
+}
+
+/* 确认框同理：文案长的时候（比如删除提示词会把引用它的组名列出来） */
+.el-message-box__content {
+  max-height: max(120px, calc(100vh - 320px));
+  overflow-y: auto;
+}
+
+/* 表格的隔行底色。Element 取的是 --el-fill-color-lighter，深色主题下它是纯黑灰
+ * （#1d1d1d）—— 压在玻璃板上就是一道道黑条，板子的通透感全没了。
+ * 换成板内那一档半透明底：跟着主题走，和玻璃也连得上。
+ * 前缀 html 是为了压过 Element 自己那份同特异性的规则。 */
+html .el-table--striped .el-table__body tr.el-table__row--striped td.el-table__cell {
+  background: var(--bg-soft);
+}
+
+/* 提示条（el-alert）。Element 的 `is-light` 底是「语义色混深底」，深色模式下
+ * warning 那条混出来是一块深棕金（实测 rgb(41,34,24)）—— 横贯一整行，是「金色的
+ * 背景」里最扎眼的一处。改成同一色相的淡雾：语义照旧认得出（色相没动），
+ * 玻璃板的通透感也还在。只改深色 —— 浅色那套本来就是浅底，不必动。 */
+html.dark .el-alert--warning.is-light {
+  background-color: rgba(217, 160, 74, 0.16);
+  color: var(--gold);
+}
+
+html.dark .el-alert--error.is-light {
+  background-color: rgba(224, 120, 95, 0.16);
+  color: var(--chart-5);
+}
+
+html.dark .el-alert--success.is-light {
+  background-color: rgba(108, 191, 139, 0.16);
+  color: var(--sandbox-read-only);
+}
+
+html.dark .el-alert--info.is-light {
+  background-color: var(--bg-soft);
+  color: var(--text-soft);
 }
 
 * {
@@ -184,6 +483,23 @@ body,
   margin: 0;
 }
 
+/* 整页不滚：所有滚动都发生在内部容器里（各页的 `.page` / `.scroll`、侧栏的会话列表、
+ * 表格自己…）。两条都是给触控板与滚轮准备的：
+ *   - `overflow: hidden`：内容比视口高出一两个像素时（浮点高度、描边），整页会多出
+ *     一点点可滚空间 —— 滚轮一碰就「上下抖一下」（用户反馈）；
+ *   - `overscroll-behavior: none`：滚到边界后不再把滚动传给外层，
+ *     也就是 macOS 上那记橡皮筋回弹。 */
+html,
+body {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+/* 内部滚动容器滚到边界后也不要把滚动传出去（同上） */
+.el-scrollbar__wrap {
+  overscroll-behavior: contain;
+}
+
 body {
   font-family:
     -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
@@ -191,7 +507,10 @@ body {
   font-size: 14px;
   line-height: 1.6;
   color: var(--text);
-  background: var(--bg);
+
+  /* 背景层：渐变 + 柔光斑。它撑住整个毛玻璃效果 —— 板子是半透明的，
+   * 底下得有东西可透（见文件开头「光斑不能删」） */
+  background: var(--app-bg);
   -webkit-font-smoothing: antialiased;
 
   /* 切主题时整页平滑过渡。只过渡颜色，别把布局属性也带上 —— 那会让
@@ -219,12 +538,70 @@ body {
   font-size: 12px;
 }
 
-/* 页面外壳：所有页面用它保证「撑满 + 自己滚动」 */
+/* 页面外壳：所有页面用它保证「撑满 + 自己滚动」。
+ * 它同时是应用层的第四块玻璃板（任务区/配置区）—— 板子的边界由圆角和描边给出，
+ * 所以这里不能再写实底背景 */
 .page {
+  position: relative;
   height: 100%;
   min-height: 0;
   overflow-y: auto;
   padding: 20px 24px;
+
+  /* 底色由下面那条统一规则给（`background: var(--glass-bg)`），模糊在 .shell
+   * 那一层做一次（见本文件「玻璃的底色与模糊，分在两层上」）；这里只留描边与圆角 */
+  border: 1px solid var(--glass-border);
+  border-radius: var(--glass-radius);
+}
+
+/* ---------------------------------------------------------------------------
+ * 玻璃的底色与模糊，**分在两层上**
+ *
+ * 模糊只在 `.shell` 那一层做一次（见 App.vue）：整个窗口共用同一次模糊，
+ * 板内和板与板之间的缝里就是**同一张**模糊过的背景。
+ *
+ * 从前不是这样 —— 模糊是每块板各做一次，而缝里露出的是**没模糊过的原始背景**。
+ * 两者在板的边缘硬碰硬地接上：板内是一张糊开的图案，紧挨着的缝里却是清晰的，
+ * 交界处清晰度突变，看着就像「这里接了一块别的东西」（用户反复报的那个）。
+ * 底色跟着板走，模糊不跟，这笔账就没法算平 —— 因为缝不属于任何一块板。
+ *
+ * 现在板这一层只叠底色（半透明白 + 内高光），**不再自己模糊**：
+ * 在已经模糊过的背景上再糊一次，板内会比缝里更糊，又是一种接缝。
+ *
+ * 投影同理，也得**四块板给同一种**：只留上边缘那道内高光，外投影一律不要。
+ * 从前四块板带的是 `--glass-shadow`（含一条 `0 8px 28px` 的外投影），而它能不能
+ * 落到缝里**取决于缝在谁盒子里** —— 缝①②（LOGO 板/侧栏板、顶边栏/任务区）在
+ * `.sidebar` / `.main` 内部，投影照常画出来；缝③④（LOGO 板/顶边栏、侧栏板/任务区）
+ * 和窗口四周落在那两个容器之外，被容器的 `overflow: hidden` 裁掉。同一个配方在
+ * 四条缝上画出两种结果，看着就是「这两条的颜色和背景对不上」（用户报的）。
+ * 而那条投影本来就**只在**出问题的那两条缝里可见 —— 它没换来任何「板浮起来」的
+ * 观感（板与背景的层次由底色、描边和光斑给），去掉是纯赚。
+ *
+ * （`overflow: hidden` 在那两个容器上是必需的，别为了投影去拆它：
+ * 见 App.vue 里「输入框跑出视口」那段。）
+ * ------------------------------------------------------------------------- */
+.topbar,
+.sidebar .brand,
+.sidebar .panel,
+.chat,
+.page {
+  position: relative;
+  isolation: isolate;
+  background: var(--glass-bg);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
+}
+
+/* 下拉、气泡：它们浮在玻璃板之上，自己也得是玻璃 —— 一块实底白板压上去，
+ * 下面的景深就断了（那正是这套设计要的东西）。
+ *
+ * **`.el-dialog` 刻意排除在外**：弹窗自己的底色本来就 94% 不透明（--overlay-bg），
+ * 再叠一层 backdrop-filter 肉眼看不出差别，却会让它在某些显卡 / 驱动组合下
+ * **整个不绘制** —— Chrome 的合成层老问题：模糊层算不出来就什么都不画。
+ * 表现正是「点了按钮只看见背景变暗、弹窗不在屏幕上」（用户报的故障）。 */
+.el-popper,
+.el-message-box {
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
 }
 
 /* 页面里的第一行：放筛选、搜索这类控件。

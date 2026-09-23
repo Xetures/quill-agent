@@ -12,12 +12,14 @@ import { useRoute } from 'vue-router'
  */
 const route = useRoute()
 
-/** 二级导航项。顺序就是阅读顺序：先看外观，再看对话，最后是外部服务与版本。 */
+/** 二级导航项。顺序就是阅读顺序：先看外观，再看对话，接着外部服务，最后是归档与版本。 */
 const SECTIONS = [
   { to: '/settings/theme', label: '主题' },
   { to: '/settings/chat', label: '对话' },
   { to: '/settings/search', label: '联网搜索' },
   { to: '/settings/mcp', label: 'MCP' },
+  // 归档从侧栏一级项挪到这里：它是「回头翻旧账」，和主题、对话这些设置归在一处
+  { to: '/settings/archived', label: '归档' },
   { to: '/settings/about', label: '关于' },
 ]
 </script>

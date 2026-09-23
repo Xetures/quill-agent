@@ -21,32 +21,37 @@ const props = defineProps<{
   series: Series[]
 }>()
 
-/** 画布高固定，宽跟着容器走。 */
-const HEIGHT = 240
+/** 画布的宽与高都跟着容器走（见下面的 ResizeObserver）。 */
 const PAD = { top: 16, right: 16, bottom: 30, left: 52 }
 
 /** 调色板的色号个数，和 style.css 里的 --chart-n 对齐。 */
 const COLORS = 6
 
-const box = ref<HTMLElement | null>(null)
+/** 图表区（图例以下那块）。宽高都从它身上量。 */
+const plotBox = ref<HTMLElement | null>(null)
 const width = ref(760)
+const height = ref(240)
 let observer: ResizeObserver | null = null
 
 onMounted(() => {
-  if (!box.value) return
+  if (!plotBox.value) return
 
-  // 量容器宽度：SVG 用 viewBox 缩放会把字和线一起拉变形，所以按真实像素画
+  // 量容器：SVG 用 viewBox 缩放会把字和线一起拉变形，所以按真实像素画。
+  // 高度也一起量 —— 窗口一高，图就该跟着高（原先写死 240px，面板一矮就被裁掉一截）
   observer = new ResizeObserver((entries) => {
-    const measured = entries[0]?.contentRect.width ?? 0
-    if (measured) width.value = measured
+    const rect = entries[0]?.contentRect
+    if (!rect) return
+    if (rect.width) width.value = rect.width
+    // 下限 120：再矮也画不出有意义的东西；上限不设，交给窗口自己定
+    if (rect.height) height.value = Math.max(120, Math.round(rect.height))
   })
-  observer.observe(box.value)
+  observer.observe(plotBox.value)
 })
 
 onBeforeUnmount(() => observer?.disconnect())
 
 const plotWidth = computed(() => Math.max(width.value - PAD.left - PAD.right, 10))
-const plotHeight = HEIGHT - PAD.top - PAD.bottom
+const plotHeight = computed(() => Math.max(height.value - PAD.top - PAD.bottom, 10))
 
 /** 纵轴上每格可能的步长（1 和 2.5 都在里面：步长必须看起来是个整数）。 */
 const NICE_STEPS = [1, 2, 2.5, 3, 4, 5, 6, 8, 10]
@@ -73,7 +78,8 @@ const ceiling = computed(() => {
 const yTicks = computed(() =>
   Array.from({ length: 5 }, (_, index) => {
     const value = (ceiling.value / 4) * index
-    return { value, y: PAD.top + plotHeight - (value / ceiling.value) * plotHeight }
+    const y = PAD.top + plotHeight.value - (value / ceiling.value) * plotHeight.value
+    return { value, y }
   }),
 )
 
@@ -84,7 +90,7 @@ const xOf = (index: number): number => {
 }
 
 const yOf = (value: number): number =>
-  PAD.top + plotHeight - (value / ceiling.value) * plotHeight
+  PAD.top + plotHeight.value - (value / ceiling.value) * plotHeight.value
 
 interface Drawable {
   name: string
@@ -218,7 +224,7 @@ function shortLabel(label: string): string {
 </script>
 
 <template>
-  <div ref="box" class="chart">
+  <div class="chart">
     <!-- 图例：颜色和折线一一对应。模型名可能很长，所以让它折行 -->
     <div class="legend">
       <span v-for="item in drawables" :key="item.name" class="legend-item">
@@ -227,86 +233,105 @@ function shortLabel(label: string): string {
       </span>
     </div>
 
-    <svg :width="width" :height="HEIGHT" role="img">
-      <!-- 横向网格 + 纵轴刻度 -->
-      <g v-for="tick in yTicks" :key="tick.value">
-        <line :x1="PAD.left" :x2="width - PAD.right" :y1="tick.y" :y2="tick.y" class="grid" />
-        <text :x="PAD.left - 8" :y="tick.y + 4" class="axis" text-anchor="end">
-          {{ formatTokens(tick.value) }}
+    <!-- 图表区：吃掉图例之外的剩余高度。svg 按这里量出来的真实像素画（见 script），
+         所以窗口一高图就跟着高 —— 它不是一张固定高度的图 -->
+    <div ref="plotBox" class="plot">
+      <svg :width="width" :height="height" role="img">
+        <!-- 横向网格 + 纵轴刻度 -->
+        <g v-for="tick in yTicks" :key="tick.value">
+          <line :x1="PAD.left" :x2="width - PAD.right" :y1="tick.y" :y2="tick.y" class="grid" />
+          <text :x="PAD.left - 8" :y="tick.y + 4" class="axis" text-anchor="end">
+            {{ formatTokens(tick.value) }}
+          </text>
+        </g>
+
+        <!-- 横轴日期 -->
+        <text
+          v-for="(label, index) in labels"
+          :key="label"
+          :x="xOf(index)"
+          :y="height - 10"
+          class="axis"
+          text-anchor="middle"
+        >
+          {{ shortLabel(label) }}
         </text>
-      </g>
 
-      <!-- 横轴日期 -->
-      <text
-        v-for="(label, index) in labels"
-        :key="label"
-        :x="xOf(index)"
-        :y="HEIGHT - 10"
-        class="axis"
-        text-anchor="middle"
-      >
-        {{ shortLabel(label) }}
-      </text>
-
-      <path
-        v-for="item in drawables"
-        :key="item.name"
-        :d="item.path"
-        class="line"
-        :style="{ stroke: item.color }"
-      />
-
-      <!-- 悬停：一条竖线 + 每条线上的点 -->
-      <template v-if="hoverIndex >= 0">
-        <line
-          :x1="guideX"
-          :x2="guideX"
-          :y1="PAD.top"
-          :y2="PAD.top + plotHeight"
-          class="guide"
-        />
-        <circle
+        <path
           v-for="item in drawables"
           :key="item.name"
-          :cx="item.points[hoverIndex]?.x ?? 0"
-          :cy="item.points[hoverIndex]?.y ?? 0"
-          r="3.5"
-          :style="{ fill: item.color }"
+          :d="item.path"
+          class="line"
+          :style="{ stroke: item.color }"
         />
-      </template>
 
-      <!-- 透明覆盖层专收鼠标事件：鼠标划过空白处也仍然算「在图里」，
-           否则提示框会在点与点之间反复闪烁 -->
-      <rect
-        :x="PAD.left"
-        :y="PAD.top"
-        :width="plotWidth"
-        :height="plotHeight"
-        fill="transparent"
-        @mousemove="onMove"
-        @mouseleave="hoverIndex = -1"
-      />
-    </svg>
+        <!-- 悬停：一条竖线 + 每条线上的点 -->
+        <template v-if="hoverIndex >= 0">
+          <line
+            :x1="guideX"
+            :x2="guideX"
+            :y1="PAD.top"
+            :y2="PAD.top + plotHeight"
+            class="guide"
+          />
+          <circle
+            v-for="item in drawables"
+            :key="item.name"
+            :cx="item.points[hoverIndex]?.x ?? 0"
+            :cy="item.points[hoverIndex]?.y ?? 0"
+            r="3.5"
+            :style="{ fill: item.color }"
+          />
+        </template>
 
-    <div v-if="tooltip" class="tip" :style="tooltipStyle">
-      <div class="tip-day">{{ tooltip.label }}</div>
-      <div v-for="row in tooltip.rows" :key="row.name" class="tip-row">
-        <i class="dot" :style="{ background: row.color }" />
-        <span class="muted">{{ row.name }}</span>
-        <span class="mono tip-value">{{ row.value.toLocaleString() }}</span>
+        <!-- 透明覆盖层专收鼠标事件：鼠标划过空白处也仍然算「在图里」，
+             否则提示框会在点与点之间反复闪烁 -->
+        <rect
+          :x="PAD.left"
+          :y="PAD.top"
+          :width="plotWidth"
+          :height="plotHeight"
+          fill="transparent"
+          @mousemove="onMove"
+          @mouseleave="hoverIndex = -1"
+        />
+      </svg>
+
+      <div v-if="tooltip" class="tip" :style="tooltipStyle">
+        <div class="tip-day">{{ tooltip.label }}</div>
+        <div v-for="row in tooltip.rows" :key="row.name" class="tip-row">
+          <i class="dot" :style="{ background: row.color }" />
+          <span class="muted">{{ row.name }}</span>
+          <span class="mono tip-value">{{ row.value.toLocaleString() }}</span>
+        </div>
       </div>
     </div>
   </div>
 </template>
 
 <style scoped>
+/* 外层只管「图例在上、图表在下」这一列，高度由调用方给（见 UsageView 的 .chart-panel）
+ * —— 图才会跟着窗口变高变矮 */
 .chart {
-  position: relative;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
   width: 100%;
+}
+
+/* 图表区：图例之外的高度全归它。宽高都从这里量（见 script 的 ResizeObserver），
+ * position: relative 是给悬停提示框当参照的 */
+.plot {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .legend {
   display: flex;
+  flex-shrink: 0;
   flex-wrap: wrap;
   gap: 6px 16px;
   margin-bottom: 4px;

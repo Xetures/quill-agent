@@ -20,7 +20,10 @@ const open = ref(false)
     @click="open = true"
   />
 
-  <el-dialog v-model="open" title="使用说明" width="640px">
+  <!-- append-to-body 必须留着：弹窗得挂在 body 下。四块玻璃板都有 backdrop-filter，
+       它会给板子建一个层叠上下文 —— 弹窗若渲染在板子里，`position: fixed` 就改成
+       相对那块板子定位（弹窗跑到板子中间、遮罩也只盖住板子）。 -->
+  <el-dialog v-model="open" title="使用说明" width="640px" append-to-body>
     <div class="doc">
       <section>
         <h4>一、先配一个模型</h4>
@@ -94,12 +97,15 @@ const open = ref(false)
 .help {
   flex-shrink: 0;
   color: var(--text-soft);
+  /* 抬一层：这一块紧挨着侧栏板，万一后面加了绝对定位的东西也不会盖住它。
+   * 点不开等于「这页没有入口」，属于最容易被忽略的那类故障 */
+  position: relative;
+  z-index: 1;
 }
 
-/* 内容偏长，矮窗口下自己要能滚 —— 弹窗本身不滚动 */
+/* 内容偏长，矮窗口下要能滚 —— 这件事现在由全局规则统一管（见 style.css 的
+ * `.el-dialog__body`），这里不再叠一层：两层 max-height 会套出两条滚动条 */
 .doc {
-  max-height: 62vh;
-  overflow-y: auto;
   padding-right: 6px;
 }
 

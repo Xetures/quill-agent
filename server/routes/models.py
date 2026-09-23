@@ -18,7 +18,7 @@ from quill_agent.models import (
 )
 from quill_agent.prompts import PROMPT_CATEGORIES
 from server import stores
-from server.auth import REDACTED, redact
+from server.auth import REDACTED
 from server.schemas import (
     CatalogLookupPayload,
     ModelPayload,
@@ -56,7 +56,10 @@ def list_models() -> dict:
     safe_configs = []
     for config in configs:
         data = config.model_dump()
-        data["api_key"] = redact(config.api_key)
+        # Key **明文回传**。这是个本地单机应用（默认只监听回环地址，见 server/auth.py），
+        # 用户要看的就是自己填进去的那把钥匙 —— 回显一串点、或者干脆留空，
+        # 都会让人以为 Key 丢了（两轮反馈都落在这上面）。
+        data["api_key"] = config.api_key
         data["api_key_configured"] = bool(config.api_key)
         safe_configs.append(data)
     return {"configs": safe_configs, "options": options}
@@ -71,6 +74,21 @@ def list_protocols() -> dict:
     顺手把地址填好 —— Ollama 的 `http://localhost:11434/v1` 没人愿意背。
     """
     return {"protocols": protocol_options()}
+
+
+@router.get("/providers")
+def list_providers() -> dict:
+    """官方服务商清单（各家官方端点地址 + 用哪套协议）。
+
+    与模型规格快照**同源**：同一份 models.dev 快照、同一次同步写出的两个文件
+    （见 `quill_agent.model_catalog`）。所以它们共用同一个「同步模型库」按钮 ——
+    没必要让用户为这两件事点两次、多访问一次外网。
+
+    没同步过时是空表。`synced` 单独给出来而不是让前端看数组空不空：空表和
+    「还没同步」在前端是同一件事，但界面要说的话不一样。
+    """
+    providers = stores.providers()
+    return {"providers": providers, "synced": bool(providers)}
 
 
 def _validate_key(payload: ModelPayload) -> None:
@@ -97,7 +115,7 @@ def add_model(payload: ModelPayload) -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     data = item.model_dump()
-    data["api_key"] = redact(item.api_key)
+    data["api_key"] = item.api_key
     data["api_key_configured"] = bool(item.api_key)
     return data
 
@@ -127,7 +145,7 @@ def update_model(config_id: str, payload: ModelPayload) -> dict:
 
     stores.models().update(item)
     data = item.model_dump()
-    data["api_key"] = redact(item.api_key)
+    data["api_key"] = item.api_key
     data["api_key_configured"] = bool(item.api_key)
     return data
 
@@ -211,7 +229,12 @@ def refresh_model_catalog() -> dict:
     端点解析和手动填写都还在。
     """
     settings = get_settings()
-    ok, message, count = refresh(settings.model_catalog_path, settings.model_catalog_url)
+    # 同一份下载里顺带把服务商目录写出来（见 model_catalog.refresh）
+    ok, message, count = refresh(
+        settings.model_catalog_path,
+        settings.model_catalog_url,
+        providers_path=settings.providers_path,
+    )
     return {"ok": ok, "message": message, "count": count}
 
 

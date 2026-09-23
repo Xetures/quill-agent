@@ -138,7 +138,9 @@ async function save(): Promise<void> {
     <span class="label">执行权限：{{ label }}</span>
   </el-button>
 
-  <el-dialog v-model="open" title="执行权限（沙箱）" width="560px">
+  <!-- append-to-body 必须留着（理由见 HelpButton 里那段说明）：这个入口在顶栏，
+       不挂到 body 的话弹窗会被顶栏那块玻璃板的层叠上下文困住 -->
+  <el-dialog v-model="open" title="执行权限（沙箱）" width="560px" append-to-body>
     <el-alert v-if="error" type="error" :closable="false" :title="error" class="block" />
 
     <p class="desc">
@@ -204,10 +206,12 @@ async function save(): Promise<void> {
   margin-right: 2px;
   font-weight: 600;
 
-  --el-button-bg-color: var(--bg-card);
+  /* 底色走 --btn-bg：深色模式下它比 --bg-card 深得多。
+   * 三档权限色都是彩色文字，压在半透明白底上读不出来（用户反馈） */
+  --el-button-bg-color: var(--btn-bg);
   --el-button-border-color: var(--border);
-  --el-button-hover-bg-color: var(--bg-hover);
-  --el-button-active-bg-color: var(--bg-hover);
+  --el-button-hover-bg-color: var(--btn-bg-hover);
+  --el-button-active-bg-color: var(--btn-bg-hover);
 }
 
 /* 三档三种文字色（理由见脚本里的 `tone`）。

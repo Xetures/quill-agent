@@ -17,7 +17,11 @@ import { formatTime } from '../utils/format'
 const report = ref<UsageReport | null>(null)
 
 const series = computed(() =>
-  (report.value?.series ?? []).map((item) => ({ name: item.model, values: item.values })),
+  (report.value?.series ?? [])
+    // 全是 0 的模型不上图：折线图里一条贴底的直线不带任何信息，只会把图例撑长、
+    // 把真正用过的几档颜色挤到边角。它要是想找「配了但没用过」的模型，看下面的表格
+    .filter((item) => item.values.some((value) => value > 0))
+    .map((item) => ({ name: item.model, values: item.values })),
 )
 
 const tasks = computed(() => report.value?.tasks ?? [])
@@ -69,7 +73,7 @@ onMounted(() => {
     <Teleport to="#page-head-slot">
       <h1>用量</h1>
       <span class="hint">
-        token 消耗；折线看最近 7 天、按模型分色，表格按任务汇总（含已归档）
+        token 消耗：折线按模型分色看 7 天，表格按任务汇总
       </span>
     </Teleport>
 
@@ -143,16 +147,30 @@ onMounted(() => {
   background: var(--bg-card);
 }
 
-/* 图的高度是固定的（几条折线 + 图例），不参与压缩 */
+/* 两块**平分**页面高度，各自随窗口长缩：
+ * 图表那边的高度是从容器量出来的（见 LineChart），所以窗口一变高图就变高，
+ * 不再是一张写死 240px、面板一矮就被裁的图 */
 .chart-panel {
-  flex-shrink: 0;
+  display: flex;
+  flex: 1 1 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
 }
 
-/* 表格区吃掉剩下的高度，在内部滚动 */
+/* 图例最多两行，多出来的在图例条内部滚 —— 模型一多它会折成三四行，
+ * 那是唯一会把图挤矮的东西 */
+.chart-panel :deep(.legend) {
+  flex-shrink: 0;
+  max-height: 2.4em;
+  overflow-y: auto;
+}
+
+/* 表格区同样平分，但它有个下限：低于这个高度就只剩表头了 */
 .table-panel {
   display: flex;
-  flex: 1;
-  min-height: 0;
+  flex: 1 1 0;
+  min-height: 220px;
   flex-direction: column;
 }
 

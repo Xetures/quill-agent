@@ -14,12 +14,12 @@ const PAGES = [
   { path: '/modes', title: '模式' },
   { path: '/prompts', title: '提示词' },
   { path: '/models', title: 'API 设置' },
-  // 联网搜索归到偏好设置下面（见 router.ts），顶栏标题由 SettingsLayout 统一给
+  // 联网搜索与归档都归到偏好设置下面（见 router.ts），顶栏标题由 SettingsLayout 统一给
   { path: '/settings/search', title: '偏好设置' },
+  { path: '/settings/archived', title: '偏好设置' },
   { path: '/tools', title: '工具' },
   { path: '/skills', title: '技能' },
   { path: '/memory', title: '记忆' },
-  { path: '/archived', title: '归档' },
   { path: '/usage', title: '用量' },
   { path: '/settings', title: '偏好设置' },
 ] as const
@@ -47,4 +47,12 @@ test('旧地址 /search 跳到偏好设置的联网搜索节', async ({ page }) 
   await page.goto('/search')
   await expect(page).toHaveURL(/\/settings\/search$/)
   await expect(page.locator('.sub-item.active')).toHaveText('联网搜索')
+})
+
+// /archived 同理：归档从侧边栏一级项挪进了偏好设置
+test('旧地址 /archived 跳到偏好设置的归档节', async ({ page }) => {
+  await mockApi(page)
+  await page.goto('/archived')
+  await expect(page).toHaveURL(/\/settings\/archived$/)
+  await expect(page.locator('.sub-item.active')).toHaveText('归档')
 })

@@ -11,6 +11,7 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    ClipboardPanel: typeof import('./src/components/ClipboardPanel.vue')['default']
     ContextMeter: typeof import('./src/components/ContextMeter.vue')['default']
     ElAlert: typeof import('element-plus/es')['ElAlert']
     ElButton: typeof import('element-plus/es')['ElButton']

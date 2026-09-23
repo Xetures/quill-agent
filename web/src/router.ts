@@ -17,8 +17,7 @@ export const router = createRouter({
     { path: '/tools', name: 'tools', component: () => import('./views/ToolsView.vue') },
     { path: '/skills', name: 'skills', component: () => import('./views/SkillsView.vue') },
     { path: '/memory', name: 'memory', component: () => import('./views/MemoryView.vue') },
-    { path: '/archived', name: 'archived', component: () => import('./views/ArchivedView.vue') },
-    // 用量是「回来的看」的页面，排在归档之后、设置之前
+    // 用量是「回来的看」的页面，排在记忆之后、设置之前
     { path: '/usage', name: 'usage', component: () => import('./views/UsageView.vue') },
     // 偏好设置：侧边栏是一级项，页面里还有一层二级导航（见 SettingsLayout）。
     // 各节做成子路由而不是堆在一页里，是因为它们的体量差得太远 ——「联网搜索」自己就是
@@ -48,6 +47,13 @@ export const router = createRouter({
           name: 'settings-mcp',
           component: () => import('./views/McpView.vue'),
         },
+        // 归档原先挂在侧边栏一级，现在收进偏好设置：它是「回头翻旧账」，
+        // 和主题、对话这些设置归在一处
+        {
+          path: 'archived',
+          name: 'settings-archived',
+          component: () => import('./views/ArchivedView.vue'),
+        },
         {
           path: 'about',
           name: 'settings-about',
@@ -58,5 +64,7 @@ export const router = createRouter({
     // 联网搜索原先是侧边栏一级项，现在归到「偏好设置」下面。旧地址留跳转，
     // 免得书签和浏览器历史里的 /search 落到一片空白上
     { path: '/search', redirect: '/settings/search' },
+    // 归档同理（原侧边栏一级项）
+    { path: '/archived', redirect: '/settings/archived' },
   ],
 })

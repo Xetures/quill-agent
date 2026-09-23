@@ -10,7 +10,7 @@ from __future__ import annotations
 from quill_agent.config import get_settings
 from quill_agent.history import ConversationStore
 from quill_agent.memory import MemoryStore
-from quill_agent.model_catalog import ModelCatalog
+from quill_agent.model_catalog import ModelCatalog, load_providers
 from quill_agent.preferences import PreferenceStore
 from quill_agent.prompts import PromptLibrary
 from quill_agent.search import SearchStore
@@ -41,6 +41,15 @@ def models() -> ModelStore:
 def model_catalog() -> ModelCatalog:
     """模型规格快照（模型名 -> 上下文窗口），本地 JSON，可由用户手工维护。"""
     return ModelCatalog(get_settings().model_catalog_path)
+
+
+def providers() -> list[dict[str, str]]:
+    """服务商清单（官方端点地址 + 用哪套协议），来自同一份快照。
+
+    和上面几处不同，这里返回的是**数据**而不是 store 对象：它是只读的一份目录
+    （要改就重新同步），没有按 id 增删改这回事，包一层类只会多一层空壳。
+    """
+    return load_providers(get_settings().providers_path)
 
 
 def prompt_groups() -> PromptGroupStore:

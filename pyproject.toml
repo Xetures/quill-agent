@@ -1,6 +1,6 @@
 [project]
 name = "quill-agent"
-version = "0.1.19"
+version = "0.1.20"
 description = "本地优先的 Agent 应用：提示词、工具、会话都可配可改，业务层与界面完全分离"
 readme = "README.md"
 license = "MIT"
@@ -31,8 +31,15 @@ dev = [
     "ruff>=0.8",
 ]
 
+# 桌面壳（见 quill_agent/desktop.py）。**单独放**、不进主依赖：不做桌面版的人
+# 不该为一个 WebView 绑定多装一层，命令行与浏览器版照旧 `uv sync` 就能跑
+desktop = [
+    "pywebview>=5.3",
+]
+
 [project.scripts]
 quill = "quill_agent.cli:main"
+quill-desktop = "quill_agent.desktop:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -41,6 +48,13 @@ build-backend = "hatchling.build"
 # src 布局：源码放在 src/ 下，避免本地目录被意外 import
 [tool.hatch.build.targets.wheel]
 packages = ["src/quill_agent", "server"]
+
+# 出厂资源**随包发布**：`bootstrap.template_dir` 最先找的就是 `quill_agent/resources/<name>`
+# （另一条路是「仓库根/<name>」，那只在源码树里成立）。少了这一段，装出来的 wheel 里
+# 没有出厂提示词与技能 —— 应用照样能起，但**新用户第一次打开是空的**，而且不报任何错。
+[tool.hatch.build.targets.wheel.force-include]
+"prompt" = "quill_agent/resources/prompt"
+"skills" = "quill_agent/resources/skills"
 
 [tool.ruff]
 src = ["src", "app", "server"]

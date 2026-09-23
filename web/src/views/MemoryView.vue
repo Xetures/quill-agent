@@ -3,10 +3,15 @@ import { computed, onMounted, ref } from 'vue'
 
 import { api } from '../api/client'
 import type { MemoryItem } from '../api/types'
+import { useTableHeight } from '../composables/useTableHeight'
 import { errorText } from '../utils/error'
 import { formatIsoTime } from '../utils/format'
 
 const items = ref<MemoryItem[]>([])
+
+/** 表格容器：量它的高度交给 el-table，让表体自己滚（见 useTableHeight） */
+const tableBox = ref<HTMLElement | null>(null)
+const tableHeight = useTableHeight(tableBox)
 const max = ref(50)
 const draft = ref('')
 
@@ -71,7 +76,7 @@ onMounted(() => {
     <Teleport to="#page-head-slot">
       <h1>记忆</h1>
       <span class="hint">
-        跨会话保留的长期事实，启用中的会以清单形式进入每一轮对话 —— 当前 {{ enabledCount }} / {{ max }} 条启用
+        跨会话保留的长期事实，启用中的每轮都会带上 —— 当前 {{ enabledCount }} / {{ max }} 条
       </span>
     </Teleport>
 
@@ -85,13 +90,14 @@ onMounted(() => {
         resize="none"
         placeholder="手动加一条，例如：偏好简洁回答，不要啰嗦的总结"
       />
-      <el-button size="small" type="primary" :disabled="!draft.trim()" @click="add">
-        添加
-      </el-button>
-      <el-button size="small" :disabled="!items.length" @click="clearAll">清空</el-button>
+      <!-- 用默认尺寸（不是 small）：输入框是三行高，按钮再小一档就显得像两个附属品 -->
+      <el-button type="primary" :disabled="!draft.trim()" @click="add">添加</el-button>
+      <el-button :disabled="!items.length" @click="clearAll">清空</el-button>
     </div>
 
-    <el-table :data="items" size="small" stripe>
+    <!-- 表格自己滚：表头固定、只有表体在滚（高度由 useTableHeight 量出） -->
+    <div ref="tableBox" class="table-box">
+      <el-table :data="items" :height="tableHeight" size="small" stripe>
       <el-table-column prop="text" label="内容" />
       <el-table-column label="记录时间" width="120">
         <template #default="{ row }">
@@ -110,7 +116,8 @@ onMounted(() => {
           <el-button size="small" text type="danger" @click="remove(row.id)">删除</el-button>
         </template>
       </el-table-column>
-    </el-table>
+      </el-table>
+    </div>
 
     <el-empty
       v-if="!items.length"
@@ -120,11 +127,24 @@ onMounted(() => {
 </template>
 
 <style scoped>
+/* 整页不滚，表格自己滚（见 .table-box）—— 表头与输入行钉在原处，只有表体在滚 */
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow: hidden;
+}
+
+.table-box {
+  flex: 1;
+  min-height: 0;
+}
+
 .composer {
   display: flex;
-  /* 多行输入框比按钮高得多，按钮要靠上对齐才不会浮在中间 */
-  align-items: flex-start;
+  /* 垂直居中：输入框是三行高，按钮贴顶会显得它比实际更小、位置也偏上 */
+  align-items: center;
   gap: 8px;
-  margin-bottom: 12px;
+  /* 和下面列表之间的距离由 .page 的 gap 给，这里不再另加 —— 两个一起会叠成两倍 */
 }
 </style>

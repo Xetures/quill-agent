@@ -4,6 +4,7 @@ import { computed, ref } from 'vue'
 
 import { api } from '../api/client'
 import type { FileChange, Message, MessagePart, ToolStep } from '../api/types'
+import { pushClipboard } from '../stores/clipboard'
 import { session } from '../stores/session'
 import { errorText } from '../utils/error'
 import { renderMarkdown } from '../utils/markdown'
@@ -40,6 +41,9 @@ const deletable = computed(
  *
  * 正文为空时退回思考过程：只有工具调用的那一轮，正文本来就是空的，而思维链才是
  * 用户想留下的东西（见 7.x 的「思考」开关）。
+ *
+ * 除了写系统剪贴板，还会记进**公共剪贴板**（右侧那个抽屉）：用户复制往往是为了
+ * 到别的页面去用，而系统剪贴板一次只装得下一份，复制第二段就把第一段挤掉了。
  */
 async function copyMessage(): Promise<void> {
   const text = props.message.content || props.message.reasoning || ''
@@ -47,6 +51,10 @@ async function copyMessage(): Promise<void> {
     ElMessage.info('这条消息没有可以复制的文本。')
     return
   }
+
+  // **先记进公共剪贴板**：这是「留着」，和系统剪贴板成不成是两件事 ——
+  // 后者可能被浏览器拒掉（非安全上下文、权限被改），那时用户至少还能从面板里取走
+  pushClipboard(text, props.message.role === 'user' ? '我的提问' : '助手回答')
 
   try {
     await navigator.clipboard.writeText(text)
@@ -342,8 +350,26 @@ const statsText = computed(() => {
       </el-collapse>
     </template>
 
-    <!-- 这一轮的任务清单（跑完落盘的定稿）。排在正文之前，和「思考过程」归为一组：
-         它们都是「这条回答背后的过程」，正文才是结论。
+    <!-- 气泡下面那一行：左边是耗时与用量（模型消息才有），右边是删除 / 复制。
+         放在这里而不是气泡右上角：那一行本来就是「这条消息的元信息」，按钮和它同一行
+         读起来是一件事，而浮在正文右上角会挡住内容。
+
+         **位置紧跟在过程与正文之后、清单与附件之前**：正文是结论，这对按钮是「拿这条
+         结论做什么」—— 两者该挨着。原先它在整条消息的最末尾，一轮长任务里会被任务清单、
+         工具折叠块顶到屏幕外，想复制那句话得先跨过一整屏的过程记录。 -->
+    <div v-if="statsText || deletable" class="footer">
+      <span v-if="statsText" class="stats muted">⏱ {{ statsText }}</span>
+
+      <!-- **常驻但很淡**：只 hover 才露出来的按钮用户很难发现，而全亮又抢正文的注意力。
+           悬停只改透明度、不加底色 —— 加底色会让它在消息框里显得像个突然冒出来的控件 -->
+      <div v-if="deletable" class="actions">
+        <el-button text size="small" :icon="Delete" title="删除" @click="deleteMessage" />
+        <el-button text size="small" :icon="CopyDocument" title="复制" @click="copyMessage" />
+      </div>
+    </div>
+
+    <!-- 这一轮的任务清单（跑完落盘的定稿）。和「思考过程」归为一组：它们都是「这条回答
+         背后的过程」，正文才是结论 —— 所以排在上面那行按钮之下。
 
          运行中那份不在这里 —— 它走 ChatView 末尾的实时卡片（同一个组件）。
          老记录没有这个字段，所以判空是必须的 -->
@@ -375,19 +401,6 @@ const statsText = computed(() => {
       </el-button>
     </div>
 
-    <!-- 气泡下面那一行：左边是耗时与用量（模型消息才有），右边是删除 / 复制。
-         放在这里而不是气泡右上角：那一行本来就是「这条消息的元信息」，按钮和它同一行
-         读起来是一件事，而浮在正文右上角会挡住内容 -->
-    <div v-if="statsText || deletable" class="footer">
-      <span v-if="statsText" class="stats muted">⏱ {{ statsText }}</span>
-
-      <!-- **常驻但很淡**：只 hover 才露出来的按钮用户很难发现，而全亮又抢正文的注意力。
-           悬停只改透明度、不加底色 —— 加底色会让它在消息框里显得像个突然冒出来的控件 -->
-      <div v-if="deletable" class="actions">
-        <el-button text size="small" :icon="Delete" title="删除" @click="deleteMessage" />
-        <el-button text size="small" :icon="CopyDocument" title="复制" @click="copyMessage" />
-      </div>
-    </div>
   </div>
 </template>
 
@@ -504,9 +517,12 @@ const statsText = computed(() => {
   justify-content: flex-end;
 }
 
+/* 用户自己的话用**冰雾高光**打出（和主按钮同一套）：它是「我发出去的东西」，
+ * 一眼要和模型的回复分得开。从前铺的是主色实底 —— 深色模式下那是暖金，
+ * 一整块金色气泡压在深靛蓝上很扎眼。 */
 .message.user .content {
-  color: var(--on-accent);
-  background: var(--accent);
+  color: var(--ice-text);
+  background: var(--ice-bg);
 }
 
 .folds {

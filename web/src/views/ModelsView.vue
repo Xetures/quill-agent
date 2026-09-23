@@ -3,7 +3,8 @@ import { Plus } from '@element-plus/icons-vue'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 
 import { api } from '../api/client'
-import type { ModelConfig, ProtocolOption, RemoteModel } from '../api/types'
+import type { ModelConfig, ProviderOption, ProtocolOption, RemoteModel } from '../api/types'
+import { useTableHeight } from '../composables/useTableHeight'
 import { loadOptions } from '../stores/session'
 import { errorText } from '../utils/error'
 
@@ -16,6 +17,14 @@ import { errorText } from '../utils/error'
  */
 const protocols = ref<ProtocolOption[]>([])
 
+/**
+ * 官方服务商清单（`GET /providers`）。
+ *
+ * 和模型规格快照**同一次同步**写出来的两个文件，所以它空着就表示「还没同步过」——
+ * 界面据此提示用户去点一次「同步模型库」，不必为它单设一个按钮。
+ */
+const providers = ref<ProviderOption[]>([])
+
 /** 协议 value -> 展示名；表格与下拉共用（后端加协议时这里自动跟上）。 */
 const protocolLabels = computed<Record<string, string>>(() =>
   Object.fromEntries(protocols.value.map((item) => [item.value, item.label])),
@@ -27,6 +36,10 @@ function defaultBaseUrl(protocol: string): string {
 }
 
 const configs = ref<ModelConfig[]>([])
+
+/** 表格容器：量它的高度交给 el-table，让表体自己滚（见 useTableHeight） */
+const tableBox = ref<HTMLElement | null>(null)
+const tableHeight = useTableHeight(tableBox)
 const testing = ref(false)
 const fetching = ref(false)
 const saving = ref(false)
@@ -51,6 +64,14 @@ const dialogOpen = ref(false)
 /** 正在编辑的连接 id；空串表示新建。 */
 const editingId = ref('')
 
+/**
+ * 新建 / 编辑共用同一张表单。表单顶部的「服务商」下拉是**可选**的捷径：
+ * 选一家就把名字、地址、协议带出来，不选就全部手填 —— 两种走法最后都是
+ * 同一条连接、同一个提交。拆成两个入口的方案试过，代价是多一个按钮、
+ * 却只有一层预填的差别，不如把选择权交给表单自己。
+ */
+const providerId = ref('')
+
 const form = ref({
   name: '',
   base_url: '',
@@ -67,12 +88,14 @@ const apiKeyHint = computed(
 )
 
 async function load(): Promise<void> {
-  const [data, options] = await Promise.all([
+  const [data, options, catalog] = await Promise.all([
     api.get<{ configs: ModelConfig[] }>('/models'),
     api.get<{ protocols: ProtocolOption[] }>('/protocols'),
+    api.get<{ providers: ProviderOption[] }>('/providers'),
   ])
   configs.value = data.configs
   protocols.value = options.protocols
+  providers.value = catalog.providers
 }
 
 // 换协议时顺手把地址填好 —— 但只在「地址为空」或「还留着上一个协议的默认地址」时动手，
@@ -213,6 +236,15 @@ function unknownNames(): string[] {
  * 模型列表变化时也会跑一次。
  */
 async function suggestWindows(): Promise<void> {
+  // **先把候选里已有的窗口填上，再去查快照** —— 这就是「接口 → 快照」的顺序。
+  //
+  // 用户从下拉里选中模型时，candidates（「获取模型列表」拉回来的）早就备好了，
+  // 里面往往带着接口报的窗口。但原先只有「确实要查快照」时才会走到 fillMissing()：
+  // 选中的模型若在拉列表时就带着窗口，unknownNames() 会把它排除掉、这里直接
+  // return —— 那一格就空着，看起来像「选了列表却不自动填」。
+  // 这一行放在最前面，选中的瞬间就先吃掉候选里现成的值。
+  fillMissing()
+
   const names = unknownNames()
   if (!names.length) return
 
@@ -268,7 +300,24 @@ function windowSource(name: string): string {
   return ''
 }
 
+/**
+ * 选中一个官方服务商：把它的名字、地址、协议填进表单。
+ *
+ * 直接覆盖而不是「只在空着时才填」：点服务商这个动作的意思就是「按这家来」，
+ * 之前手改的名字或地址在按下去的那一刻就不要了。想全靠自己填，别碰这个下拉。
+ */
+function pickProvider(id: string): void {
+  const provider = providers.value.find((item) => item.id === id)
+  if (!provider) return
+
+  form.value.protocol = provider.protocol
+  form.value.base_url = provider.base_url
+  form.value.name = provider.name
+}
+
+/** 打开新建弹窗。服务商下拉总是显示，选不选由用户定（见 providerId）。 */
 function openCreate(): void {
+  providerId.value = ''
   editingId.value = ''
   form.value = {
     name: '',
@@ -294,6 +343,9 @@ function openEdit(id: string): void {
   const config = configs.value.find((item) => item.id === id)
   if (!config) return
 
+  // 编辑的是既有连接，它自己带着地址与协议；服务商下拉清空 ——
+  // 「来自哪家」是创建时的选择，不是连接的属性，这里也不必显示
+  providerId.value = ''
   editingId.value = id
   form.value = {
     name: config.name,
@@ -318,6 +370,8 @@ function openEdit(id: string): void {
   // 不依赖 watch：连着编辑同一条连接时模型名拼出来的键没变，watch 不会触发
   void suggestWindows()
 }
+
+const dialogTitle = computed(() => (editingId.value ? '编辑连接' : '新建连接'))
 
 const canSubmit = computed(() => Boolean(form.value.name.trim() && form.value.models.length))
 
@@ -393,19 +447,23 @@ onMounted(() => {
   <div class="page">
     <Teleport to="#page-head-slot">
       <h1>API 设置</h1>
-      <span class="hint">模型服务的连接配置；一条连接可以带多个模型名，同一套凭证只配一次</span>
+      <span class="hint">模型服务的连接配置，一条连接可带多个模型名</span>
     </Teleport>
 
     <!-- 列表上方的操作行：左边计数，右边新建入口。
          原先常驻的表单收进弹窗后，页面只剩「列表 + 一个按钮」 -->
     <div class="bar">
       <span class="muted count">共 {{ configs.length }} 条连接</span>
+      <!-- 一个入口。表单顶部的「服务商」是可选捷径：选一家就带出名字、地址、协议，
+           不选就全部手填 —— 两种走法汇进同一张表单（见 providerId 那段说明） -->
       <el-button size="small" type="primary" :icon="Plus" class="new-btn" @click="openCreate">
         新建连接
       </el-button>
     </div>
 
-    <el-table :data="configs" size="small" stripe>
+    <!-- 表格自己滚：表头固定、只有表体在滚（高度由 useTableHeight 量出） -->
+    <div ref="tableBox" class="table-box">
+      <el-table :data="configs" :height="tableHeight" size="small" stripe>
       <el-table-column prop="name" label="名称" width="160" />
 
       <el-table-column label="接口地址">
@@ -443,11 +501,49 @@ onMounted(() => {
       <template #empty>
         <el-empty description="还没有模型配置；点右上角「新建连接」创建" :image-size="60" />
       </template>
-    </el-table>
+      </el-table>
+    </div>
 
     <!-- 新建 / 编辑共用这一个弹窗：编辑只是带着初值打开同一张表单 -->
-    <el-dialog v-model="dialogOpen" :title="editingId ? '编辑连接' : '新建连接'" width="560px">
+    <!-- append-to-body 必须留着：玻璃板的 backdrop-filter 会改掉弹窗 fixed 的参考系
+         （详见 HelpButton.vue 里那段说明） -->
+    <el-dialog
+      v-model="dialogOpen"
+      :title="dialogTitle"
+      width="560px"
+      append-to-body
+    >
       <el-form :model="form" label-width="96px" size="default" @submit.prevent>
+        <!-- 可选的捷径：选一家就把名字、地址、协议一起带出来，不想用就空着，下面照旧手填。
+             清单为空时给个同步入口 —— 清单和窗口快照是同一份下载数据 -->
+        <el-form-item label="服务商">
+          <div class="provider-block">
+            <el-select
+              v-model="providerId"
+              filterable
+              clearable
+              placeholder="可选：从清单里挑一家，自动带出地址与协议"
+              class="provider-select"
+              @change="(value: string) => pickProvider(value)"
+            >
+              <el-option
+                v-for="item in providers"
+                :key="item.id"
+                :label="item.name"
+                :value="item.id"
+              />
+            </el-select>
+            <p v-if="!providers.length" class="note muted">
+              还没有服务商清单。它和模型规格是同一份数据 —— 点
+              <el-button link type="primary" size="small" @click="syncCatalog">同步模型库</el-button>
+              拉一次就有了（会访问 models.dev）；不拉、直接手填下面的格子也完全可以。
+            </p>
+            <p v-else class="note muted">
+              选不选都行：不选的话，下面几格全部手填。
+            </p>
+          </div>
+        </el-form-item>
+
         <el-form-item label="名称">
           <el-input v-model="form.name" placeholder="例如 DeepSeek 官方" />
         </el-form-item>
@@ -464,10 +560,17 @@ onMounted(() => {
         </el-form-item>
 
         <el-form-item label="接口地址">
-          <el-input
-            v-model="form.base_url"
-            :placeholder="defaultBaseUrl(form.protocol) || '例如 https://api.deepseek.com'"
-          />
+          <div class="provider-block">
+            <el-input
+              v-model="form.base_url"
+              :placeholder="defaultBaseUrl(form.protocol) || '例如 https://api.deepseek.com'"
+            />
+            <!-- 第一方官方（OpenAI、Anthropic…）的快照里就没有地址 —— SDK 自己知道
+                 官方地址。这里明说一句，免得用户以为漏填了 -->
+            <p v-if="providerId && !form.base_url" class="note muted">
+              这家用官方地址，留空即可
+            </p>
+          </div>
         </el-form-item>
 
         <el-form-item label="API Key">
@@ -482,15 +585,11 @@ onMounted(() => {
         <el-form-item label="模型名">
           <div class="model-block">
             <div class="model-bar">
-              <el-button
-                size="small"
-                :loading="fetching"
-                :disabled="!form.base_url"
-                @click="fetchModels"
-              >
+              <!-- 地址为空**不能**禁用：官方服务那几家的地址本来就留空
+                   （见上面「接口地址」那格），SDK 会用官方地址去拉 -->
+              <el-button size="small" :loading="fetching" @click="fetchModels">
                 获取模型列表
               </el-button>
-              <el-button size="small" :loading="syncing" @click="syncCatalog">同步模型库</el-button>
               <span class="muted bar-hint">从下拉里选，也可直接输入后回车；可多选</span>
             </div>
 
@@ -514,12 +613,6 @@ onMounted(() => {
                 :value="item.name"
               />
             </el-select>
-
-            <p class="note muted">
-              「同步模型库」从 models.dev 拉一份「模型名 → 上下文窗口」的快照存到本地，
-              只在点它时才访问外部网络。官方端点的
-              <code>/models</code> 大多不返回窗口大小，所以这一层通常是拿到窗口的主要途径。
-            </p>
           </div>
         </el-form-item>
 
@@ -547,17 +640,27 @@ onMounted(() => {
               tokens。<strong>留空表示不知道</strong>，任务页的用量仪表盘会显示「—」——
               填一个猜的值比留空更糟，它会让人以为上下文还有空间。
               <template v-if="!catalogReady">
-                还没同步过模型库，点上面的「同步模型库」可以自动填一批。
+                还没同步过模型库，点下面的「同步模型库」可以自动填一批。
               </template>
             </p>
           </div>
         </el-form-item>
 
         <el-form-item label="连通测试">
-          <el-button :loading="testing" :disabled="!form.base_url" @click="testConnection">
+          <!-- 地址为空同样不禁用（同上）：第一方官方走 SDK 的官方地址 -->
+          <el-button :loading="testing" @click="testConnection">
             测试连接
           </el-button>
           <span class="muted conn-hint">走 GET /models，不消耗 token</span>
+        </el-form-item>
+
+        <!-- 同步放最后一行：它服务的两样东西（服务商清单、窗口快照）都在上面用得到，
+             但都不是「填这条连接」的必经步骤，压轴而不是打头 -->
+        <el-form-item label="同步模型库">
+          <el-button size="small" :loading="syncing" @click="syncCatalog">同步模型库</el-button>
+          <span class="muted conn-hint">
+            从 models.dev 刷新服务商清单与「模型名 → 窗口」快照；只在点它时才联网
+          </span>
         </el-form-item>
       </el-form>
 
@@ -578,12 +681,27 @@ onMounted(() => {
 </template>
 
 <style scoped>
-/* 列表上方的操作行：计数在左、新建按钮贴右 */
+
+/* 整页不滚，表格自己滚（见 .table-box）：表头固定、只有表体在滚。
+ * 外层套 el-scrollbar 那版会让表头跟着滚走，而且鼠标停在表格上滚不动（用户反馈） */
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow: hidden;
+}
+
+.table-box {
+  flex: 1;
+  min-height: 0;
+}
+
+/* 列表上方的操作行：计数在左、新建按钮贴右。
+ * 和下面列表之间的距离由 .page 的 gap 给，这里不再另加 —— 两个一起会叠成两倍 */
 .bar {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 10px;
 }
 
 .bar .count {
@@ -592,6 +710,15 @@ onMounted(() => {
 
 .new-btn {
   margin-left: auto;
+}
+
+/* 服务商那一格：下拉 + 下方说明，占满表单宽度（和「模型名」同款结构） */
+.provider-block {
+  width: 100%;
+}
+
+.provider-select {
+  width: 100%;
 }
 
 .chip {

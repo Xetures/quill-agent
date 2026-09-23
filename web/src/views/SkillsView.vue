@@ -223,7 +223,7 @@ onMounted(() => {
     <Teleport to="#page-head-slot">
       <h1>技能</h1>
       <span class="hint">
-        正文放在 <code class="mono">{{ dir }}/&lt;技能名&gt;/SKILL.md</code>，也可以在这里直接编辑；技能组是技能的搭配方案，是模式的一部分，启用与否由模式决定
+        正文存在 <code class="mono">{{ dir }}/&lt;技能名&gt;/SKILL.md</code>；技能组供模式引用
       </span>
     </Teleport>
 
@@ -349,7 +349,14 @@ onMounted(() => {
     </section>
 
     <!-- 新建 / 编辑弹窗 -->
-    <el-dialog v-model="dialogOpen" :title="editingId ? '编辑技能组' : '新建技能组'" width="480px">
+    <!-- append-to-body 必须留着：玻璃板的 backdrop-filter 会改掉弹窗 fixed 的参考系
+         （详见 HelpButton.vue 里那段说明） -->
+    <el-dialog
+      v-model="dialogOpen"
+      :title="editingId ? '编辑技能组' : '新建技能组'"
+      width="480px"
+      append-to-body
+    >
       <el-form label-width="80px" size="default" @submit.prevent>
         <el-form-item label="技能组名" required>
           <el-input v-model="form.name" placeholder="例如：写作相关" maxlength="30" />
@@ -404,6 +411,7 @@ onMounted(() => {
       :title="editingSkill ? '编辑技能' : '添加技能'"
       width="760px"
       top="6vh"
+      append-to-body
     >
       <el-form label-width="80px" size="default" @submit.prevent>
         <el-form-item label="名称" required>

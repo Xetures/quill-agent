@@ -2,6 +2,7 @@
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import { onMounted, ref } from 'vue'
 
+import ClipboardPanel from './components/ClipboardPanel.vue'
 import SandboxButton from './components/SandboxButton.vue'
 import Sidebar from './components/Sidebar.vue'
 import { bootstrap } from './stores/session'
@@ -53,28 +54,59 @@ onMounted(async () => {
 
         <RouterView />
       </main>
+
+      <!-- 公共剪贴板：挂在最外层，切页面不丢（它服务的就是「跨页面取用」） -->
+      <ClipboardPanel />
     </div>
   </el-config-provider>
 </template>
 
 <style scoped>
+/* 四块玻璃板的网格：左列是 LOGO 板与侧栏板（Sidebar 内部再分成两块），
+ * 右列是顶边栏与任务区。padding 就是背景层从板子四周露出来的那圈 —— 没有它，
+ * 板子会顶到窗口边缘，玻璃也就没有「浮在背景上」的观感了（见 Quill Glass Blue）。
+ *
+ * **间距与圆角是一组，得配着看**：缝里露出的是没经过玻璃的原始背景，
+ * 板上是「提亮 + 模糊」过的，两者本来就差一档。这个差值在四块板交汇处最明显 ——
+ * 那块背景露出的面积不是「缝」而是「缝 + 两侧圆角各自缩进去的一段」，
+ * 圆角一旦比缝还大，交汇处就从「窄缝」鼓成一个方的洞。
+ * 所以间距要明显大于圆角（原来是 14px 对 18px，反着来的）。
+ *
+ * **模糊在这里做，只在这一次**（见 style.css 那段说明）：整个窗口共用一层
+ * 毛玻璃，四块板与它们之间的缝都在这张模糊过的背景上 —— 板只叠一层半透明白。
+ * 从前模糊是每块板各做一次、缝里是没模糊的原始背景，板的边缘两侧清晰度突变，
+ * 看着像「这里接了一块别的东西」。
+ *
+ * `background` 是垫在缝里的那层底色（见 style.css 的 --seam-tint）：
+ * 深色模式下它把缝提一档，四条缝不再是四道深沟 */
 .shell {
   display: grid;
-  grid-template-columns: 240px 1fr;
+  grid-template-columns: 236px 1fr;
+  gap: 20px;
   height: 100%;
+  padding: 20px;
+  background: var(--seam-tint);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
   overflow: hidden;
 }
 
-/* 窗口变窄时收一收侧边栏，别让它占掉主区一半 */
+/* 窗口变窄时收一收侧边栏，别让它占掉主区一半。
+ * 间距同样收一档（见上面那段：它得压得住圆角） */
 @media (max-width: 1000px) {
   .shell {
-    grid-template-columns: 200px 1fr;
+    grid-template-columns: 208px 1fr;
+    gap: 18px;
+    padding: 16px;
   }
 }
 
+/* 主区自己不是一块板：它只是把顶边栏与页面两块板竖着排开。
+ * 间距与 .shell 取同一个值（见那里对「间距与圆角配对」的说明） */
 .main {
   display: flex;
   flex-direction: column;
+  gap: 20px;
   min-width: 0;
 
   /* 这两行是「输入框跑出视口」的修复关键。
@@ -91,14 +123,25 @@ onMounted(async () => {
   margin: 12px 16px 0;
 }
 
+/* 顶边栏：第二块玻璃板。它和左下角的 LOGO 板同高（同一个变量），
+ * 两者并排一眼能看出是同一水平带上的两块。
+ *
+ * position: relative 是给里面的运行状态提示用的 —— 它在顶栏正中绝对定位
+ * （见 ChatView 的 .run-phase），要有个定位祖先才不会跑到窗口中间去 */
 .topbar {
+  position: relative;
   display: flex;
   align-items: center;
-  /* 和侧边栏品牌区同高，两边的下边框因此连成一条直线 */
   height: var(--topbar-height);
   flex-shrink: 0;
-  padding: 0 24px; /* 和 .page 的左右内边距对齐，标题不会比页面内容缩进一格 */
-  border-bottom: 1px solid var(--border);
+  padding: 0 22px; /* 和侧栏板的内边距取齐，标题不会看着比别处缩进一格 */
+
+  /* 底色由全局那条规则给、模糊在 .shell 那一层做一次、投影也由它统一给
+   * （见 style.css 的「玻璃的底色与模糊，分在两层上」，那里也讲了四块板
+   * 为什么不投外投影）；这里只留描边与圆角 */
+  overflow: hidden;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--glass-radius);
 }
 
 .topbar-slot {
@@ -115,6 +158,18 @@ onMounted(async () => {
      这样安排也顺带定下了约定 —— 顶栏长什么样由顶栏决定，页面只管按 <h1> 和
      .hint 这两个约定写内容，不必六个页面各写一遍边距和字号 -->
 <style>
+/* 页面节点要吃掉顶边栏之外的全部高度。`.page` 与 `.chat` 都是**别的组件**的根，
+ * scoped 选择器带 data-v 属性、选不到它们 —— 所以这条必须写在非 scoped 块里。
+ *
+ * 覆盖 `.page` 的 height:100%：在带 gap 的 flex 列里，100% 是「容器全高」，
+ * 加上顶边栏和 gap 就会顶出容器 */
+.main > .page,
+.main > .chat {
+  flex: 1;
+  height: auto;
+  min-height: 0;
+}
+
 .topbar h1 {
   flex-shrink: 0;
   margin: 0;
@@ -129,5 +184,13 @@ onMounted(async () => {
   color: var(--text-soft);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 顶栏右侧的执行权限按钮永远压在最上层。顶栏中间那一格是绝对定位的
+ * （见 ChatView 的 `.head-center`），万一某页标题很长把中间格撑到这边来，
+ * 也不能挡住这个入口 —— 它点不开等于权限改不了，是「界面看着在、其实废了」的那类故障 */
+.topbar .sandbox {
+  position: relative;
+  z-index: 1;
 }
 </style>

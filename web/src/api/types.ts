@@ -180,7 +180,10 @@ export interface ModelConfig {
    * 后端加一个协议时界面不该因为前端这份枚举没跟着改而编译不过。
    */
   protocol: string
+  /** 明文 Key。本地单机应用，后端按原样回传（见 server/routes/models.py 的说明）。 */
   api_key: string
+  /** 有没有配 Key。列表按它标记状态，不必自己判断空串。 */
+  api_key_configured?: boolean
   models: string[]
   /**
    * 模型名 -> 上下文窗口大小（tokens）。
@@ -200,6 +203,16 @@ export interface ProtocolOption {
   default_base_url: string
   /** API Key 的填写提示，直接拿来做输入框的 placeholder。 */
   hint: string
+}
+
+/** `GET /providers` 下发的一个服务商（来自 models.dev 那份快照）。 */
+export interface ProviderOption {
+  id: string
+  name: string
+  /** 该服务商的官方端点地址，选中后直接拿来填「接口地址」。 */
+  base_url: string
+  /** 该服务商该用哪套协议；后端按快照里的 npm 包名推出来的，前端不猜。 */
+  protocol: string
 }
 
 /** 「连接 + 模型名」摊平后的下拉选项，`key` 就是后端的稳定标识。 */

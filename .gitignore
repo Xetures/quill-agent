@@ -48,6 +48,9 @@ data/
 # 它不在 data/ 里面 —— 就地运行时数据根就是仓库根，所以得单独一行
 checkpoints/
 
+# 桌面壳的日志（同样落在数据根下：双击启动时没有终端，输出只能往文件里写）
+desktop.log
+
 # 打包产物（发布用，不进仓库；web/dist 是例外，见上面「前端」那段）
 release/
 
@@ -64,3 +67,6 @@ quill-source/
 
 # playwright-cli（手工排查时的命令行浏览器）留下的快照
 .playwright-cli/
+
+# 设计稿工作目录（开发期素材，构建不依赖；实际素材已复制进 web/src/assets）
+Quill Glass Blue/

@@ -193,6 +193,19 @@ def health() -> dict[str, str]:
 # 必须注册在**所有 API 路由之后**：FastAPI 按注册顺序匹配，兜底路由放前面会把
 # `/api/...` 一起吞掉。
 # ---------------------------------------------------------------------------
+def _cache_headers(full_path: str) -> dict[str, str]:
+    """静态产物的缓存策略。
+
+    - `assets/` 下是 Vite 生成的**带 hash** 的文件：内容一变文件名就变，同一个 URL
+      永远不会指向旧内容，可以放心让浏览器长期缓存（连校验都省了）；
+    - 其余（favicon、logo 这类固定名字的文件）用 `no-cache`：不是不缓存，而是每次
+      带 ETag 校验一次，没变就 304。
+    """
+    if full_path.startswith("assets/"):
+        return {"Cache-Control": "public, max-age=31536000, immutable"}
+    return {"Cache-Control": "no-cache"}
+
+
 if (WEB_DIST / "index.html").is_file():
 
     @app.get("/{full_path:path}", include_in_schema=False)
@@ -209,11 +222,15 @@ if (WEB_DIST / "index.html").is_file():
 
         # 路径穿越防护：解析之后必须还在 dist 目录里
         if full_path and candidate.is_file() and candidate.is_relative_to(WEB_DIST):
-            return FileResponse(candidate)
+            return FileResponse(candidate, headers=_cache_headers(full_path))
 
         # 其余（`/`、`/chat`、`/models` 这些前端路由）都返回入口页面，
-        # 由前端自己决定渲染哪一页
-        return FileResponse(WEB_DIST / "index.html")
+        # 由前端自己决定渲染哪一页。
+        #
+        # 入口页**必须每次都校验**：它引用的是带 hash 的产物文件，被浏览器缓存住就等于
+        # 把界面钉在旧版本上 —— 重新构建后那些旧 chunk 已经不在 dist 里了，浏览器会
+        # 404，表现是「页面看着还在、点按钮没反应」。
+        return FileResponse(WEB_DIST / "index.html", headers={"Cache-Control": "no-cache"})
 
 else:
     logger.info(

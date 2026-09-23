@@ -3,6 +3,7 @@ import { Plus, Refresh } from '@element-plus/icons-vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 
 import { api } from '../api/client'
+import { useTableHeight } from '../composables/useTableHeight'
 import { errorText } from '../utils/error'
 
 /**
@@ -34,6 +35,10 @@ interface McpServerRow {
 }
 
 const servers = ref<McpServerRow[]>([])
+
+/** 表格容器：量它的高度交给 el-table，让表体自己滚（见 useTableHeight） */
+const tableBox = ref<HTMLElement | null>(null)
+const tableHeight = useTableHeight(tableBox)
 const loading = ref(false)
 
 const dialog = ref(false)
@@ -222,7 +227,14 @@ onMounted(load)
       </div>
     </div>
 
-    <el-table :data="servers" v-loading="loading" empty-text="还没有配置 MCP 服务器">
+    <!-- 表格自己滚：表头固定、只有表体在滚（高度由 useTableHeight 量出） -->
+    <div ref="tableBox" class="table-box">
+      <el-table
+        :data="servers"
+        :height="tableHeight"
+        v-loading="loading"
+        empty-text="还没有配置 MCP 服务器"
+      >
       <el-table-column label="名称" min-width="140">
         <template #default="{ row }">
           <div class="name">
@@ -272,12 +284,16 @@ onMounted(load)
           </el-button>
         </template>
       </el-table-column>
-    </el-table>
+      </el-table>
+    </div>
 
+    <!-- append-to-body 必须留着：玻璃板的 backdrop-filter 会改掉弹窗 fixed 的参考系
+         （详见 HelpButton.vue 里那段说明） -->
     <el-dialog
       v-model="dialog"
       :title="editingId ? '编辑 MCP 服务器' : '添加 MCP 服务器'"
       width="640px"
+      append-to-body
     >
       <el-form label-width="92px" label-position="left">
         <el-form-item label="名称">
@@ -359,6 +375,19 @@ onMounted(load)
 </template>
 
 <style scoped>
+/* 整页不滚，表格自己滚（见 .table-box）—— 表头与操作行钉在原处，只有表体在滚 */
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow: hidden;
+}
+
+.table-box {
+  flex: 1;
+  min-height: 0;
+}
+
 .mcp {
   display: flex;
   flex-direction: column;
