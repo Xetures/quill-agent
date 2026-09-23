@@ -52,6 +52,11 @@ packages = ["src/quill_agent", "server"]
 # 出厂资源**随包发布**：`bootstrap.template_dir` 最先找的就是 `quill_agent/resources/<name>`
 # （另一条路是「仓库根/<name>」，那只在源码树里成立）。少了这一段，装出来的 wheel 里
 # 没有出厂提示词与技能 —— 应用照样能起，但**新用户第一次打开是空的**，而且不报任何错。
+#
+# 注意这里是**整个目录**收进来（force-include 不认通配，试过 `prompt/a1*.md` 会按字面
+# 找文件）。prompt/ 里除了出厂的 a1 开头那批，还会混着**你自己的**提示词（在仓库里跑
+# 应用时，运行时就把它们播在这个目录）—— 所以打 App 的脚本（make_desktop.py）在装完
+# 之后会把非 a1 的剔掉；`.gitignore` 也按同一条约定排除，两边说的是同一件事。
 [tool.hatch.build.targets.wheel.force-include]
 "prompt" = "quill_agent/resources/prompt"
 "skills" = "quill_agent/resources/skills"

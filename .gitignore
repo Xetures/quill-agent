@@ -70,3 +70,9 @@ quill-source/
 
 # 设计稿工作目录（开发期素材，构建不依赖；实际素材已复制进 web/src/assets）
 Quill Glass Blue/
+
+# 仓库里跑应用时，运行时会把你自己的提示词播到 prompt/。出厂的只有 a1 开头的那些
+# （与 pyproject 的 force-include 同一条约定），其余一律不进版本库 —— 曾经因为整目录
+# 打包，把 7 个个人提示词带进了公开发布的 DMG
+prompt/*
+!prompt/a1*.md

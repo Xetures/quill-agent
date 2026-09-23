@@ -372,6 +372,17 @@ def copy_web_dist(lib: Path) -> None:
             )
     _log(f"出厂资源随 wheel 就位：lib/quill_agent/resources/（{'、'.join(RESOURCE_DIRS)}）")
 
+    # 提示词目录里会混着**你自己**的提示词：在仓库里跑应用时，运行时就把它们播在仓库根
+    # 的 prompt/，而 wheel 的 force-include 是按**整个目录**收的（它不认通配，见
+    # pyproject 那边的注释）—— 曾经因此把 7 个个人提示词带进了公开发布的 DMG。
+    # 出厂提示词的命名约定是 a1 开头（a1000001 起），按同一条约定把其余的剔掉。
+    prompts = lib / "quill_agent" / "resources" / "prompt"
+    removed = sorted(p.name for p in prompts.glob("*.md") if not p.name.startswith("a1"))
+    for name in removed:
+        (prompts / name).unlink()
+    if removed:
+        _log(f"剔掉混进出厂资源的个人提示词 {len(removed)} 个：{'、'.join(removed)}")
+
 
 def build_icon(work: Path) -> Path | None:
     """给出 .icns，拿不到就返回 None（没有图标也能运行）。
