@@ -25,4 +25,12 @@ window.addEventListener('vite:preloadError', () => {
   window.location.reload()
 })
 
+// 桌面壳（pywebview）打开的窗口会带 `?desktop=1`：那边把窗口内容延伸进了系统
+// 标题栏，红绿灯浮在窗口左上角 —— 界面据此从标题栏高度开始画，把那一条让出来
+// （样式见 App.vue 里 `:global(html.in-desktop)` 那段）。
+// 浏览器里没有这个参数，一切照旧
+if (new URLSearchParams(window.location.search).has('desktop')) {
+  document.documentElement.classList.add('in-desktop')
+}
+
 createApp(App).use(router).mount('#app')

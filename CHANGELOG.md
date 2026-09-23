@@ -3,6 +3,55 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.1.21] - 2026-09-23
+
+### 新增
+
+- **macOS 桌面壳：系统标题栏融进界面**（`desktop.py`）。
+
+  窗口内容延伸进系统标题栏，那条灰消失，红绿灯**浮在界面左上角** —— 界面从窗口最顶端
+  开始画，只把红绿灯那一带让开。红绿灯是**保留的系统按钮**而不是自绘，所以是 Safari /
+  备忘录那种原生观感。
+
+  界面侧的做法是「玻璃板整体上移 28pt + 内边距补回同样多」（`html.in-desktop`）：一进一出
+  正好抵消，板子顶到窗口最上边，而板内的内容位置和浏览器里**完全一样**。只加 padding 是
+  不够的 —— 那样板子被整体推下去，顶部空出一条没内容的底色带，看着就是「红绿灯还浮在
+  一条灰条上」。
+
+  **AppKit 侧踩了三个坑，每个都是静默失败：**
+
+  **一、`NSWindowStyleMaskFullSizeContentView` 必须在窗口创建时带上，运行时改无效。**
+  这是最坑的一条：`setStyleMask_` 之后读回来明明是 `True`，可 `contentLayoutRect` 始终是
+  「窗口减标题栏」（实测 1280x744 对窗口 1280x772）—— 样式位在窗口**显示之后**改动
+  **不会重建布局**，内容区压根不含标题栏，WebView 于是永远盖不到那一条：frame 设多大都会
+  被内容区拉回去。最终改用 pywebview 的 `frameless=True` 建窗口，让它在创建时设好。
+
+  **二、frameless 会把红绿灯一起隐藏**（那是 pywebview 给「自绘按钮」准备的路线）。
+  用 `standardWindowButton_` 把它们显示回来 —— 要的还是系统那三个按钮。
+
+  **三、必须补一条透明的拖动带**，否则窗口拖不动。内容延伸之后，原本负责拖动的区域被
+  WebView 占住，鼠标事件到不了系统标题栏；pywebview 自带的拖动又只在 frameless 时启用，
+  而那条路正好把红绿灯藏了。所以放一条 NSView 盖在 WebView 之上、让
+  `mouseDownCanMoveWindow` 返回 True —— macOS 会把它当成标题栏来拖。
+
+  上一版（别人写的）思路是对的，但那条拖动带**不是 layer-backed**：WebView 是
+  layer-backed 的，往它上面盖一个普通 NSView，绘制与命中测试都不会按预期来 —— 拖动带加上
+  了却收不到鼠标事件，窗口彻底拖不动，而且不报错。这次补了 `setWantsLayer_(True)`。
+
+  **两个办法留了下来**，因为排查时被它们各坑过一次：
+
+  - 启动后**读回**窗口状态再报成功，而不是只看「没抛异常」—— AppKit 这类 setter 最坏是
+    静默失败（不报错也不生效），比崩溃难查：
+    ```
+    标题栏已融入界面：fullSize=True transparent=True band=1202x28 layer=True
+                      movable=True attached=True
+    ```
+  - 地址带一个时间戳（`&t=`）：WKWebView 按地址走磁盘缓存，前端产物换了之后重启桌面壳
+    仍然加载旧的那一份 —— 探针的改动一直不生效，白查了好几轮。
+
+  开关是 `QUILL_DESKTOP_TITLEBAR=system`（退回系统标题栏）而不是写死：这一层**完全没法在
+  CI 里验**，而失败模式又很恼人。
+
 ## [0.1.20] - 2026-09-22
 
 ### 新增

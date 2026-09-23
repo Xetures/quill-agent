@@ -183,6 +183,19 @@ function modeKey(conversationId: string): string {
 }
 
 /**
+ * 某个会话记住的模型选择（值形如 `连接id::模型名`，和模式同一套口径）。
+ *
+ * 模型原先只有一份**全局**偏好，于是切任务时带过去的是上一个任务的模型 —— 可模型是
+ * 「这个任务用什么脑子」，和模式一样属于任务级的选择，不该只跟一个走。
+ *
+ * 全局那份仍然保留，但改作**新任务的起点**：新会话还没有自己的记录，就拿它兜底，
+ * 这样刚选的模型能顺延到下一个任务，而不是掉回列表第一个。
+ */
+function modelKeyFor(conversationId: string): string {
+  return `model::${conversationId}`
+}
+
+/**
  * 后端偏好文件的全量快照。
  *
  * 必须留着：切换会话时要就地查出「这个任务记住的是哪个模式」，只在启动时
@@ -367,9 +380,10 @@ export async function loadMessages(conversationId: string): Promise<void> {
   session.currentId = conversationId
   session.messages = data.messages
 
-  // 模式跟着会话走：换任务就把这个任务自己的模式取回来，
-  // 而不是把上一个任务的选择带过去（见 restoreMode）
+  // 模式和模型都跟着会话走：换任务就把这个任务自己的选择取回来，
+  // 而不是把上一个任务的选择带过去（见 restoreMode / restoreModel）
   restoreMode()
+  restoreModel()
 
   // 这个会话可能**还在跑**（切走时并没有停掉它）：把实时读数、清单、待回答的问题和
   // 正在生成的那条消息都接回来；没在跑则一并清空 —— 那几个字段描述的必须是当前会话
@@ -425,8 +439,14 @@ export async function bootstrap(): Promise<void> {
 // 选择
 // ---------------------------------------------------------------------------
 export function persistModel(): void {
+  // 两处一起写：按会话记一份（切回这个任务时要用，见 `restoreModel`），
+  // 全局那份刷新一下（留给**新任务**兜底）。
+  // 会话 id 还没落地时只写全局 —— 别写出 `model::` 这种没有下文的键
+  const values: Record<string, string> = { [PREF_MODEL]: session.modelKey }
+  if (session.currentId) values[modelKeyFor(session.currentId)] = session.modelKey
+
   // 不 await：偏好是「顺手存一下」，失败了也不该打断对话
-  void api.put('/preferences', { values: { [PREF_MODEL]: session.modelKey } })
+  void api.put('/preferences', { values })
 }
 
 /** 记下思考开关。和 `persistModel` 一样是全局偏好。 */
@@ -466,6 +486,20 @@ function restoreMode(): void {
   const valid = session.modes.some((item) => item.id === remembered)
 
   session.modeId = valid ? remembered : (session.modes[0]?.id ?? '')
+}
+
+/**
+ * 取回当前会话记住的模型。和 `restoreMode` 同一时机、同一道理。
+ *
+ * 取用顺序：**这个任务自己的记录 → 全局那份（新任务的起点）→ 列表第一个**。
+ * 存下来的可能已被删掉（模型页删得掉），所以对着现有模型校验一遍。
+ */
+function restoreModel(): void {
+  const remembered = prefs[modelKeyFor(session.currentId)] ?? prefs[PREF_MODEL] ?? ''
+
+  session.modelKey = session.models.some((item) => item.key === remembered)
+    ? remembered
+    : (session.models[0]?.key ?? '')
 }
 
 /**

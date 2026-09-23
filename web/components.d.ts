@@ -42,6 +42,7 @@ declare module 'vue' {
     HelpButton: typeof import('./src/components/HelpButton.vue')['default']
     LineChart: typeof import('./src/components/LineChart.vue')['default']
     MarkdownEditor: typeof import('./src/components/MarkdownEditor.vue')['default']
+    MemoPanel: typeof import('./src/components/MemoPanel.vue')['default']
     MessageItem: typeof import('./src/components/MessageItem.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']

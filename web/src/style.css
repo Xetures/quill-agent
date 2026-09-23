@@ -51,6 +51,20 @@
    * 看着就是「这两条的颜色和背景对不上」（用户报的）。见下面「四块板」那条规则。 */
   --glass-shadow: 0 8px 28px rgba(27, 58, 92, 0.12), inset 0 1px 0 var(--glass-highlight);
 
+  /* 玻璃的**厚度**（四块板共用，见下面「四块板」那条规则）。
+   *
+   * 只用 inset 做，外投影一个都不要 —— 理由和上面那段一样：外投影「能不能落到缝里」
+   * 取决于缝在谁的盒子里，四条缝会染出两种深浅。inset 永远画在板内，四条缝一致。
+   *
+   * 三道分工：上边缘一道亮线（受光的棱）、下边缘一道短而深的暗（玻璃的断面厚度）、
+   * 四周一圈极淡的内描边（把板的轮廓收住，不然浅色板上边界会糊进背景）。 */
+  --glass-rim-dark: rgba(27, 58, 92, 0.07);
+  --glass-rim-inner: rgba(255, 255, 255, 0.28);
+  --glass-edge:
+    inset 0 1px 0 var(--glass-highlight),
+    inset 0 -2px 3px var(--glass-rim-dark),
+    inset 0 0 0 1px var(--glass-rim-inner);
+
   /* 板与板之间那道缝里垫的底色（铺在 .shell 上）。
    *
    * 缝里露出的是**没经过玻璃的原始背景**，比板内暗一档 —— 在深色模式下这一档
@@ -158,6 +172,10 @@ html.dark {
    * 会亮成一条灯带 */
   --glass-highlight: rgba(255, 255, 255, 0.34);
   --glass-shadow: 0 8px 26px rgba(15, 34, 51, 0.2), inset 0 1px 0 var(--glass-highlight);
+  /* 深色下那道「断面」要更重才看得出来，而内描边反过来要更淡 ——
+   * 它本来是给白玻璃收口的，深色板上还那么亮就成了发光的边框 */
+  --glass-rim-dark: rgba(0, 0, 0, 0.22);
+  --glass-rim-inner: rgba(255, 255, 255, 0.1);
 
   /* 缝里垫的那层（见 :root 那份说明）。深色这边板与背景差得远，得垫一档才不像沟 */
   --seam-tint: rgba(255, 255, 255, 0.06);
@@ -548,9 +566,12 @@ body {
   overflow-y: auto;
   padding: 20px 24px;
 
-  /* 底色由下面那条统一规则给（`background: var(--glass-bg)`），模糊在 .shell
-   * 那一层做一次（见本文件「玻璃的底色与模糊，分在两层上」）；这里只留描边与圆角 */
-  border: 1px solid var(--glass-border);
+  /* 底色由下面那条统一规则给，模糊在 .shell 那一层做一次
+   * （见本文件「玻璃的底色与模糊，分在两层上」）；这里只留圆角。
+   *
+   * 描边不在这儿写 —— 四块板统一由 `--glass-edge` 的内描边给（见「四块板」那条）。
+   * 从前这里单独有一条 `border`，加上内描边就成了双线，而且四条缝里只有这一块板
+   * 的边界重一档。 */
   border-radius: var(--glass-radius);
 }
 
@@ -588,7 +609,7 @@ body {
   position: relative;
   isolation: isolate;
   background: var(--glass-bg);
-  box-shadow: inset 0 1px 0 var(--glass-highlight);
+  box-shadow: var(--glass-edge);
 }
 
 /* 下拉、气泡：它们浮在玻璃板之上，自己也得是玻璃 —— 一块实底白板压上去，

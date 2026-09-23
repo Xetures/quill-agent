@@ -27,9 +27,10 @@ build_memory_block / build_skill_catalog 那两段），不是拼进第一条里
 from __future__ import annotations
 
 import json
+import queue
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import suppress
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
@@ -1467,6 +1468,58 @@ def run_max_iterations() -> int:
         return MAX_ITERATIONS
 
 
+# 读模型流时主循环的轮询间隔（秒）。
+#
+# 它决定「按下停止」到「循环真的停」的最坏延迟。0.2 秒足够跟手，又不会空转烧 CPU。
+STREAM_POLL_SECONDS = 0.2
+
+
+def _iter_stream(stream: Iterator, cancelled: Callable[[], bool]) -> Iterator:
+    """读模型流，**随时可被取消打断**。
+
+    为什么不能只靠循环体里那句 `if cancelled():` —— 那种写法只有在**收到分片**时才会被
+    执行。而模型吐出第一个字之前可能静默很久（推理模型尤其，几十秒很常见），这段时间调用方
+    阻塞在 `next(stream)` 上，任何检查都轮不到：用户按了停止，界面毫无反应。
+
+    这不是假想。实测界面上连点十几次「停止」，服务端日志里每次都是 200（请求确实到了、
+    标记也确实立起来了），可那条流始终不收尾 —— 循环压根没机会去看那个标记。
+
+    做法：换一条线程去读、把分片推进队列，主循环按 `STREAM_POLL_SECONDS` 轮询，每轮都过
+    一次取消闸，最长一个轮询间隔就能反应过来。读取线程是 daemon，取消后随上游连接被关闭
+    自然结束，不需要单独回收。
+
+    读取线程里的异常原样抛回调用方 —— 调用方本来就有一段 `except Exception` 在处理
+    「读取流式响应失败」，报错路径不该因为换了线程而变样。
+    """
+    chunks: queue.Queue = queue.Queue()
+
+    def read() -> None:
+        try:
+            for chunk in stream:
+                chunks.put(("chunk", chunk))
+        except BaseException as exc:  # noqa: BLE001 - 原样转交给主线程
+            chunks.put(("error", exc))
+        finally:
+            chunks.put(("end", None))
+
+    threading.Thread(target=read, name="quill-model-stream", daemon=True).start()
+
+    while True:
+        try:
+            kind, payload = chunks.get(timeout=STREAM_POLL_SECONDS)
+        except queue.Empty:
+            if cancelled():
+                return
+            continue
+
+        if kind == "chunk":
+            yield payload
+        elif kind == "end":
+            return
+        else:
+            raise payload
+
+
 def _run_stream(
     *,
     prompt: str,
@@ -1634,23 +1687,12 @@ def _run_stream(
         # 这一轮里模型是不是把工具调用写成了正文
         leaked = False
 
-        # 双轨解析：文本立即外吐，工具调用只累积
+        # 双轨解析：文本立即外吐，工具调用只累积。
+        # 读流交给 `_iter_stream`：它在等分片的同时替我们盯着取消标记。光在循环体里检查
+        # 是不够的 —— 那只有在**收到分片**时才会执行，而等模型第一个字的那几十秒里，
+        # 循环体一次都没机会跑（理由见那个函数）。
         try:
-            for chunk in stream:
-                # 用户按了停止。检查点必须放在**每个 chunk 上**，光靠循环顶部那一个
-                # 只能覆盖「轮与轮之间」—— 长输出的收尾轮要流几十秒，取消信号得等
-                # 它说完才被看见，用户按了停止界面却还在跑（实测能拖十几秒）。
-                # 每个 chunk 都过一次闸：流式输出的 chunk 间隔通常不到一秒，
-                # 这样从按下停止到界面收场就是一秒级的事。
-                if interaction.cancelled():
-                    # 主动断掉上游连接：等服务端把剩余内容发完是纯浪费，
-                    # 对方还可能再灌几兆过来。关不掉就不管 —— 循环退出后
-                    # 连接也会随对象回收而关闭，这里只是让它发生得更快
-                    with suppress(Exception):
-                        stream.close()
-                    yield Notice("已取消这一轮。")
-                    return
-
+            for chunk in _iter_stream(stream, interaction.cancelled):
                 # 用量在流末尾单独一个 chunk 里，它通常是不带 choices 的
                 usage = getattr(chunk, "usage", None)
                 tracker.add_usage(usage)
@@ -1705,6 +1747,15 @@ def _run_stream(
                     _accumulate_tool_calls(tool_calls, delta.tool_calls)
         except Exception as exc:
             yield Notice(f"读取流式响应失败：{exc}")
+            return
+
+        # 用户按了停止：`_iter_stream` 在等分片的时候看到了标记，就此收手；这里负责断掉
+        # 上游连接并把这一轮收场。主动断连接不是洁癖 —— 等服务端把剩余内容发完纯属浪费，
+        # 对方还可能再灌几兆过来。关不掉就不管，循环退出后连接也会随对象回收而关闭
+        if interaction.cancelled():
+            with suppress(Exception):
+                stream.close()
+            yield Notice("已取消这一轮。")
             return
 
         # 压着的那一小段尾巴：已经确认过不是泄漏标记的开头，补吐出去

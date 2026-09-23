@@ -25,7 +25,7 @@ const SECTIONS = [
 </script>
 
 <template>
-  <div class="page shell">
+  <div class="page settings-shell">
     <Teleport to="#page-head-slot">
       <h1>偏好设置</h1>
       <span class="hint">界面外观、对话预算与外部服务的配置</span>
@@ -59,8 +59,17 @@ const SECTIONS = [
 }
 
 /* 滚动收进内容区，导航不动（它是「我在哪一节」的路标）。
- * sticky 试过：.page 顶部 20px 内边距在吸顶位置之上，会漏出一条细缝 */
-.shell {
+ * sticky 试过：.page 顶部 20px 内边距在吸顶位置之上，会漏出一条细缝。
+ *
+ * 类名**刻意不叫 `.shell`**：App.vue 里那个窗口级容器就叫这名，而 Vue 的 scoped CSS
+ * 会把父组件的 scope 标记加到子组件**根元素**上 —— 于是 App.vue 的 `.shell` 规则会直接
+ * 命中这里，把窗口布局整套灌进来：
+ *   - 它的 `background: var(--seam-tint)`（浅色下是 transparent）比 `.page` 的白玻璃
+ *     优先级高，设置板的玻璃底会被顶掉，露出模糊的蓝壁纸（底色看着偏蓝）；
+ *   - 它的 `padding-top`（桌面壳下是 20+28+12=60px）盖掉 `.page` 的 20px，
+ *     二级导航被推下去一大截，白占一块地方。
+ * 换个独有的名字，这类冲突就不可能再发生。 */
+.settings-shell {
   display: flex;
   flex-direction: column;
   overflow: hidden;

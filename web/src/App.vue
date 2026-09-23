@@ -3,6 +3,7 @@ import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import { onMounted, ref } from 'vue'
 
 import ClipboardPanel from './components/ClipboardPanel.vue'
+import MemoPanel from './components/MemoPanel.vue'
 import SandboxButton from './components/SandboxButton.vue'
 import Sidebar from './components/Sidebar.vue'
 import { bootstrap } from './stores/session'
@@ -55,9 +56,20 @@ onMounted(async () => {
         <RouterView />
       </main>
 
-      <!-- 公共剪贴板：挂在最外层，切页面不丢（它服务的就是「跨页面取用」） -->
-      <ClipboardPanel />
     </div>
+
+    <!-- 公共剪贴板：挂在最外层，切页面不丢（它服务的就是「跨页面取用」）。
+         **必须放在 `.shell` 外面**：它用的是 `position: fixed`，而 `.shell` 上有
+         `backdrop-filter` —— 那会让 `.shell` 成为 fixed 后代的**定位基准**（包含块），
+         fixed 就不再相对窗口了。偏偏桌面壳里 `.shell` 还要整体上移 28pt 把标题栏那一条
+         让出来，于是那条常驻的右侧触发条会跟着上移、上边被切到窗口外面去（用户报的
+         「剪贴板上边超出边界」）。
+         挪出来之后，它的 fixed 就是这个窗口，与 `.shell` 怎么摆无关。 -->
+    <ClipboardPanel />
+
+    <!-- 公共备忘录：和剪贴板是一对，方向相反 —— 它从**左边**拉出，内容是用户自己敲的
+         （剪贴板是被动收集的复制记录）。同样必须放在 `.shell` 外面，理由见上一条。 -->
+    <MemoPanel />
   </el-config-provider>
 </template>
 
@@ -85,10 +97,45 @@ onMounted(async () => {
   gap: 20px;
   height: 100%;
   padding: 20px;
+  /* 桌面壳里顶边**多让出一截**给系统红绿灯 + 一道余量（见下面那段 :global） */
+  padding-top: calc(20px + var(--titlebar-band, 0px) + var(--titlebar-gap, 0px));
   background: var(--seam-tint);
   -webkit-backdrop-filter: var(--glass-blur);
   backdrop-filter: var(--glass-blur);
   overflow: hidden;
+}
+
+/* 桌面壳（pywebview）里，窗口内容延伸进了系统标题栏，红绿灯浮在窗口左上角 ——
+ * 界面据此从标题栏高度开始画，把那一条让出来（见 desktop.py 的
+ * `_blend_titlebar_into_ui`）。
+ *
+ * 让出来的那一条画的是 .shell 自己的背景（--seam-tint + 同一层模糊），所以它和
+ * 左右下三边的留白是**同一片底**，不是另行补的一条带 —— 红绿灯就浮在这片底上，
+ * 既不压 UI，也不会露出一截系统底色。
+ *
+ * 浏览器里没有这个类，变量取默认值 0，一切照旧。
+ * 写成变量而不是两处写死 28px：宽屏与窄屏的基准间距不同（20 / 16），
+ * 一个数字改一处即可。 */
+:global(html.in-desktop) {
+  /* 红绿灯那一条的高度。板子要**上移**这么多才能顶到窗口最上边 */
+  --titlebar-band: 28px;
+  /* 红绿灯与板内内容之间再留一道余量。红绿灯本身只有 28pt，紧贴着板就能看见
+   * 「灯压着内容」—— 这一道是给它们的呼吸空间 */
+  --titlebar-gap: 12px;
+}
+
+/* 桌面壳里让玻璃板**从窗口顶端开始**，红绿灯浮在板上（Safari / 备忘录那种观感），
+ * 而板内的内容照旧让开那一条 —— 靠「整体上移 + 内边距补回来」这对组合：前者把板子的
+ * 上边界挪到窗口顶，后者把内容按回红绿灯下面，一进一出正好抵消，内容位置和浏览器里
+ * 完全一样（所以上面那两处 padding-top 不用再动）。
+ *
+ * 只加 padding 是不够的（前一版就是那么写的）：板子被整体推下去，顶部空出一条没内容的
+ * 底色带 —— 那正是「红绿灯还浮在一条灰条上」的来源。
+ *
+ * 高度也要补回来：上移 28 之后如果高度不变，底下会空出 28。 */
+:global(html.in-desktop) .shell {
+  margin-top: calc(-1 * var(--titlebar-band));
+  height: calc(100% + var(--titlebar-band));
 }
 
 /* 窗口变窄时收一收侧边栏，别让它占掉主区一半。
@@ -98,6 +145,7 @@ onMounted(async () => {
     grid-template-columns: 208px 1fr;
     gap: 18px;
     padding: 16px;
+    padding-top: calc(16px + var(--titlebar-band, 0px) + var(--titlebar-gap, 0px));
   }
 }
 
