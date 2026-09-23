@@ -69,7 +69,7 @@ def _not_a_repo() -> str | None:
         "想知道「我改了什么、还有什么没提交」时用它。"
         "想看具体改动内容用 git_diff；想看历史用 git_log。"
     ),
-    category="版本控制",
+    category="git",
 )
 def git_status() -> str:
     error = _not_a_repo()
@@ -87,7 +87,7 @@ def git_status() -> str:
         "查看尚未提交的改动内容（unified diff 文本）。"
         "给 path 就只看那一个文件。提交之前先用它确认改的是不是你以为的东西。"
     ),
-    category="版本控制",
+    category="git",
     parameters={
         "properties": {
             "path": {
@@ -123,7 +123,7 @@ def git_diff(path: str = "") -> str:
         "查看最近的提交记录，一行一条（短哈希 + 日期 + 说明）。"
         "想知道「这块代码最近为什么改成这样」时用它。"
     ),
-    category="版本控制",
+    category="git",
     parameters={
         "properties": {
             "limit": {"type": "integer", "description": "要几条，默认 10，最多 50。"}
@@ -148,7 +148,7 @@ def git_log(limit: int = 10) -> str:
         "调用前先看 git_status / git_diff 确认改了什么；message 写清「为什么改」，一行标题即可。"
         "提交不可逆，会先问用户一次。"
     ),
-    category="版本控制",
+    category="git",
     parameters={
         "properties": {"message": {"type": "string", "description": "提交说明（一行标题）"}}
     },

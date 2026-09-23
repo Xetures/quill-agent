@@ -24,7 +24,7 @@ from quill_agent.tools.base import registry
         "当任务匹配系统提示里「可用技能」清单中某一项的适用场景时，"
         "先用它把说明取回来，再按说明动手。"
     ),
-    category="技能",
+    category="skill",
     parameters={
         "type": "object",
         "properties": {
@@ -117,7 +117,7 @@ def _skill_group_hint(skill_name: str) -> str:
         "body 写清步骤、命令和注意事项，可以写长：正文平时不进上下文，只在被读取时才占空间。"
         "同名技能已存在会失败，那是提醒你换个更具体的名字，不要试图覆盖已有的技能。"
     ),
-    category="技能",
+    category="skill",
     parameters={
         "type": "object",
         "properties": {
@@ -183,7 +183,7 @@ def create_skill(name: str, description: str, body: str) -> str:
         "如果它还在某个技能组里，那个组会多出一条读不到的名字，"
         "需要用户自己去技能组页把它移除。"
     ),
-    category="技能",
+    category="skill",
     parameters={
         "type": "object",
         "properties": {
@@ -258,7 +258,7 @@ def delete_skill(name: str) -> str:
         "临时的任务状态（刚读了哪个文件、当前在做什么）不要记 —— 那些本来就在会话历史里，"
         "记下来反而污染长期记忆。同一件事只说一次，重复调用会被拒绝。"
     ),
-    category="记忆",
+    category="memory",
     parameters={
         "type": "object",
         "properties": {
@@ -290,7 +290,7 @@ def remember(text: str) -> str:
         "text 必须与记忆原文完全一致（照抄「关于用户的已知信息」清单里的那一行），"
         "差一个字就会失败，这是为了防止误删。"
     ),
-    category="记忆",
+    category="memory",
     parameters={
         "type": "object",
         "properties": {
@@ -324,7 +324,7 @@ def forget(text: str) -> str:
         "用户可能不回答（走开或超时），所以问之前先想好「没有回答时怎么办」，"
         "并在后续回答里说明你的假设。"
     ),
-    category="交互",
+    category="interaction",
     parameters={
         "type": "object",
         "properties": {
@@ -433,7 +433,7 @@ def _card_title(plan: str, summary: str) -> tuple[str, str]:
         "用户批准后就开始执行；被驳回时他会给出要改什么，改完再提交一次。"
         "一次只提交一份计划 —— 要让用户在几个方案里挑，那是提问，用 ask_user。"
     ),
-    category="交互",
+    category="interaction",
     parameters={
         "type": "object",
         "properties": {
@@ -565,7 +565,7 @@ def _snippet(text: str, keyword: str, limit: int = RECALL_SNIPPET_CHARS) -> str:
         "如果上下文里缺少更早的内容，也该先来这里查，而不是凭猜测作答。"
         "查工作目录里的文件用 search_content，不是这个。"
     ),
-    category="对话",
+    category="chat",
     parameters={
         "type": "object",
         "properties": {

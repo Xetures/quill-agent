@@ -255,6 +255,47 @@ html.dark {
  * 这样表格、输入框、下拉、弹窗这些不用逐个写样式就能融入主题。
  * 两套主题共用这段 —— 变量本身已经分主题定义过了。
  * ------------------------------------------------------------------------- */
+/* ---------------------------------------------------------------------------
+ * 字号：所有文案都走这几个 token
+ * ---------------------------------------------------------------------------
+ * 组件里不再写 px，只引 token；token 自身乘一个 --font-scale ——
+ * 「显示 → 字号」那几档（见 stores/font-size.ts）因此只需要改这一个倍数。
+ *
+ * **标准档 = 1，取到的值与从前逐字相同**（11/12/13/14/15/16px 就是原来的取值），
+ * 所以这层改造本身不改变任何观感。
+ *
+ * **只缩放字号，不动间距与高度**：四块玻璃板的几何、以及桌面壳里按 pt 对齐系统标题栏的
+ * 那些尺寸都不该跟着字号走（见 App.vue 里 --titlebar-band 那一段）。 */
+:root {
+  --font-scale: 1;
+
+  --fs-2xs: calc(11px * var(--font-scale)); /* 徽标、极小的辅助信息 */
+  --fs-xs: calc(12px * var(--font-scale)); /* 次要信息：时间、提示 */
+  --fs-sm: calc(13px * var(--font-scale)); /* 正文默认：消息、表单、导航 */
+  --fs-base: calc(14px * var(--font-scale)); /* 强调正文 */
+  --fs-lg: calc(15px * var(--font-scale)); /* 小标题 */
+  --fs-xl: calc(16px * var(--font-scale)); /* 页面级标题 */
+
+  /* 两档的倍数单独拎出来：字号选择页要用它们画「小 / 大」两档的预览字，
+   * 而且预览必须**跟着当前档位一起缩放**才看得出比例（写死 px 就看不出） */
+  --font-scale-small: 0.9;
+  --font-scale-large: 1.15;
+}
+
+html[data-font-size='small'] {
+  --font-scale: var(--font-scale-small);
+}
+
+html[data-font-size='large'] {
+  --font-scale: var(--font-scale-large);
+}
+
+/* ---------------------------------------------------------------------------
+ * Element Plus 的变量覆盖
+ * ---------------------------------------------------------------------------
+ * 这样表格、输入框、下拉、弹窗这些不用逐个写样式就能融入主题。
+ * 两套主题共用这段 —— 变量本身已经分主题定义过了。
+ * ------------------------------------------------------------------------- */
 :root,
 html.dark {
   --el-color-primary: var(--accent);
@@ -282,6 +323,16 @@ html.dark {
   --el-text-color-regular: var(--text);
   --el-text-color-secondary: var(--text-soft);
   --el-text-color-placeholder: var(--text-faint);
+
+  /* 字号也接同一套 token：EP 里那些用 size 属性的组件（表格、按钮、下拉、弹窗）
+   * 只改我们自己的 token 是管不到它们的。
+   * 取值就是 EP 的默认档位（extra-small 12 / small 13 / base 14 / medium 16），
+   * 换成 token 之后行为与从前一致，只是多了一层可缩放 */
+  --el-font-size-extra-small: var(--fs-xs);
+  --el-font-size-small: var(--fs-sm);
+  --el-font-size-base: var(--fs-base);
+  --el-font-size-medium: var(--fs-xl);
+  --el-font-size-large: calc(18px * var(--font-scale));
 
   --el-border-color: var(--border);
   --el-border-color-light: var(--border);
@@ -522,7 +573,7 @@ body {
   font-family:
     -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
     'Microsoft YaHei', sans-serif;
-  font-size: 14px;
+  font-size: var(--fs-base);
   line-height: 1.6;
   color: var(--text);
 
@@ -553,7 +604,7 @@ body {
 
 .mono {
   font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 
 /* 页面外壳：所有页面用它保证「撑满 + 自己滚动」。
@@ -660,7 +711,9 @@ body {
 
 .md code {
   font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
-  font-size: 12.5px;
+  /* 比正文小半档：行内代码要比周围正文略小才不会跳。原值 12.5px，
+   * 这里写成「小号 + 0.5px」—— 逐字保留原尺寸，同时跟着字号档位缩放 */
+  font-size: calc(var(--fs-xs) + 0.5px);
 }
 
 .md :not(pre) > code {
@@ -712,7 +765,7 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 
 .tool-opt-popper .el-tag {

@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { Plus } from '@element-plus/icons-vue'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 
 import { api } from '../api/client'
 import type { ModelConfig, ProviderOption, ProtocolOption, RemoteModel } from '../api/types'
+
+const { t } = useI18n()
 import { useTableHeight } from '../composables/useTableHeight'
 import { loadOptions } from '../stores/session'
 import { errorText } from '../utils/error'
@@ -95,7 +98,9 @@ async function load(): Promise<void> {
   ])
   configs.value = data.configs
   protocols.value = options.protocols
-  providers.value = catalog.providers
+  // `?? []`：清单拿不到时也要能打开弹窗 —— 下面到处在 `.length` 它，
+  // 少了这个兜底，一个字段缺失就会让整个表单渲染失败（表现是「点了没反应」）
+  providers.value = catalog.providers ?? []
 }
 
 // 换协议时顺手把地址填好 —— 但只在「地址为空」或「还留着上一个协议的默认地址」时动手，
@@ -129,8 +134,8 @@ async function testConnection(): Promise<void> {
       '/models/test',
       connectionPayload(),
     )
-    if (result.ok) ElMessage.success('连接成功')
-    else ElMessage.error(result.detail || '连接失败')
+    if (result.ok) ElMessage.success(t('models.ok'))
+    else ElMessage.error(result.detail || t('models.connectFailed'))
   } catch (exc) {
     ElMessage.error(errorText(exc))
   } finally {
@@ -156,7 +161,7 @@ async function fetchModels(): Promise<void> {
     }>('/models/test', connectionPayload())
 
     if (!result.ok) {
-      ElMessage.error(result.detail || '获取失败')
+      ElMessage.error(result.detail || t('models.fetchFailed'))
       return
     }
 
@@ -166,11 +171,11 @@ async function fetchModels(): Promise<void> {
 
     const suggested = result.models.filter((item) => item.context_window).length
     if (!result.models.length) {
-      ElMessage.warning('接口没有返回模型，请手动输入')
+      ElMessage.warning(t('models.fetchEmpty'))
     } else if (suggested) {
-      ElMessage.success(`拉到 ${result.models.length} 个模型，其中 ${suggested} 个带上下文窗口`)
+      ElMessage.success(t('models.fetched', { count: result.models.length, suggested }))
     } else {
-      ElMessage.warning('拉到模型了，但没拿到上下文窗口 —— 可以同步模型库，或自己填')
+      ElMessage.warning(t('models.fetchedNoWindow'))
     }
   } catch (exc) {
     ElMessage.error(errorText(exc))
@@ -194,7 +199,7 @@ async function syncCatalog(): Promise<void> {
     )
 
     if (!result.ok) {
-      ElMessage.error(result.message || '同步失败')
+      ElMessage.error(result.message || t('models.syncFailed'))
       return
     }
 
@@ -238,7 +243,7 @@ function unknownNames(): string[] {
 async function suggestWindows(): Promise<void> {
   // **先把候选里已有的窗口填上，再去查快照** —— 这就是「接口 → 快照」的顺序。
   //
-  // 用户从下拉里选中模型时，candidates（「获取模型列表」拉回来的）早就备好了，
+  // 用户从下拉里选中模型时，candidates（「{{ t('models.form.fetchModels') }}」拉回来的）早就备好了，
   // 里面往往带着接口报的窗口。但原先只有「确实要查快照」时才会走到 fillMissing()：
   // 选中的模型若在拉列表时就带着窗口，unknownNames() 会把它排除掉、这里直接
   // return —— 那一格就空着，看起来像「选了列表却不自动填」。
@@ -291,12 +296,12 @@ function setWindow(name: string, value: number | null | undefined): void {
  * 模型库查来的可能过时，手填的就是他自己定的。
  */
 function windowSource(name: string): string {
-  if (touched.has(name)) return '手动'
+  if (touched.has(name)) return t('models.source.manual')
   if (!form.value.context_windows[name]) return ''
 
   const source = candidates.value.find((item) => item.name === name)?.source
-  if (source === 'endpoint') return '来自接口'
-  if (source === 'catalog') return '来自模型库'
+  if (source === 'endpoint') return t('models.source.endpoint')
+  if (source === 'catalog') return t('models.source.catalog')
   return ''
 }
 
@@ -371,7 +376,7 @@ function openEdit(id: string): void {
   void suggestWindows()
 }
 
-const dialogTitle = computed(() => (editingId.value ? '编辑连接' : '新建连接'))
+const dialogTitle = computed(() => (editingId.value ? t('models.form.editTitle') : t('models.form.createTitle')))
 
 const canSubmit = computed(() => Boolean(form.value.name.trim() && form.value.models.length))
 
@@ -399,10 +404,10 @@ async function submit(): Promise<void> {
   try {
     if (editingId.value) {
       await api.put(`/models/${editingId.value}`, payload)
-      ElMessage.success('已保存')
+      ElMessage.success(t('models.saved'))
     } else {
       await api.post('/models', payload)
-      ElMessage.success('已添加')
+      ElMessage.success(t('models.added'))
     }
     dialogOpen.value = false
     await load()
@@ -422,10 +427,10 @@ async function submit(): Promise<void> {
 // 直接传整个对象过不了类型检查
 async function remove(id: string, name: string): Promise<void> {
   try {
-    await ElMessageBox.confirm(`删除连接「${name}」？该连接下的模型会一起消失。`, '删除', {
+    await ElMessageBox.confirm(t('models.deleteConfirm', { name }), t('models.deleteTitle'), {
       type: 'warning',
-      confirmButtonText: '删除',
-      cancelButtonText: '取消',
+      confirmButtonText: t('common.delete'),
+      cancelButtonText: t('common.cancel'),
     })
   } catch {
     return
@@ -435,7 +440,7 @@ async function remove(id: string, name: string): Promise<void> {
   await load()
   // 同上：删掉的连接可能正被任务页选着，得让它跟着更新
   await loadOptions()
-  ElMessage.success('已删除')
+  ElMessage.success(t('common.deleted'))
 }
 
 onMounted(() => {
@@ -446,41 +451,41 @@ onMounted(() => {
 <template>
   <div class="page">
     <Teleport to="#page-head-slot">
-      <h1>API 设置</h1>
-      <span class="hint">模型服务的连接配置，一条连接可带多个模型名</span>
+      <h1>{{ t('models.title') }}</h1>
+      <span class="hint">{{ t('models.hint') }}</span>
     </Teleport>
 
     <!-- 列表上方的操作行：左边计数，右边新建入口。
          原先常驻的表单收进弹窗后，页面只剩「列表 + 一个按钮」 -->
     <div class="bar">
-      <span class="muted count">共 {{ configs.length }} 条连接</span>
+      <span class="muted count">{{ t('models.count', { count: configs.length }) }}</span>
       <!-- 一个入口。表单顶部的「服务商」是可选捷径：选一家就带出名字、地址、协议，
            不选就全部手填 —— 两种走法汇进同一张表单（见 providerId 那段说明） -->
       <el-button size="small" type="primary" :icon="Plus" class="new-btn" @click="openCreate">
-        新建连接
+        {{ t('models.create') }}
       </el-button>
     </div>
 
     <!-- 表格自己滚：表头固定、只有表体在滚（高度由 useTableHeight 量出） -->
     <div ref="tableBox" class="table-box">
       <el-table :data="configs" :height="tableHeight" size="small" stripe>
-      <el-table-column prop="name" label="名称" width="160" />
+      <el-table-column prop="name" :label="t('models.columnName')" width="160" />
 
-      <el-table-column label="接口地址">
+      <el-table-column :label="t('models.columnUrl')">
         <template #default="{ row }">
           <span class="mono">
-            {{ row.base_url || defaultBaseUrl(row.protocol) || '（默认地址）' }}
+            {{ row.base_url || defaultBaseUrl(row.protocol) || t('models.defaultUrl') }}
           </span>
         </template>
       </el-table-column>
 
-      <el-table-column label="协议" width="180">
+      <el-table-column :label="t('models.columnProtocol')" width="180">
         <template #default="{ row }">
           {{ protocolLabels[row.protocol] ?? row.protocol }}
         </template>
       </el-table-column>
 
-      <el-table-column label="模型">
+      <el-table-column :label="t('models.columnModels')">
         <template #default="{ row }">
           <el-tag v-for="name in row.models" :key="name" size="small" class="chip">
             {{ name }}
@@ -488,18 +493,18 @@ onMounted(() => {
         </template>
       </el-table-column>
 
-      <el-table-column label="操作" width="130" align="center">
+      <el-table-column :label="t('models.columnActions')" width="130" align="center">
         <template #default="{ row }">
           <!-- 参数只传 id：row 的字段类型是宽泛的 DefaultRow，取回整条记录在函数里做 -->
-          <el-button size="small" text type="primary" @click="openEdit(row.id)">编辑</el-button>
+          <el-button size="small" text type="primary" @click="openEdit(row.id)">{{ t('common.edit') }}</el-button>
           <el-button size="small" text type="danger" @click="remove(row.id, row.name)">
-            删除
+            {{ t('common.delete') }}
           </el-button>
         </template>
       </el-table-column>
 
       <template #empty>
-        <el-empty description="还没有模型配置；点右上角「新建连接」创建" :image-size="60" />
+        <el-empty :description="t('models.empty')" :image-size="60" />
       </template>
       </el-table>
     </div>
@@ -516,13 +521,13 @@ onMounted(() => {
       <el-form :model="form" label-width="96px" size="default" @submit.prevent>
         <!-- 可选的捷径：选一家就把名字、地址、协议一起带出来，不想用就空着，下面照旧手填。
              清单为空时给个同步入口 —— 清单和窗口快照是同一份下载数据 -->
-        <el-form-item label="服务商">
+        <el-form-item :label="t('models.form.provider')">
           <div class="provider-block">
             <el-select
               v-model="providerId"
               filterable
               clearable
-              placeholder="可选：从清单里挑一家，自动带出地址与协议"
+              :placeholder="t('models.form.providerPlaceholder')"
               class="provider-select"
               @change="(value: string) => pickProvider(value)"
             >
@@ -534,21 +539,23 @@ onMounted(() => {
               />
             </el-select>
             <p v-if="!providers.length" class="note muted">
-              还没有服务商清单。它和模型规格是同一份数据 —— 点
-              <el-button link type="primary" size="small" @click="syncCatalog">同步模型库</el-button>
-              拉一次就有了（会访问 models.dev）；不拉、直接手填下面的格子也完全可以。
+              {{ t('models.form.catalogSyncBefore') }}
+              <el-button link type="primary" size="small" @click="syncCatalog">
+                {{ t('models.form.catalogSyncButton') }}
+              </el-button>
+              {{ t('models.form.catalogSyncAfter') }}
             </p>
             <p v-else class="note muted">
-              选不选都行：不选的话，下面几格全部手填。
+              {{ t('models.form.providerOptional') }}
             </p>
           </div>
         </el-form-item>
 
-        <el-form-item label="名称">
-          <el-input v-model="form.name" placeholder="例如 DeepSeek 官方" />
+        <el-form-item :label="t('models.form.name')">
+          <el-input v-model="form.name" :placeholder="t('models.form.namePlaceholder')" />
         </el-form-item>
 
-        <el-form-item label="协议">
+        <el-form-item :label="t('models.form.protocol')">
           <el-select v-model="form.protocol" class="protocol-select">
             <el-option
               v-for="item in protocols"
@@ -559,16 +566,16 @@ onMounted(() => {
           </el-select>
         </el-form-item>
 
-        <el-form-item label="接口地址">
+        <el-form-item :label="t('models.columnUrl')">
           <div class="provider-block">
             <el-input
               v-model="form.base_url"
-              :placeholder="defaultBaseUrl(form.protocol) || '例如 https://api.deepseek.com'"
+              :placeholder="defaultBaseUrl(form.protocol) || t('models.form.urlPlaceholder')"
             />
             <!-- 第一方官方（OpenAI、Anthropic…）的快照里就没有地址 —— SDK 自己知道
                  官方地址。这里明说一句，免得用户以为漏填了 -->
             <p v-if="providerId && !form.base_url" class="note muted">
-              这家用官方地址，留空即可
+              {{ t('models.form.urlOfficial') }}
             </p>
           </div>
         </el-form-item>
@@ -582,19 +589,19 @@ onMounted(() => {
           />
         </el-form-item>
 
-        <el-form-item label="模型名">
+        <el-form-item :label="t('models.form.modelNames')">
           <div class="model-block">
             <div class="model-bar">
               <!-- 地址为空**不能**禁用：官方服务那几家的地址本来就留空
                    （见上面「接口地址」那格），SDK 会用官方地址去拉 -->
               <el-button size="small" :loading="fetching" @click="fetchModels">
-                获取模型列表
+                {{ t('models.form.fetchModels') }}
               </el-button>
-              <span class="muted bar-hint">从下拉里选，也可直接输入后回车；可多选</span>
+              <span class="muted bar-hint">{{ t('models.form.fetchHint') }}</span>
             </div>
 
             <!-- filterable + allow-create：既能从拉到的列表里选，也能手动输入
-                 （有些中转站没有 /models 端点，或列表里没有目标模型） -->
+                 {{ t('models.form.fetchFallback') }} -->
             <el-select
               v-model="form.models"
               multiple
@@ -603,7 +610,7 @@ onMounted(() => {
               default-first-option
               collapse-tags
               collapse-tags-tooltip
-              placeholder="例如 deepseek-chat"
+              :placeholder="t('models.form.modelPlaceholder')"
               class="model-select"
             >
               <el-option
@@ -616,10 +623,10 @@ onMounted(() => {
           </div>
         </el-form-item>
 
-        <el-form-item label="上下文窗口">
+        <el-form-item :label="t('models.form.context')">
           <div class="windows">
             <p v-if="!form.models.length" class="note muted">
-              先在上面选好模型，这里会按模型逐个列出来
+              {{ t('models.form.contextPickFirst') }}
             </p>
 
             <div v-for="name in form.models" :key="name" class="win-row">
@@ -629,7 +636,7 @@ onMounted(() => {
                 :min="1"
                 :step="1024"
                 :controls="false"
-                placeholder="未知"
+                :placeholder="t('models.form.contextUnknown')"
                 class="win-input"
                 @update:model-value="(value) => setWindow(name, value)"
               />
@@ -637,35 +644,32 @@ onMounted(() => {
             </div>
 
             <p class="note muted">
-              tokens。<strong>留空表示不知道</strong>，任务页的用量仪表盘会显示「—」——
-              填一个猜的值比留空更糟，它会让人以为上下文还有空间。
-              <template v-if="!catalogReady">
-                还没同步过模型库，点下面的「同步模型库」可以自动填一批。
-              </template>
+              <span v-html="t('models.form.contextHint')" />
+              <template v-if="!catalogReady">{{ t('models.form.contextNoCatalog') }}</template>
             </p>
           </div>
         </el-form-item>
 
-        <el-form-item label="连通测试">
+        <el-form-item :label="t('models.form.test')">
           <!-- 地址为空同样不禁用（同上）：第一方官方走 SDK 的官方地址 -->
           <el-button :loading="testing" @click="testConnection">
-            测试连接
+            {{ t('models.form.testButton') }}
           </el-button>
-          <span class="muted conn-hint">走 GET /models，不消耗 token</span>
+          <span class="muted conn-hint">{{ t('models.form.testHint') }}</span>
         </el-form-item>
 
         <!-- 同步放最后一行：它服务的两样东西（服务商清单、窗口快照）都在上面用得到，
              但都不是「填这条连接」的必经步骤，压轴而不是打头 -->
-        <el-form-item label="同步模型库">
-          <el-button size="small" :loading="syncing" @click="syncCatalog">同步模型库</el-button>
+        <el-form-item :label="t('models.form.syncLabel')">
+          <el-button size="small" :loading="syncing" @click="syncCatalog">{{ t('models.form.catalogSyncButton') }}</el-button>
           <span class="muted conn-hint">
-            从 models.dev 刷新服务商清单与「模型名 → 窗口」快照；只在点它时才联网
+            {{ t('models.form.syncHint') }}
           </span>
         </el-form-item>
       </el-form>
 
       <template #footer>
-        <el-button size="small" @click="dialogOpen = false">取消</el-button>
+        <el-button size="small" @click="dialogOpen = false">{{ t('common.cancel') }}</el-button>
         <el-button
           size="small"
           type="primary"
@@ -673,7 +677,7 @@ onMounted(() => {
           :disabled="!canSubmit"
           @click="submit"
         >
-          {{ editingId ? '保存' : '创建' }}
+          {{ editingId ? t('common.save') : t('common.create') }}
         </el-button>
       </template>
     </el-dialog>
@@ -705,7 +709,7 @@ onMounted(() => {
 }
 
 .bar .count {
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 
 .new-btn {
@@ -746,13 +750,13 @@ onMounted(() => {
 }
 
 .bar-hint {
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 
 /* 字段下方的说明文字：比正文小一号、留一点上边距，别和控件挤在一起 */
 .note {
   margin: 6px 0 0;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.5;
 }
 
@@ -794,11 +798,11 @@ onMounted(() => {
 .win-src {
   flex-shrink: 0;
   width: 64px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 
 .conn-hint {
   margin-left: 10px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 </style>

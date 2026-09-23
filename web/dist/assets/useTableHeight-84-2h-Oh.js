@@ -1,1 +1,0 @@
-import{ad as s,aF as i,r as c}from"./index-DWSmDcCl.js";function l(t,r=140){const n=c(320);let e=null;return s(()=>{t.value&&(e=new ResizeObserver(u=>{var o;const a=((o=u[0])==null?void 0:o.contentRect.height)??0;a&&(n.value=Math.max(r,Math.round(a)))}),e.observe(t.value))}),i(()=>e==null?void 0:e.disconnect()),n}export{l as u};

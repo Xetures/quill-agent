@@ -13,7 +13,8 @@ import {
   Stamp,
   Tools,
 } from '@element-plus/icons-vue'
-import type { Component } from 'vue'
+import { computed, type Component } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 
 // 毛玻璃蓝版图标（小尺寸简化版：这一格只有 40px，设计稿给的 02c 就是为小尺寸准备的
@@ -30,6 +31,7 @@ import HelpButton from './HelpButton.vue'
 
 const route = useRoute()
 const router = useRouter()
+const { t } = useI18n()
 
 interface NavItem {
   to: string
@@ -43,22 +45,24 @@ interface NavItem {
  * 没有「任务」—— 它的入口是上面的「新建任务」按钮和下面的会话列表：
  * 想继续聊就点会话，想开新的就点按钮，都不需要「切到任务页」这个动作。
  *
- * 「偏好设置」是一级项，但页面里还有一层二级导航（主题 / 对话 / 联网搜索 / 关于，
- * 见 SettingsLayout）。二级导航不放在侧边栏：那要先点开父级才看得到几节，
- * 而这几节本来就互相独立，每次换一节都要两步。
+ * 「偏好设置」是一级项，但页面里还有一层二级导航（显示 / 对话 / 联网搜索 / MCP /
+ * 归档 / 关于，见 SettingsLayout）。二级导航不放在侧边栏：那要先点开父级才看得到
+ * 几节，而这几节本来就互相独立，每次换一节都要两步。
+ *
+ * computed 而不是模块级常量：文案来自 `t()`，切语言时要跟着重算。
  */
-const NAV: NavItem[] = [
-  { to: '/modes', label: '模式', icon: MagicStick },
-  { to: '/prompts', label: '提示词', icon: Document },
-  { to: '/tools', label: '工具', icon: Tools },
-  { to: '/skills', label: '技能', icon: Stamp },
-  { to: '/memory', label: '记忆', icon: Collection },
-  { to: '/usage', label: '用量', icon: DataLine },
-  { to: '/models', label: 'API设置', icon: Cpu },
+const NAV = computed<NavItem[]>(() => [
+  { to: '/modes', label: t('nav.modes'), icon: MagicStick },
+  { to: '/prompts', label: t('nav.prompts'), icon: Document },
+  { to: '/tools', label: t('nav.tools'), icon: Tools },
+  { to: '/skills', label: t('nav.skills'), icon: Stamp },
+  { to: '/memory', label: t('nav.memory'), icon: Collection },
+  { to: '/usage', label: t('nav.usage'), icon: DataLine },
+  { to: '/models', label: t('nav.models'), icon: Cpu },
   // 归档收进了偏好设置（见 SettingsLayout / router.ts）—— 它是「回头翻旧账」，
   // 用得比上面这些少，不必常驻一级导航
-  { to: '/settings', label: '偏好设置', icon: Setting },
-]
+  { to: '/settings', label: t('nav.settings'), icon: Setting },
+])
 
 async function onNew(): Promise<void> {
   // 当前就是个空会话的话直接复用，不再建一个 —— 否则连着点几下会堆出一串空会话，
@@ -76,17 +80,21 @@ async function onOpen(id: string): Promise<void> {
 
 async function onArchive(id: string, title: string): Promise<void> {
   try {
-    await ElMessageBox.confirm(`归档「${title}」？空会话会被直接删除。`, '归档会话', {
-      confirmButtonText: '归档',
-      cancelButtonText: '取消',
-      type: 'warning',
-    })
+    await ElMessageBox.confirm(
+      t('sidebar.archiveConfirm', { title }),
+      t('sidebar.archiveTitle'),
+      {
+        confirmButtonText: t('sidebar.archive'),
+        cancelButtonText: t('common.cancel'),
+        type: 'warning',
+      },
+    )
   } catch {
     return // 用户按了取消
   }
 
   const archived = await archiveConversation(id)
-  ElMessage.success(archived ? '已归档' : '空会话已删除')
+  ElMessage.success(archived ? t('sidebar.archiveDone') : t('sidebar.archiveEmpty'))
 }
 </script>
 
@@ -101,7 +109,7 @@ async function onArchive(id: string, title: string): Promise<void> {
       <img class="logo" :src="quillIcon" alt="Quill" />
       <div class="brand-text">
         <div class="app-name">Quill</div>
-        <div class="tagline">本地 Agent 工作台</div>
+        <div class="tagline">{{ t('sidebar.tagline') }}</div>
       </div>
       <HelpButton />
     </div>
@@ -118,7 +126,7 @@ async function onArchive(id: string, title: string): Promise<void> {
              不该和下面那排平级的导航项长得一样 -->
         <div class="new-task">
           <el-button type="primary" :icon="Plus" class="new-task-btn" @click="onNew">
-            新建任务
+            {{ t('sidebar.newTask') }}
           </el-button>
         </div>
 
@@ -132,12 +140,12 @@ async function onArchive(id: string, title: string): Promise<void> {
         <div class="section">
           <!-- 新建会话的入口已经在上面的主按钮里了，这里只留分组标题 -->
           <div class="section-head">
-            <span>会话</span>
+            <span>{{ t('sidebar.section') }}</span>
           </div>
 
           <el-scrollbar class="list">
             <p v-if="!session.conversations.length" class="hint">
-              还没有会话，点上面的「新建任务」开始
+              {{ t('sidebar.empty') }}
             </p>
 
             <div
@@ -145,7 +153,7 @@ async function onArchive(id: string, title: string): Promise<void> {
               :key="item.id"
               class="conv"
               :class="{ active: item.id === session.currentId }"
-              :title="`最后更新：${formatTime(item.updated_at)}`"
+              :title="t('sidebar.updatedAt', { time: formatTime(item.updated_at) })"
               @click="onOpen(item.id)"
             >
               <!-- 正在跑的会话转个圈：切走之后它还在后台跑着（运行跟着会话走，不跟着
@@ -153,7 +161,7 @@ async function onArchive(id: string, title: string): Promise<void> {
               <el-icon
                 v-if="session.runningIds.includes(item.id)"
                 class="conv-running spin"
-                title="正在运行"
+                :title="t('sidebar.running')"
               >
                 <Loading />
               </el-icon>
@@ -171,7 +179,7 @@ async function onArchive(id: string, title: string): Promise<void> {
                 :icon="Download"
                 :href="`/api/conversations/${item.id}/export`"
                 download
-                title="导出"
+                :title="t('sidebar.export')"
                 @click.stop
               />
               <el-button
@@ -179,7 +187,7 @@ async function onArchive(id: string, title: string): Promise<void> {
                 text
                 class="conv-action"
                 :icon="Box"
-                title="归档"
+                :title="t('sidebar.archive')"
                 @click.stop="onArchive(item.id, item.title)"
               />
             </div>
@@ -277,14 +285,14 @@ async function onArchive(id: string, title: string): Promise<void> {
 }
 
 .app-name {
-  font-size: 16px;
+  font-size: var(--fs-xl);
   font-weight: 650;
   letter-spacing: 0.3px;
   line-height: 1.25;
 }
 
 .tagline {
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   line-height: 1.3;
   color: var(--text-soft);
 }
@@ -337,7 +345,7 @@ async function onArchive(id: string, title: string): Promise<void> {
   --el-menu-bg-color: transparent;
   --el-menu-hover-bg-color: var(--bg-hover);
   --el-menu-item-height: 38px;
-  --el-menu-item-font-size: 13px;
+  --el-menu-item-font-size: var(--fs-sm);
 }
 
 /* 菜单项默认是「通栏高亮」，加圆角和内缩更像现代侧边栏 */
@@ -370,7 +378,7 @@ async function onArchive(id: string, title: string): Promise<void> {
   align-items: center;
   justify-content: space-between;
   padding: 8px 4px 4px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text-soft);
 }
 
@@ -381,7 +389,7 @@ async function onArchive(id: string, title: string): Promise<void> {
 
 .hint {
   margin: 4px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text-soft);
 }
 
@@ -410,7 +418,7 @@ async function onArchive(id: string, title: string): Promise<void> {
  * 写死颜色的话在那里就会糊掉看不见 */
 .conv-running {
   flex-shrink: 0;
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 
 .spin {
@@ -429,7 +437,7 @@ async function onArchive(id: string, title: string): Promise<void> {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 
 /* 归档按钮：平时就露出来一点（让人知道这一行有操作），hover 时再提亮。

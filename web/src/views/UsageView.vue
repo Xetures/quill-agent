@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 
 import { api } from '../api/client'
 import type { UsageReport } from '../api/types'
 import LineChart from '../components/LineChart.vue'
 import { errorText } from '../utils/error'
 import { formatTime } from '../utils/format'
+
+const { t } = useI18n()
 
 /**
  * 用量页。
@@ -71,58 +74,58 @@ onMounted(() => {
 <template>
   <div class="page">
     <Teleport to="#page-head-slot">
-      <h1>用量</h1>
+      <h1>{{ t('usage.title') }}</h1>
       <span class="hint">
-        token 消耗：折线按模型分色看 7 天，表格按任务汇总
+        {{ t('usage.hint') }}
       </span>
     </Teleport>
 
     <section class="panel chart-panel">
-      <h2>每日用量</h2>
+      <h2>{{ t('usage.dailyTitle') }}</h2>
 
       <!-- 一条线都没有时不画空坐标系：那只是个更占地方的空状态 -->
       <LineChart v-if="series.length" :labels="report?.dates ?? []" :series="series" />
-      <el-empty v-else description="最近 7 天还没有用量记录" :image-size="60" />
+      <el-empty v-else :description="t('usage.dailyEmpty')" :image-size="60" />
     </section>
 
     <section class="panel table-panel">
-      <h2>按任务</h2>
+      <h2>{{ t('usage.byTaskTitle') }}</h2>
 
       <!-- 列表自己滚：和页面共用一条滚动条的话，滑到列表底部统计图就被顶出视口了，
            而这两块本来是要对着看的。高度由 ResizeObserver 量出来交给 el-table，
            这样表头固定、只有表体在滚 -->
       <div ref="tableBox" class="table-box">
         <el-table :data="tasks" :height="tableHeight" size="small" stripe>
-          <el-table-column prop="title" label="任务名" min-width="200" show-overflow-tooltip />
+          <el-table-column :label="t('usage.columnTask')" prop="title" min-width="200" show-overflow-tooltip />
 
-          <el-table-column label="模型名" min-width="160" show-overflow-tooltip>
+          <el-table-column :label="t('usage.columnModel')" min-width="160" show-overflow-tooltip>
             <template #default="{ row }">
               <span :class="{ muted: !row.models.length }">{{ modelText(row.models) }}</span>
             </template>
           </el-table-column>
 
-          <el-table-column label="创建时间" width="150">
+          <el-table-column :label="t('usage.columnCreated')" width="150">
             <template #default="{ row }">
               <span class="mono">{{ formatTime(row.created_at, true) }}</span>
             </template>
           </el-table-column>
 
-          <el-table-column label="token 用量" width="120" align="right">
+          <el-table-column :label="t('usage.columnTokens')" width="120" align="right">
             <template #default="{ row }">
               <span class="mono">{{ row.tokens.toLocaleString() }}</span>
             </template>
           </el-table-column>
 
-          <el-table-column label="状态" width="96" align="center">
+          <el-table-column :label="t('usage.columnStatus')" width="96" align="center">
             <template #default="{ row }">
               <el-tag :type="row.archived ? 'info' : 'success'" size="small" effect="plain">
-                {{ row.archived ? '已归档' : '未归档' }}
+                {{ row.archived ? t('usage.archived') : t('usage.unarchived') }}
               </el-tag>
             </template>
           </el-table-column>
 
           <template #empty>
-            <el-empty description="还没有任何用量记录" :image-size="60" />
+            <el-empty :description="t('usage.empty')" :image-size="60" />
           </template>
         </el-table>
       </div>
@@ -182,7 +185,7 @@ onMounted(() => {
 
 .panel h2 {
   margin: 0 0 10px;
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 600;
 }
 </style>

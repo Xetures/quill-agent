@@ -43,11 +43,11 @@ onMounted(async () => {
 }
 
 .app-name {
-  font-size: 15px;
+  font-size: var(--fs-lg);
   font-weight: 600;
 }
 
 .app-desc {
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 </style>

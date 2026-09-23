@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { QuestionFilled } from '@element-plus/icons-vue'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 
 /**
  * 「使用说明」入口，跟在侧边栏品牌区的 LOGO 与应用名后面（见 Sidebar.vue）。
@@ -10,8 +11,46 @@ import { ref } from 'vue'
  *
  * 弹窗里的内容刻意写得很短：它只解决「第一次打开该点哪儿」，完整的设计说明在
  * README-developer.md / ARCHITECTURE.md 里，这里不重复一遍 —— 两处长文迟早会对不上。
+ *
+ * **正文由数据渲染，不写死在模板里**：文案得跟着语言走，六节正文全在 `locales/` 里
+ * （键是 `help.<节>.<段>`）。段内的行内标签（`<code>` / `<strong>` / `<kbd>`）因此也留在
+ * 文案里，用 `v-html` 渲染 —— 这些字符串是我们自己写的，不含任何用户输入。
  */
+const { t } = useI18n()
 const open = ref(false)
+
+/**
+ * 每节由哪几段组成。顺序就是阅读顺序。
+ *
+ * 段名写成字面量而不是循环拼 key：`t()` 的参数在类型上要求是文案表里真实存在的键，
+ * 拼出来的字符串过不了类型检查，也就失去了「文案漏了编译期就报」的好处。
+ */
+const SECTIONS = computed(() => [
+  {
+    title: t('help.model.title'),
+    blocks: [t('help.model.p1'), t('help.model.p2'), t('help.model.p3')],
+  },
+  {
+    title: t('help.mode.title'),
+    blocks: [t('help.mode.p1'), t('help.mode.p2')],
+  },
+  {
+    title: t('help.chat.title'),
+    blocks: [t('help.chat.list')],
+  },
+  {
+    title: t('help.panels.title'),
+    blocks: [t('help.panels.list'), t('help.panels.note')],
+  },
+  {
+    title: t('help.concepts.title'),
+    blocks: [t('help.concepts.list')],
+  },
+  {
+    title: t('help.limit.title'),
+    blocks: [t('help.limit.text')],
+  },
+])
 </script>
 
 <template>
@@ -19,117 +58,19 @@ const open = ref(false)
     class="help"
     text
     :icon="QuestionFilled"
-    title="使用说明"
+    :title="t('help.title')"
     @click="open = true"
   />
 
   <!-- append-to-body 必须留着：弹窗得挂在 body 下。四块玻璃板都有 backdrop-filter，
        它会给板子建一个层叠上下文 —— 弹窗若渲染在板子里，`position: fixed` 就改成
        相对那块板子定位（弹窗跑到板子中间、遮罩也只盖住板子）。 -->
-  <el-dialog v-model="open" title="使用说明" width="640px" append-to-body>
+  <el-dialog v-model="open" :title="t('help.title')" width="640px" append-to-body>
     <div class="doc">
-      <section>
-        <h4>一、先配一个模型</h4>
-        <p>
-          打开左侧「API设置」→「新建连接」：填接口地址（例如
-          <code>https://api.deepseek.com</code>）、协议和 API Key。
-        </p>
-        <p>
-          点「获取模型列表」把该端点的模型拉回来勾选（也可直接手敲），再填「上下文窗口」——
-          任务页右上角的用量仪表盘按它算占比。最后点「测试连接」确认能通。
-        </p>
-        <p>
-          接本地 Ollama 就简单些：协议选 <code>Ollama（本地）</code>，<strong>地址留空</strong>
-          （自动用 <code>http://localhost:11434/v1</code>），Key 也不用填。
-        </p>
-      </section>
-
-      <section>
-        <h4>二、建一个模式</h4>
-        <p>
-          打开「模式」→「添加模式」。一个模式 = 提示词组 + 工具组 + 技能组 + 记忆开关 +
-          偏好模型，是 Agent 的一套完整配置。
-        </p>
-        <p>
-          三个组<strong>都可以不选</strong> —— 那就是纯问答。任务页必须选一个模式：没有模式
-          就没有提示词、没有工具，那已经不是这个 Agent 了。出厂带了三个（全量 Agent /
-          轻量 Agent / 仅问答），想先跑通可以直接用「轻量 Agent」。
-        </p>
-      </section>
-
-      <section>
-        <h4>三、开始对话</h4>
-        <ul>
-          <li>在「任务」页底部输入框里提问，<kbd>Enter</kbd> 发送、<kbd>Shift</kbd> + <kbd>Enter</kbd> 换行。</li>
-          <li>
-            输入框上方那一排是模式 / 模型 / 工作目录 / 附件 —— 它们只管
-            <strong>当前这一轮</strong>；旁边的思考开关是个偏好，关掉之后下次还关着。
-          </li>
-          <li>回答生成中，发送按钮原地变成「停止」，点一下把这一轮中断。</li>
-          <li>
-            左侧「新建任务」开一个新会话；hover 会话右侧的按钮可以导出或归档，归档的在
-            「偏好设置 → 归档」里翻。
-          </li>
-        </ul>
-      </section>
-
-      <section>
-        <h4>四、窗口左右那两条</h4>
-        <ul>
-          <li>
-            <strong>右侧：公共剪贴板</strong> —— 点边缘那个箭头拉出来。消息里复制过的内容会按
-            时间攒在这里，跨页面、跨会话都不丢，可以从这儿再复制回去。
-          </li>
-          <li>
-            <strong>左侧：公共备忘录</strong> —— 同样点箭头拉出，一块自己敲的便签（Markdown）。
-            和剪贴板是一对，方向相反：一个是被动收集的复制记录，一个是主动写的。
-          </li>
-        </ul>
-        <p>这两样只存在这台机器上（浏览器本地存储），不跟着会话走，也不上传。</p>
-      </section>
-
-      <section>
-        <h4>五、几个概念</h4>
-        <ul>
-          <li>
-            <strong>提示词</strong>：六类（身份 / 能力 / 工具策略 / 工作流程 / 输出规范 /
-            约束），正文就是 <code>prompt/</code> 下的 <code>.md</code> 文件 —— 界面里能改，
-            拿外部编辑器直接改文件也行，两边不会各存一份。
-          </li>
-          <li><strong>工具</strong>：模型能调用的动作（读文件、搜索、跑命令、看 git 等），给哪些由模式的工具组决定。</li>
-          <li>
-            <strong>技能</strong>：某类任务该怎么做。平时只在上下文里占一行，模型觉得需要时才读全文
-            （<code>skills/&lt;名字&gt;/SKILL.md</code>）。
-          </li>
-          <li>
-            <strong>MCP</strong>：工具的另一个来源 —— 外部 MCP 服务器，在「偏好设置 → MCP」
-            里连上之后，它提供的工具会和内置工具一起摆到模型面前。
-          </li>
-          <li>
-            <strong>执行权限（沙箱）</strong>：顶栏右侧那个锁 —— 限制命令<strong>够得着什么</strong>，
-            由系统内核执行，越界的写入和联网直接失败。它管的是<strong>整台机器</strong>，
-            和输入框上方那一排（都只管当前这一轮）不是一类东西；和「危险命令先问用户」
-            那套审批也不是一回事（那个管<strong>要不要问</strong>）。
-          </li>
-          <li>
-            <strong>记忆</strong>：跨会话保留的事实与偏好，由模型主动写入，可在「记忆」页查看和关闭。
-            它和上面的<strong>备忘录</strong>不是一回事 —— 记忆是模型记的，备忘录是你自己写的。
-          </li>
-          <li>
-            <strong>联网搜索</strong>：在「偏好设置 → 联网搜索」里挑服务商、填 Key。配好之后
-            模型的 <code>web_search</code> / <code>web_fetch</code> 才用得上。
-          </li>
-          <li><strong>用量</strong>：token 消耗统计，按天看折线、按任务看表格（含已归档）。</li>
-        </ul>
-      </section>
-
-      <section>
-        <h4>六、一个限制</h4>
-        <p>
-          文件工具只能访问<strong>工作目录</strong>以内的位置 —— 它既是工作台，也是安全边界。
-          工作目录在任务页切换，但<strong>只有空会话能改</strong>：聊到一半再换，历史里还留着旧目录下
-          文件的内容，模型会拿它当新目录里同名文件的答案。
-        </p>
+      <section v-for="section in SECTIONS" :key="section.title">
+        <h4>{{ section.title }}</h4>
+        <!-- 每一段自带外层标签（`<p>` / `<ul>`）：段落在文案里，不在这里拼 -->
+        <div v-for="(block, index) in section.blocks" :key="index" class="block" v-html="block" />
       </section>
     </div>
   </el-dialog>
@@ -157,46 +98,53 @@ const open = ref(false)
 
 .doc h4 {
   margin: 0 0 6px;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   font-weight: 600;
 }
 
-.doc p {
-  margin: 0 0 6px;
-  color: var(--text-soft);
-  font-size: 13px;
+.block + .block {
+  margin-top: 6px;
 }
 
-.doc ul {
+/* 正文来自 v-html，**scoped 样式够不到它**（作用域属性加不到 v-html 生成的那些元素
+ * 上）—— 所以这几条必须走 `:deep()`，否则整段正文会退化成没有样式的裸文本。
+ * `.block` 与 `h4` 是模板里的，照旧用普通选择器。 */
+.doc :deep(p) {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: var(--fs-sm);
+}
+
+.doc :deep(ul) {
   margin: 0;
   padding-left: 18px;
   color: var(--text-soft);
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 
-.doc li + li {
+.doc :deep(li + li) {
   margin-top: 4px;
 }
 
-.doc code {
+.doc :deep(code) {
   padding: 1px 5px;
   border-radius: 4px;
   background: var(--bg-soft);
   color: var(--gold);
   font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 
-.doc kbd {
+.doc :deep(kbd) {
   padding: 1px 5px;
   border: 1px solid var(--border);
   border-radius: 4px;
   background: var(--bg-soft);
   font-family: inherit;
-  font-size: 11px;
+  font-size: var(--fs-2xs);
 }
 
-.doc strong {
+.doc :deep(strong) {
   color: var(--text);
 }
 </style>

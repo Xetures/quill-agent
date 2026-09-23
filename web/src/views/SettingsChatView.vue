@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 
 import { api } from '../api/client'
+
+const { t } = useI18n()
 
 /**
  * 单轮对话的开销上限（token 数的字符串形式）。
@@ -54,34 +57,34 @@ async function saveMaxIterations(): Promise<void> {
   <div class="body">
     <div class="block">
       <p class="muted desc">
-        单轮对话最多花多少 token。超过就当场停下 —— 一轮里模型可能被请求很多次，
-        光靠「最多几步」管不住花了多少钱。留空或填 0 表示不限制。
+        {{ t('settingsChat.budgetHint1') }}
+        {{ t('settingsChat.budgetHint2') }}
       </p>
       <div class="field">
         <el-input
           v-model="maxRunTokens"
           class="budget-input"
-          placeholder="例如 200000"
+          :placeholder="t('settingsChat.budgetPlaceholder')"
           @change="saveBudget"
         />
-        <span class="muted unit">token / 轮</span>
+        <span class="muted unit">{{ t('settingsChat.budgetUnit') }}</span>
       </div>
     </div>
 
     <div class="block">
       <p class="muted desc">
-        单轮最多跑几轮工具调用。它是个兜底 —— 真跑飞了，该先撞上的是上面那个预算。
-        留空用默认值（30）。任务的正常轮次差得很远：探路型任务（摸清结构、读文档、
-        确认工具链）十几轮才够，所以留了这个口子。
+        {{ t('settingsChat.roundsHint1') }}
+        {{ t('settingsChat.roundsHint2') }}
+        {{ t('settingsChat.roundsHint3') }}
       </p>
       <div class="field">
         <el-input
           v-model="maxIterations"
           class="budget-input"
-          placeholder="留空用默认（30）"
+          :placeholder="t('settingsChat.roundsPlaceholder')"
           @change="saveMaxIterations"
         />
-        <span class="muted unit">轮 / 单轮对话</span>
+        <span class="muted unit">{{ t('settingsChat.roundsUnit') }}</span>
       </div>
     </div>
   </div>
@@ -101,7 +104,7 @@ async function saveMaxIterations(): Promise<void> {
 
 .desc {
   margin: 0 0 12px;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   line-height: 1.6;
 }
 
@@ -116,6 +119,6 @@ async function saveMaxIterations(): Promise<void> {
 }
 
 .unit {
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 </style>

@@ -6,10 +6,13 @@ import { createApp } from 'vue'
 import 'element-plus/theme-chalk/dark/css-vars.css'
 
 import App from './App.vue'
+import { i18n } from './locales'
 import { router } from './router'
 import './style.css'
-// 只为副作用而 import：主题在模块加载时就会挂到 <html> 上（见 stores/theme.ts）
+// 只为副作用而 import：这两个在模块加载时就会挂到 <html> 上
+// （主题见 stores/theme.ts，字号见 stores/font-size.ts）
 import './stores/theme'
+import './stores/font-size'
 
 /**
  * 懒加载的代码块加载失败时，整页重载一次。
@@ -33,4 +36,4 @@ if (new URLSearchParams(window.location.search).has('desktop')) {
   document.documentElement.classList.add('in-desktop')
 }
 
-createApp(App).use(router).mount('#app')
+createApp(App).use(router).use(i18n).mount('#app')

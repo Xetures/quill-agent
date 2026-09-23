@@ -41,14 +41,16 @@ class ToolSpec(BaseModel):
     Attributes:
         name: 唯一标识，对本地工具来说同时也是函数名。
         description: 何时使用该工具 —— 模型判断的唯一依据。
-        category: 分类，只用于界面筛选，不会发给模型。
+        category: 分类的**稳定 key**（`files` / `shell` / `code`…），只用于界面筛选，不发给
+            模型。**这里不写中文**：它是界面文案，得跟着界面语言走（界面侧的翻译见
+            `web/src/utils/tool-category.ts`）。MCP 工具用 `mcp:<服务器名>` 这种带前缀的形式。
         parameters: JSON Schema 格式的入参定义。
         kind: 实现形态；见 ToolKind。
     """
 
     name: str = Field(min_length=1, description="工具名")
     description: str = Field(min_length=1, description="功能说明")
-    category: str = Field(default="未分类", description="分类")
+    category: str = Field(default="other", description="分类 key（见类文档）")
     parameters: dict[str, Any] = Field(default_factory=dict, description="入参 JSON Schema")
     kind: ToolKind = Field(default=ToolKind.LOCAL, description="实现形态")
 
@@ -81,7 +83,7 @@ class ToolRegistry:
         self,
         *,
         description: str,
-        category: str = "未分类",
+        category: str = "other",
         parameters: dict[str, Any] | None = None,
         required: list[str] | None = None,
     ) -> Callable[[Callable[..., str]], Callable[..., str]]:

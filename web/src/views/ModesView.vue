@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { Plus } from '@element-plus/icons-vue'
 import { computed, onMounted, reactive, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 
 import { api } from '../api/client'
 import type { Mode, ModeList } from '../api/types'
 import { loadOptions, session } from '../stores/session'
 import { errorText } from '../utils/error'
+
+const { t } = useI18n()
 
 // ---------------------------------------------------------------------------
 // 数据
@@ -44,7 +47,7 @@ const visible = computed(() => {
 
 /** 偏好模型下拉：空串表示「不指定」。 */
 const modelOptions = computed(() => [
-  { key: '', label: '（不指定）' },
+  { key: '', label: t('modes.form.modelAny') },
   ...session.models.map((item) => ({ key: item.key, label: item.label })),
 ])
 
@@ -56,12 +59,12 @@ function optionsOf(map: Record<string, string>): { id: string; name: string }[] 
 /** 模式表里显示组名；没选（或组已被删）时显示占位。 */
 function groupName(kind: 'prompt' | 'tool' | 'skill', id: string): string {
   if (!id) return '—'
-  return groups.value[kind][id] ?? '（组已删除）'
+  return groups.value[kind][id] ?? t('modes.groupDeleted')
 }
 
 function modelLabel(key: string): string {
-  if (!key) return '不指定'
-  return session.models.find((item) => item.key === key)?.label ?? '（模型已删除）'
+  if (!key) return t('modes.form.modelUnset')
+  return session.models.find((item) => item.key === key)?.label ?? t('modes.modelDeleted')
 }
 
 async function load(): Promise<void> {
@@ -124,10 +127,10 @@ async function submit(): Promise<void> {
   try {
     if (editingId.value) {
       await api.put(`/modes/${editingId.value}`, payload)
-      ElMessage.success('模式已更新')
+      ElMessage.success(t('modes.updated'))
     } else {
       await api.post('/modes', payload)
-      ElMessage.success('模式已创建')
+      ElMessage.success(t('modes.created'))
     }
     dialogOpen.value = false
     await load()
@@ -142,10 +145,10 @@ async function submit(): Promise<void> {
 
 async function remove(id: string, name: string): Promise<void> {
   try {
-    await ElMessageBox.confirm(`删除模式「${name}」？`, '删除模式', {
+    await ElMessageBox.confirm(t('modes.deleteConfirm', { name }), t('modes.deleteTitle'), {
       type: 'warning',
-      confirmButtonText: '删除',
-      cancelButtonText: '取消',
+      confirmButtonText: t('common.delete'),
+      cancelButtonText: t('common.cancel'),
     })
   } catch {
     return // 用户按了取消
@@ -154,7 +157,7 @@ async function remove(id: string, name: string): Promise<void> {
   await api.del(`/modes/${id}`)
   await load()
   await loadOptions()
-  ElMessage.success('已删除')
+  ElMessage.success(t('common.deleted'))
 }
 
 onMounted(() => {
@@ -165,9 +168,9 @@ onMounted(() => {
 <template>
   <div class="page">
     <Teleport to="#page-head-slot">
-      <h1>模式</h1>
+      <h1>{{ t('modes.title') }}</h1>
       <span class="hint">
-        提示词组 + 工具组 + 技能组 + 记忆开关 + 偏好模型；任务页必选一个
+        {{ t('modes.hint') }}
       </span>
     </Teleport>
 
@@ -176,12 +179,12 @@ onMounted(() => {
         <el-input
           v-model="keyword"
           size="small"
-          placeholder="按模式名或简介过滤"
+          :placeholder="t('modes.filter')"
           clearable
           class="filter"
         />
         <el-button size="small" type="primary" :icon="Plus" @click="openCreate">
-          添加模式
+          {{ t('modes.add') }}
         </el-button>
       </div>
 
@@ -189,23 +192,23 @@ onMounted(() => {
         <el-table :data="visible" size="small" stripe>
           <el-table-column type="index" label="#" width="44" align="center" />
 
-          <el-table-column prop="name" label="模式名" width="180">
+          <el-table-column :label="t('modes.columnName')" prop="name" width="180">
             <template #default="{ row }">
               <span class="mode-name">{{ row.name }}</span>
               <!-- 出厂资源标出来。下面的删除按钮对它是禁用的，不说明的话用户会以为
                    界面坏了（硬约束在存储层，见 quill_agent/defaults.py） -->
-              <el-tag v-if="row.builtin" size="small" effect="plain" class="builtin">内置</el-tag>
+              <el-tag v-if="row.builtin" size="small" effect="plain" class="builtin">{{ t('modes.builtin') }}</el-tag>
             </template>
           </el-table-column>
 
           <el-table-column
             prop="description"
-            label="模式简介"
+            :label="t('modes.columnDesc')"
             min-width="150"
             show-overflow-tooltip
           />
 
-          <el-table-column label="提示词组" width="110" show-overflow-tooltip>
+          <el-table-column :label="t('modes.columnPromptGroup')" width="110" show-overflow-tooltip>
             <template #default="{ row }">
               <span :class="{ muted: !row.prompt_group_id }">
                 {{ groupName('prompt', row.prompt_group_id) }}
@@ -213,7 +216,7 @@ onMounted(() => {
             </template>
           </el-table-column>
 
-          <el-table-column label="工具组" width="110" show-overflow-tooltip>
+          <el-table-column :label="t('modes.columnToolGroup')" width="110" show-overflow-tooltip>
             <template #default="{ row }">
               <span :class="{ muted: !row.tool_group_id }">
                 {{ groupName('tool', row.tool_group_id) }}
@@ -221,7 +224,7 @@ onMounted(() => {
             </template>
           </el-table-column>
 
-          <el-table-column label="技能组" width="110" show-overflow-tooltip>
+          <el-table-column :label="t('modes.columnSkillGroup')" width="110" show-overflow-tooltip>
             <template #default="{ row }">
               <span :class="{ muted: !row.skill_group_id }">
                 {{ groupName('skill', row.skill_group_id) }}
@@ -229,21 +232,21 @@ onMounted(() => {
             </template>
           </el-table-column>
 
-          <el-table-column label="记忆" width="80" align="center">
+          <el-table-column :label="t('modes.columnMemory')" width="80" align="center">
             <template #default="{ row }">
               <el-tag size="small" effect="plain" :type="row.memory_enabled ? 'success' : 'info'">
-                {{ row.memory_enabled ? '启用' : '关闭' }}
+                {{ row.memory_enabled ? t('modes.memoryOn') : t('modes.memoryOff') }}
               </el-tag>
             </template>
           </el-table-column>
 
-          <el-table-column label="偏好模型" width="150" show-overflow-tooltip>
+          <el-table-column :label="t('modes.columnModel')" width="150" show-overflow-tooltip>
             <template #default="{ row }">
               <span :class="{ muted: !row.preferred_model }">{{ modelLabel(row.preferred_model) }}</span>
             </template>
           </el-table-column>
 
-          <el-table-column label="操作" width="130" align="center">
+          <el-table-column :label="t('modes.columnActions')" width="130" align="center">
             <template #default="{ row }">
               <el-button
                 size="small"
@@ -262,7 +265,7 @@ onMounted(() => {
                   )
                 "
               >
-                编辑
+                {{ t('common.edit') }}
               </el-button>
               <!-- 内置模式不给删除入口（编辑照旧留着）。真正的拒绝在存储层 ——
                    这里少了这个判断，用户点了会拿到一句 400，那是失败的体验而不是保护 -->
@@ -273,13 +276,13 @@ onMounted(() => {
                 type="danger"
                 @click="remove(row.id, row.name)"
               >
-                删除
+                {{ t('common.delete') }}
               </el-button>
             </template>
           </el-table-column>
 
           <template #empty>
-            <el-empty description="还没有模式；点右上角「添加模式」创建" :image-size="60" />
+            <el-empty :description="t('modes.empty')" :image-size="60" />
           </template>
         </el-table>
       </el-scrollbar>
@@ -290,32 +293,32 @@ onMounted(() => {
          （详见 HelpButton.vue 里那段说明） -->
     <el-dialog
       v-model="dialogOpen"
-      :title="editingId ? '编辑模式' : '添加模式'"
+      :title="editingId ? t('modes.form.editTitle') : t('modes.form.addTitle')"
       width="520px"
       append-to-body
     >
       <el-form label-width="90px" size="default" @submit.prevent>
-        <el-form-item label="模式名" required>
-          <el-input v-model="form.name" placeholder="例如：标准 Agent" maxlength="30" />
+        <el-form-item :label="t('modes.form.name')" required>
+          <el-input v-model="form.name" :placeholder="t('modes.form.namePlaceholder')" maxlength="30" />
         </el-form-item>
 
-        <el-form-item label="模式简介" required>
+        <el-form-item :label="t('modes.form.desc')" required>
           <el-input
             v-model="form.description"
-            placeholder="一句话说明这个模式用来做什么"
+            :placeholder="t('modes.form.descPlaceholder')"
             maxlength="60"
           />
         </el-form-item>
 
-        <el-divider content-position="left">模式构成</el-divider>
+        <el-divider content-position="left">{{ t('modes.form.composition') }}</el-divider>
 
         <!-- 三个组都可以不选：纯问答模式就是什么都不给 -->
-        <el-form-item label="提示词组">
+        <el-form-item :label="t('modes.form.promptGroup')">
           <el-select
             v-model="form.prompt_group_id"
             clearable
             :placeholder="
-              optionsOf(groups.prompt).length ? '不使用提示词组' : '（还没有提示词组）'
+              optionsOf(groups.prompt).length ? t('modes.form.promptNone') : t('modes.form.promptEmpty')
             "
             class="wide"
           >
@@ -328,11 +331,11 @@ onMounted(() => {
           </el-select>
         </el-form-item>
 
-        <el-form-item label="工具组">
+        <el-form-item :label="t('modes.form.toolGroup')">
           <el-select
             v-model="form.tool_group_id"
             clearable
-            :placeholder="optionsOf(groups.tool).length ? '不给任何工具' : '（还没有工具组）'"
+            :placeholder="optionsOf(groups.tool).length ? t('modes.form.toolNone') : t('modes.form.toolEmpty')"
             class="wide"
           >
             <el-option
@@ -344,11 +347,11 @@ onMounted(() => {
           </el-select>
         </el-form-item>
 
-        <el-form-item label="技能组">
+        <el-form-item :label="t('modes.form.skillGroup')">
           <el-select
             v-model="form.skill_group_id"
             clearable
-            :placeholder="optionsOf(groups.skill).length ? '不给任何技能' : '（还没有技能组）'"
+            :placeholder="optionsOf(groups.skill).length ? t('modes.form.skillNone') : t('modes.form.skillEmpty')"
             class="wide"
           >
             <el-option
@@ -360,15 +363,15 @@ onMounted(() => {
           </el-select>
         </el-form-item>
 
-        <el-form-item label="启用记忆">
+        <el-form-item :label="t('modes.form.memory')">
           <el-switch v-model="form.memory_enabled" />
           <span class="field-hint muted">
-            {{ form.memory_enabled ? '把「关于用户的已知信息」拼进上下文' : '这个模式不记得用户' }}
+            {{ form.memory_enabled ? t('modes.form.memoryOnHint') : t('modes.form.memoryOffHint') }}
           </span>
         </el-form-item>
 
-        <el-form-item label="偏好模型">
-          <el-select v-model="form.preferred_model" placeholder="不指定" class="wide">
+        <el-form-item :label="t('modes.form.preferredModel')">
+          <el-select v-model="form.preferred_model" :placeholder="t('modes.form.modelUnset')" class="wide">
             <el-option
               v-for="item in modelOptions"
               :key="item.key"
@@ -377,15 +380,15 @@ onMounted(() => {
             />
           </el-select>
           <div class="field-hint muted">
-            在任务页切到这个模式时会自动换过去；不指定则保持当前模型
+            {{ t('modes.form.modelHint') }}
           </div>
         </el-form-item>
       </el-form>
 
       <template #footer>
-        <el-button size="small" @click="dialogOpen = false">取消</el-button>
+        <el-button size="small" @click="dialogOpen = false">{{ t('common.cancel') }}</el-button>
         <el-button size="small" type="primary" :disabled="!canSubmit" @click="submit">
-          确认
+          {{ t('common.confirm') }}
         </el-button>
       </template>
     </el-dialog>
@@ -431,7 +434,7 @@ onMounted(() => {
 
 .field-hint {
   margin-left: 10px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.4;
 }
 

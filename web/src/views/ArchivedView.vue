@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 
 import { api } from '../api/client'
 import type { ConversationBrief } from '../api/types'
 import { useTableHeight } from '../composables/useTableHeight'
 import { formatTime } from '../utils/format'
+
+const { t } = useI18n()
 
 const archived = ref<ConversationBrief[]>([])
 
@@ -29,15 +32,15 @@ async function load(): Promise<void> {
 async function restore(id: string): Promise<void> {
   await api.post(`/conversations/${id}/restore`)
   await load()
-  ElMessage.success('已恢复，回到活跃列表')
+  ElMessage.success(t('archiveList.restored'))
 }
 
 async function remove(id: string, title: string): Promise<void> {
   try {
-    await ElMessageBox.confirm(`永久删除「${title}」？不可撤销。`, '删除会话', {
+    await ElMessageBox.confirm(t('archiveList.deleteConfirm', { title }), t('archiveList.deleteTitle'), {
       type: 'warning',
-      confirmButtonText: '删除',
-      cancelButtonText: '取消',
+      confirmButtonText: t('common.delete'),
+      cancelButtonText: t('common.cancel'),
     })
   } catch {
     return
@@ -45,15 +48,18 @@ async function remove(id: string, title: string): Promise<void> {
 
   await api.del(`/conversations/${id}`)
   await load()
-  ElMessage.success('已删除')
+  ElMessage.success(t('common.deleted'))
 }
 
 async function clearAll(): Promise<void> {
   try {
-    await ElMessageBox.confirm(`清空全部 ${archived.value.length} 条归档？不可撤销。`, '清空归档', {
+    await ElMessageBox.confirm(
+      t('archiveList.clearConfirm', { count: archived.value.length }),
+      t('archiveList.clearTitle'),
+      {
       type: 'warning',
-      confirmButtonText: '清空',
-      cancelButtonText: '取消',
+      confirmButtonText: t('memo.clear'),
+      cancelButtonText: t('common.cancel'),
     })
   } catch {
     return
@@ -61,7 +67,7 @@ async function clearAll(): Promise<void> {
 
   await api.del('/conversations')
   await load()
-  ElMessage.success('已清空')
+  ElMessage.success(t('archiveList.cleared'))
 }
 
 // 时间格式化见 utils/format —— 这里传 withYear，列表页带上年份更明确
@@ -78,35 +84,35 @@ onMounted(() => {
 
     <div class="page-head">
       <div class="filters">
-        <el-input v-model="keyword" size="small" placeholder="按标题搜索" clearable class="search" />
+        <el-input v-model="keyword" size="small" :placeholder="t('archiveList.searchPlaceholder')" clearable class="search" />
         <!-- 原先挂在顶栏的那句说明，跟着这一节落到页面里 -->
-        <span class="muted note">时间列是归档时间，恢复后按原消息时间排序</span>
-        <el-button size="small" :disabled="!archived.length" @click="clearAll">清空归档</el-button>
+        <span class="muted note">{{ t('archiveList.timeNote') }}</span>
+        <el-button size="small" :disabled="!archived.length" @click="clearAll">{{ t('archiveList.clearAll') }}</el-button>
       </div>
     </div>
 
     <!-- 表格自己滚：表头固定、只有表体在滚（高度由 useTableHeight 量出） -->
     <div ref="tableBox" class="table-box">
       <el-table :data="visible" :height="tableHeight" size="small" stripe>
-      <el-table-column prop="title" label="标题" />
-      <el-table-column label="归档时间" width="150">
+      <el-table-column :label="t('archiveList.columnTitle')" prop="title" />
+      <el-table-column :label="t('archiveList.columnArchivedAt')" width="150">
         <template #default="{ row }">
           <span class="muted">{{ formatTime(row.updated_at, true) }}</span>
         </template>
       </el-table-column>
 
-      <el-table-column label="操作" width="150" align="center">
+      <el-table-column :label="t('archiveList.columnActions')" width="150" align="center">
         <template #default="{ row }">
-          <el-button size="small" text type="primary" @click="restore(row.id)">恢复</el-button>
+          <el-button size="small" text type="primary" @click="restore(row.id)">{{ t('archiveList.restore') }}</el-button>
           <el-button size="small" text type="danger" @click="remove(row.id, row.title)">
-            删除
+            {{ t('common.delete') }}
           </el-button>
         </template>
       </el-table-column>
       </el-table>
     </div>
 
-    <el-empty v-if="!visible.length" description="没有归档的会话" />
+    <el-empty v-if="!visible.length" :description="t('archiveList.empty')" />
   </div>
 </template>
 
@@ -134,7 +140,7 @@ onMounted(() => {
 }
 
 .note {
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 
 .search {

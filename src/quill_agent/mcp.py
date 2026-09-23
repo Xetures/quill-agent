@@ -377,8 +377,10 @@ def register_tools(target: ToolRegistry) -> list[str]:
                     ToolSpec(
                         name=tool.local_name,
                         description=tool.description,
-                        # 分类带服务器名：界面上按分类筛选时能一眼看出这批工具来自谁
-                        category=f"MCP · {connection.server.name}",
+                        # 分类带服务器名：界面上按分类筛选时能一眼看出这批工具来自谁。
+                        # 写成 `mcp:<服务器名>` 而不是中文文案 —— 分类是界面文案，
+                        # 得跟着语言走（见 tools/base.py 里 ToolSpec.category 的说明）
+                        category=f"mcp:{connection.server.name}",
                         parameters=tool.parameters,
                         kind=ToolKind.MCP,
                     ),

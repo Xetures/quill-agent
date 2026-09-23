@@ -512,7 +512,7 @@ def _points_to_same(src: Path, raw: str) -> bool:
         "当你不确定某个目录里有什么、或想确认某个文件是否存在时使用。"
         "只列一层，不会递归展开。"
     ),
-    category="文件",
+    category="files",
     parameters={
         "type": "object",
         "properties": {
@@ -559,7 +559,7 @@ def list_dir(path: str = ".") -> str:
         "读取文本文件的内容，返回带行号的文本。"
         "文件较长时只返回其中一段，返回值里会说明总行数和如何继续读取后面的部分。"
     ),
-    category="文件",
+    category="files",
     parameters={
         "type": "object",
         "properties": {
@@ -636,7 +636,7 @@ def read_file(path: str, offset: int = 1, limit: int = DEFAULT_READ_LINES) -> st
         "写入文件：覆盖原有内容；文件或父目录不存在时自动创建。"
         "如果只是修改已有文件的某一部分，优先使用 edit_file。"
     ),
-    category="文件",
+    category="files",
     parameters={
         "type": "object",
         "properties": {
@@ -681,7 +681,7 @@ def write_file(path: str, content: str) -> str:
         "old_string 必须与文件中的内容完全一致（含缩进和空行），且在文件中只出现一次；"
         "若它出现多次，请多带几行上下文让它唯一。"
     ),
-    category="文件",
+    category="files",
     parameters={
         "type": "object",
         "properties": {
@@ -838,7 +838,7 @@ def _unsafe_pattern(pattern: str) -> bool:
         "找「某个函数在哪定义」「哪个文件引用了这个配置」时用它，"
         "比逐个文件读一遍快得多。"
     ),
-    category="文件",
+    category="files",
     parameters={
         "type": "object",
         "properties": {
@@ -936,7 +936,7 @@ def search_content(
         "想知道「项目里都有哪些这类文件」时用它；"
         "只想看某个目录下有什么，用 list_dir 更合适。"
     ),
-    category="文件",
+    category="files",
     parameters={
         "type": "object",
         "properties": {
@@ -997,7 +997,7 @@ def search_files(
         "创建一个目录，父目录不存在时一并创建。已经存在时不算错，会告诉你它本来就在。"
         "要写一个新文件不需要先建目录 —— write_file 会自己建父目录。"
     ),
-    category="文件",
+    category="files",
     parameters={
         "type": "object",
         "properties": {
@@ -1032,7 +1032,7 @@ def make_dir(path: str) -> str:
         "目标路径必须还不存在 —— 本工具不覆盖已有内容。"
         "「重命名」就是移到同一目录下的新名字。"
     ),
-    category="文件",
+    category="files",
     parameters={
         "type": "object",
         "properties": {
@@ -1085,7 +1085,7 @@ def move_file(source: str, destination: str) -> str:
         "目标路径必须还不存在 —— 本工具不覆盖已有内容。"
         "复制目录时会连同里面的内容一起复制。"
     ),
-    category="文件",
+    category="files",
     parameters={
         "type": "object",
         "properties": {
@@ -1140,7 +1140,7 @@ def copy_file(source: str, destination: str) -> str:
         "删除一个文件，或一个**空**目录。确认它确实不再需要时才使用 —— 这是不可撤销的操作。"
         "目录非空时会拒绝，需要先清掉里面的内容。"
     ),
-    category="文件",
+    category="files",
     parameters={
         "type": "object",
         "properties": {

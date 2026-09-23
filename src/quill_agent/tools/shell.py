@@ -393,7 +393,7 @@ def _terminate_tree(process: subprocess.Popen) -> None:  # pragma: no cover - �
         "被拒绝时不要换个写法重试 —— 那是在规避用户的决定。"
         "输出过长会被截断，不要用它读大文件（那用 read_file）。"
     ),
-    category="执行",
+    category="shell",
     parameters={
         "type": "object",
         "properties": {
@@ -609,7 +609,7 @@ def _reap_dead_locked() -> None:
         "**它不受工作目录限制**（除非启用了沙箱），且进程会活到被显式停掉为止，"
         "所以危险操作同样要先向用户确认。"
     ),
-    category="执行",
+    category="shell",
     parameters={
         "type": "object",
         "properties": {
@@ -691,7 +691,7 @@ def start_process(command: str) -> str:
         "进程若已退出，会在这里一并说明退出码 —— 这也是确认「它是不是崩了」的方式。"
         "取不到新输出时返回空提示，不是错误。"
     ),
-    category="执行",
+    category="shell",
     parameters={
         "type": "object",
         "properties": {
@@ -723,7 +723,7 @@ def process_output(process_id: str) -> str:
         "改了后端代码要重启、或确认它崩了要再起一个时用它。"
         "**它连带把派生的子进程一起清掉**，不会留下占着端口的孤儿。"
     ),
-    category="执行",
+    category="shell",
     parameters={
         "type": "object",
         "properties": {
@@ -760,7 +760,7 @@ def stop_process(process_id: str) -> str:
         "列出当前所有后台进程（进程号、状态、命令）。"
         "忘了进程号、或不确定还剩哪些在跑时用它 —— 别去猜。"
     ),
-    category="执行",
+    category="shell",
 )
 def list_processes() -> str:
     """列出当前的后台进程。"""

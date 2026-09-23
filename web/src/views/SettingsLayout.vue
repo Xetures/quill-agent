@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
 
 /**
@@ -11,24 +13,32 @@ import { useRoute } from 'vue-router'
  * 各节的正文是子路由（见 router.ts），本页只管导航和外壳。
  */
 const route = useRoute()
+const { t } = useI18n()
 
-/** 二级导航项。顺序就是阅读顺序：先看外观，再看对话，接着外部服务，最后是归档与版本。 */
-const SECTIONS = [
-  { to: '/settings/theme', label: '主题' },
-  { to: '/settings/chat', label: '对话' },
-  { to: '/settings/search', label: '联网搜索' },
-  { to: '/settings/mcp', label: 'MCP' },
-  // 归档从侧栏一级项挪到这里：它是「回头翻旧账」，和主题、对话这些设置归在一处
-  { to: '/settings/archived', label: '归档' },
-  { to: '/settings/about', label: '关于' },
-]
+/**
+ * 二级导航项。顺序就是阅读顺序：先看外观，再看对话，接着外部服务，最后是归档与版本。
+ *
+ * 第一节的地址仍叫 `theme`：那一页最早只管配色，后来把字号与语言也收了进来
+ * （见 SettingsThemeView）—— 改名要动路由与既有链接，收益只是名字好看，所以留着。
+ *
+ * computed 而不是模块级常量：文案来自 `t()`，语言一换得跟着重算。
+ */
+const SECTIONS = computed(() => [
+  { to: '/settings/theme', label: t('settings.sections.display') },
+  { to: '/settings/chat', label: t('settings.sections.chat') },
+  { to: '/settings/search', label: t('settings.sections.search') },
+  { to: '/settings/mcp', label: t('settings.sections.mcp') },
+  // 归档从侧栏一级项挪到这里：它是「回头翻旧账」，和显示、对话这些设置归在一处
+  { to: '/settings/archived', label: t('settings.sections.archived') },
+  { to: '/settings/about', label: t('settings.sections.about') },
+])
 </script>
 
 <template>
   <div class="page settings-shell">
     <Teleport to="#page-head-slot">
-      <h1>偏好设置</h1>
-      <span class="hint">界面外观、对话预算与外部服务的配置</span>
+      <h1>{{ t('settings.title') }}</h1>
+      <span class="hint">{{ t('settings.hint') }}</span>
     </Teleport>
 
     <!-- 二级导航。`.page` 的内容就从顶边栏下面开始，所以它在视觉上紧贴顶边栏 -->
@@ -88,7 +98,7 @@ const SECTIONS = [
   margin-bottom: -1px;
   border-bottom: 2px solid transparent;
   color: var(--text-soft);
-  font-size: 13px;
+  font-size: var(--fs-sm);
   text-decoration: none;
   transition:
     color 0.15s ease,

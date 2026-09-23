@@ -46,6 +46,9 @@ desktop:            ## 打包 macOS 桌面 App（产物 release/Quill.app）
 desktop-deps:       ## 只装桌面壳依赖（不想动其它依赖时用它）
 	uv sync --extra desktop
 
+i18n:               ## 看界面文案的 i18n 迁移进度（还有多少中文没接进来）
+	uv run python scripts/i18n_progress.py
+
 cli:                ## 运行命令行入口
 	uv run quill -v
 

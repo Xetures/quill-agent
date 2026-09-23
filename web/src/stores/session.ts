@@ -23,6 +23,7 @@ import type {
   TodoItem,
   WorkDirInfo,
 } from '../api/types'
+import { adoptStoredLocale, PREF_LANGUAGE } from '../locales'
 import { errorText } from '../utils/error'
 
 export const session = reactive({
@@ -420,6 +421,10 @@ export async function loadPreferences(): Promise<void> {
   session.modelKey = prefs[PREF_MODEL] ?? ''
   // 只有明确写了 "0" 才算关 —— 缺省、空串、手滑写坏的值都当开
   session.thinking = prefs[PREF_THINKING] !== '0'
+  // 语言：只在本地没存过时才采纳后端那份（换了浏览器、清了站点数据的情况）。
+  // 本地有值就听本地的 —— 那是更新的一次选择
+  adoptStoredLocale(prefs[PREF_LANGUAGE])
+
   // 这里不解析模式：它是按会话记的，而此刻还不知道会落到哪个会话。
   // `loadMessages` 会负责把它取回来
 }

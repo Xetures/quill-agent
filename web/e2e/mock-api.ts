@@ -88,6 +88,17 @@ export async function mockApi(page: Page, options: MockOptions = {}): Promise<vo
     if (path === '/api/models') {
       return route.fulfill({ json: { options: [modelOption], configs: [modelConfig] } })
     }
+    // MCP 服务器：MCP 页与工具组弹窗都要。**同样必须给**（理由见下面 providers 那条）
+    if (path === '/api/mcp/servers') {
+      return route.fulfill({ json: { servers: [] } })
+    }
+    // 服务商清单：模型页的「服务商」下拉从这儿取。**必须给**：不给的话这个字段是
+    // undefined，而页面里到处在 `.length` 它 —— 弹窗一渲染就抛
+    // 「Cannot read properties of undefined (reading 'length')」，
+    // 表现是「点了新建连接没反应」（真实前端和后端都不会这样，是 mock 的缺口）
+    if (path === '/api/providers') {
+      return route.fulfill({ json: { providers: [] } })
+    }
     if (path === '/api/protocols') {
       return route.fulfill({
         json: {

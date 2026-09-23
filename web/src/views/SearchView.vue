@@ -1,14 +1,17 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 
 import { api } from '../api/client'
 import type { SearchHit, SearchInfo, SearchTestResult } from '../api/types'
 import { errorText } from '../utils/error'
 
+const { t } = useI18n()
+
 // ElMessage 由 unplugin-auto-import 自动引入，所以这里看不到它的 import
 
 /** 测试用的默认搜索词。挑一个中文的：中文结果好不好，是博查和 Tavily 的主要差别。 */
-const DEFAULT_TEST_QUERY = '今天的科技新闻'
+const DEFAULT_TEST_QUERY = t('search.defaultQuery')
 
 const info = ref<SearchInfo | null>(null)
 const saving = ref(false)
@@ -83,7 +86,7 @@ async function save(): Promise<void> {
     await api.put('/search', payload())
     // 重新拉一次：上面的「已配置」标记读的是已保存的那份配置
     await load()
-    ElMessage.success('已保存')
+    ElMessage.success(t('search.saved'))
   } catch (exc) {
     ElMessage.error(errorText(exc))
   } finally {
@@ -108,7 +111,7 @@ async function test(): Promise<void> {
     testResult.value = result
 
     if (result.ok) ElMessage.success(result.message)
-    else ElMessage.error(result.message || '测试失败')
+    else ElMessage.error(result.message || t('search.testFailed'))
   } catch (exc) {
     ElMessage.error(errorText(exc))
   } finally {
@@ -126,13 +129,13 @@ onMounted(() => {
        所以这里不带 `.page` 外壳（套两层 .page 会多出一层滚动区） -->
   <div>
     <section class="group">
-      <h2>搜索服务</h2>
+      <h2>{{ t('search.serviceTitle') }}</h2>
       <p class="muted desc">
-        搜索本身不自己实现，交给第三方服务。两个都填好之后随时切换，各自的 Key 都会留着。
+        {{ t('search.serviceHint') }}
       </p>
 
       <el-form :model="form" label-width="110px" @submit.prevent>
-        <el-form-item label="服务">
+        <el-form-item :label="t('search.backend')">
           <el-select v-model="form.backend" class="backend-select">
             <el-option
               v-for="item in backends"
@@ -142,54 +145,54 @@ onMounted(() => {
             />
           </el-select>
           <el-tag v-if="savedHas(form.backend)" size="small" type="success" class="state">
-            已配置
+            {{ t('search.configured') }}
           </el-tag>
-          <el-tag v-else size="small" type="info" class="state">未配置</el-tag>
+          <el-tag v-else size="small" type="info" class="state">{{ t('search.notConfigured') }}</el-tag>
         </el-form-item>
 
         <el-form-item label="API Key">
-          <el-input v-model="apiKey" type="password" show-password placeholder="粘贴该服务的 Key" />
+          <el-input v-model="apiKey" type="password" show-password :placeholder="t('search.keyPlaceholder')" />
           <p v-if="current" class="note muted">
-            {{ current.label }} 的 Key：{{ current.hint }}。
-            <strong>Key 按服务分开存</strong>，切换服务不会把另一个的 Key 抹掉。
+            {{ t('search.keyHint', { label: current.label, hint: current.hint }) }}
+            <strong>{{ t('search.keysSeparate') }}</strong>{{ t('search.keysSwitchHint') }}
           </p>
         </el-form-item>
 
-        <el-form-item label="接口地址">
+        <el-form-item :label="t('search.endpoint')">
           <el-input v-model="form.base_url" :placeholder="current?.endpoint ?? ''" />
           <p class="note muted">
-            留空就用服务默认的地址。只有走自建服务或中转站时才需要改。
+            {{ t('search.endpointHint') }}
           </p>
         </el-form-item>
 
-        <el-form-item label="默认条数">
+        <el-form-item :label="t('search.count')">
           <el-input-number v-model="form.max_results" :min="limits.min" :max="limits.max" />
-          <span class="inline-hint muted">模型没指定条数时用这个值</span>
+          <span class="inline-hint muted">{{ t('search.countHint') }}</span>
         </el-form-item>
 
         <el-form-item label=" ">
           <el-button type="primary" :loading="saving" :disabled="!form.backend" @click="save">
-            保存
+            {{ t('common.save') }}
           </el-button>
         </el-form-item>
       </el-form>
     </section>
 
     <section class="group">
-      <h2>测试</h2>
+      <h2>{{ t('search.testTitle') }}</h2>
       <p class="muted desc">
-        用上面填的配置真搜一次 ——
-        <strong>不需要先保存</strong>，改完直接测，通了再存。
+        {{ t('search.testLead') }}
+        <strong>{{ t('search.noSaveNeeded') }}</strong>{{ t('search.testDirectHint') }}
       </p>
 
       <div class="test-bar">
         <el-input
           v-model="testQuery"
-          placeholder="搜索词"
+          :placeholder="t('search.queryPlaceholder')"
           class="query-input"
           @keyup.enter="test"
         />
-        <el-button :loading="testing" :disabled="!form.backend" @click="test">测试</el-button>
+        <el-button :loading="testing" :disabled="!form.backend" @click="test">{{ t('search.test') }}</el-button>
       </div>
 
       <template v-if="testResult">
@@ -198,7 +201,7 @@ onMounted(() => {
         <!-- 搜到 0 条也是「通了」（Key 和网络没问题），所以这里单独说一句，
              免得看到空列表以为又失败了 -->
         <p v-if="testResult.ok && !testResult.hits.length" class="note muted">
-          搜到 0 条只说明这个词没结果，Key 和网络是通的。
+          {{ t('search.zeroResult') }}
         </p>
 
         <ul class="hits">
@@ -214,21 +217,21 @@ onMounted(() => {
     </section>
 
     <section class="group">
-      <h2>怎么用上</h2>
+      <h2>{{ t('search.usageTitle') }}</h2>
       <p class="muted desc">
-        配好之后，到
-        <RouterLink to="/tools">工具</RouterLink>
-        页把
+        {{ t('search.usageLead') }}
+        <RouterLink to="/tools">{{ t('search.toolsPage') }}</RouterLink>
+        {{ t('search.usageAfterLink') }}
         <code>web_search</code>
-        和
+        {{ t('search.usageAnd') }}
         <code>web_fetch</code>
-        加进要让 Agent 用的那个工具组 —— 工具不是配好就默认全给，
-        给哪些由工具组决定。
+        {{ t('search.usageBody') }}
+        {{ t('search.usageTail') }}
       </p>
       <p class="note muted">
-        <code>web_search</code> 只返回标题、地址和摘要；
-        <code>web_fetch</code> 才去读正文，而且必须带上「要从这一页拿什么」——
-        整页正文动辄几千字，全塞进上下文就把它本来该干活的窗口占满了。
+        <code>web_search</code> {{ t('search.webSearchNote') }}
+        <code>web_fetch</code> {{ t('search.webFetchNote') }}
+        {{ t('search.fullBodyNote') }}
       </p>
     </section>
   </div>
@@ -249,13 +252,13 @@ onMounted(() => {
 
 h2 {
   margin: 0 0 4px;
-  font-size: 15px;
+  font-size: var(--fs-lg);
   font-weight: 600;
 }
 
 .desc {
   margin: 0 0 14px;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   line-height: 1.6;
 }
 
@@ -265,7 +268,7 @@ h2 {
   border-radius: 3px;
   background: var(--bg-soft);
   font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 
 .backend-select {
@@ -281,14 +284,14 @@ h2 {
 
 .inline-hint {
   margin-left: 10px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 
 /* 字段下方的说明文字：比正文小一号，别和控件挤在一起 */
 .note {
   width: 100%;
   margin: 6px 0 0;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.5;
 }
 
@@ -307,7 +310,7 @@ h2 {
 
 .result-msg {
   margin: 0 0 10px;
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 
 .result-msg.ok {
@@ -330,7 +333,7 @@ h2 {
 }
 
 .hit-title {
-  font-size: 13px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   text-decoration: none;
 }
@@ -341,14 +344,14 @@ h2 {
 
 .hit-url {
   margin-top: 2px;
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   color: var(--text-soft);
   word-break: break-all;
 }
 
 .hit-snippet {
   margin-top: 4px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.6;
 }
 </style>

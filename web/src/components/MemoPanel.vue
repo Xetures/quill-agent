@@ -2,8 +2,11 @@
 import { ArrowLeft, ArrowRight, Close, Delete } from '@element-plus/icons-vue'
 import { ElMessageBox } from 'element-plus'
 import { defineAsyncComponent, onBeforeUnmount, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 
 import { clearMemo, memo, persistMemo } from '../stores/memo'
+
+const { t } = useI18n()
 
 /**
  * 公共备忘录：从**左侧**拉出的一整块便签，和右侧的公共剪贴板对称。
@@ -50,9 +53,9 @@ function close(): void {
 
 async function onClear(): Promise<void> {
   try {
-    await ElMessageBox.confirm('清空备忘录？内容不会保留。', '清空备忘录', {
-      confirmButtonText: '清空',
-      cancelButtonText: '取消',
+    await ElMessageBox.confirm(t('memo.clearConfirm'), t('memo.clearTitle'), {
+      confirmButtonText: t('memo.clear'),
+      cancelButtonText: t('common.cancel'),
       type: 'warning',
     })
   } catch {
@@ -71,7 +74,7 @@ onBeforeUnmount(flush)
   <button
     class="memo-zone"
     :class="{ 'is-open': memo.open }"
-    :title="memo.open ? '收起公共备忘录' : '公共备忘录'"
+    :title="memo.open ? t('memo.collapse') : t('memo.title')"
     @click="memo.open ? close() : (memo.open = true)"
   >
     <el-icon>
@@ -82,7 +85,7 @@ onBeforeUnmount(flush)
   <Transition name="memo-slide">
     <aside v-if="memo.open" class="memo-panel">
       <header class="memo-head">
-        <span class="title">公共备忘录</span>
+        <span class="title">{{ t('memo.title') }}</span>
         <el-button
           text
           size="small"
@@ -91,15 +94,15 @@ onBeforeUnmount(flush)
           :disabled="!memo.text"
           @click="onClear"
         >
-          清空
+          {{ t('memo.clear') }}
         </el-button>
-        <el-button text size="small" :icon="Close" title="收起" @click="close" />
+        <el-button text size="small" :icon="Close" :title="t('memo.collapseShort')" @click="close" />
       </header>
 
       <div class="memo-body">
         <MarkdownEditor
           :model-value="memo.text"
-          placeholder="随手记点什么，支持 Markdown。内容存在本机，刷新不丢。"
+          :placeholder="t('memo.placeholder')"
           min-height="70vh"
           @update:model-value="onInput"
         />
@@ -127,7 +130,7 @@ onBeforeUnmount(flush)
   background: transparent;
   border: none;
   color: var(--text-faint);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   cursor: pointer;
   transition: color 0.15s ease;
 }
@@ -208,7 +211,7 @@ onBeforeUnmount(flush)
 }
 
 .title {
-  font-size: 13px;
+  font-size: var(--fs-sm);
   font-weight: 600;
 }
 

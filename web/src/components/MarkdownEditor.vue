@@ -109,7 +109,7 @@ watch(
   min-height: var(--editor-min-height);
   background: var(--bg-card);
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 
 .editor :deep(.cm-editor.cm-focused) {

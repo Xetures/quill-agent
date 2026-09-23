@@ -335,7 +335,7 @@ function shortLabel(label: string): string {
   flex-wrap: wrap;
   gap: 6px 16px;
   margin-bottom: 4px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text-soft);
 }
 
@@ -359,7 +359,7 @@ function shortLabel(label: string): string {
 
 .axis {
   fill: var(--text-faint);
-  font-size: 11px;
+  font-size: var(--fs-2xs);
 }
 
 .line {
@@ -385,7 +385,7 @@ function shortLabel(label: string): string {
   border-radius: 6px;
   background: var(--bg-card);
   box-shadow: var(--shadow);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   white-space: nowrap;
   pointer-events: none;
 }

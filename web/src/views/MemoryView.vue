@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 
 import { api } from '../api/client'
 import type { MemoryItem } from '../api/types'
 import { useTableHeight } from '../composables/useTableHeight'
 import { errorText } from '../utils/error'
 import { formatIsoTime } from '../utils/format'
+
+const { t } = useI18n()
 
 const items = ref<MemoryItem[]>([])
 
@@ -31,7 +34,7 @@ async function add(): Promise<void> {
     await api.post('/memory', { text })
     draft.value = ''
     await load()
-    ElMessage.success('已添加')
+    ElMessage.success(t('memory.added'))
   } catch (exc) {
     // 后端的「重复了 / 太长了 / 已满了」原样弹出来 —— 那些文案本来就是给人看的
     ElMessage.error(errorText(exc))
@@ -47,15 +50,15 @@ async function toggle(id: string, enabled: boolean): Promise<void> {
 async function remove(id: string): Promise<void> {
   await api.del(`/memory/${id}`)
   await load()
-  ElMessage.success('已删除')
+  ElMessage.success(t('common.deleted'))
 }
 
 async function clearAll(): Promise<void> {
   try {
-    await ElMessageBox.confirm(`清空全部 ${items.value.length} 条记忆？此操作不可撤销。`, '确认', {
+    await ElMessageBox.confirm(t('memory.clearConfirm', { count: items.value.length }), t('memory.clearTitle'), {
       type: 'warning',
-      confirmButtonText: '清空',
-      cancelButtonText: '取消',
+      confirmButtonText: t('memory.clearAll'),
+      cancelButtonText: t('common.cancel'),
     })
   } catch {
     return // 用户取消
@@ -63,7 +66,7 @@ async function clearAll(): Promise<void> {
 
   await api.del('/memory')
   await load()
-  ElMessage.success('已清空')
+  ElMessage.success(t('memory.cleared'))
 }
 
 onMounted(() => {
@@ -74,9 +77,9 @@ onMounted(() => {
 <template>
   <div class="page">
     <Teleport to="#page-head-slot">
-      <h1>记忆</h1>
+      <h1>{{ t('memory.title') }}</h1>
       <span class="hint">
-        跨会话保留的长期事实，启用中的每轮都会带上 —— 当前 {{ enabledCount }} / {{ max }} 条
+        {{ t('memory.hint', { enabled: enabledCount, max }) }}
       </span>
     </Teleport>
 
@@ -88,32 +91,32 @@ onMounted(() => {
         type="textarea"
         :rows="3"
         resize="none"
-        placeholder="手动加一条，例如：偏好简洁回答，不要啰嗦的总结"
+        :placeholder="t('memory.addPlaceholder')"
       />
       <!-- 用默认尺寸（不是 small）：输入框是三行高，按钮再小一档就显得像两个附属品 -->
-      <el-button type="primary" :disabled="!draft.trim()" @click="add">添加</el-button>
-      <el-button :disabled="!items.length" @click="clearAll">清空</el-button>
+      <el-button type="primary" :disabled="!draft.trim()" @click="add">{{ t('memory.add') }}</el-button>
+      <el-button :disabled="!items.length" @click="clearAll">{{ t('memory.clearAll') }}</el-button>
     </div>
 
     <!-- 表格自己滚：表头固定、只有表体在滚（高度由 useTableHeight 量出） -->
     <div ref="tableBox" class="table-box">
       <el-table :data="items" :height="tableHeight" size="small" stripe>
-      <el-table-column prop="text" label="内容" />
-      <el-table-column label="记录时间" width="120">
+      <el-table-column :label="t('memory.columnText')" prop="text" />
+      <el-table-column :label="t('memory.columnTime')" width="120">
         <template #default="{ row }">
           <span class="muted">{{ formatIsoTime(row.created_at) }}</span>
         </template>
       </el-table-column>
 
-      <el-table-column label="启用" width="80" align="center">
+      <el-table-column :label="t('memory.columnEnabled')" width="80" align="center">
         <template #default="{ row }">
           <el-switch v-model="row.enabled" @change="toggle(row.id, row.enabled)" />
         </template>
       </el-table-column>
 
-      <el-table-column label="操作" width="80" align="center">
+      <el-table-column :label="t('memory.columnActions')" width="80" align="center">
         <template #default="{ row }">
-          <el-button size="small" text type="danger" @click="remove(row.id)">删除</el-button>
+          <el-button size="small" text type="danger" @click="remove(row.id)">{{ t('common.delete') }}</el-button>
         </template>
       </el-table-column>
       </el-table>
@@ -121,7 +124,7 @@ onMounted(() => {
 
     <el-empty
       v-if="!items.length"
-      description="还没有记忆。可以让模型在对话里「记住这件事」，也可以在上面手动加"
+      :description="t('memory.empty')"
     />
   </div>
 </template>

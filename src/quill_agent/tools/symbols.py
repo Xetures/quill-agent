@@ -119,7 +119,7 @@ def _resolve(path: str) -> tuple[Path | None, str]:
         "看清结构之后再决定读哪一段。"
         "只认 Python / JS / TS / Go / Rust / Java 这几类文件。"
     ),
-    category="代码",
+    category="code",
     parameters={
         "properties": {
             "path": {"type": "string", "description": "文件或目录，默认当前工作目录。"}
@@ -179,7 +179,7 @@ def outline(path: str = ".") -> str:
         "想知道「这个函数在哪儿定义的、还有谁在用它」时用它 —— 比 search_content 准，"
         "因为它只认定义行的写法，不会把每一处出现都列出来。"
     ),
-    category="代码",
+    category="code",
     parameters={
         "properties": {
             "symbol": {"type": "string", "description": "要搜的符号名，区分大小写。"},

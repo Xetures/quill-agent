@@ -1,16 +1,24 @@
 <script setup lang="ts">
+import en from 'element-plus/es/locale/lang/en'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 
 import ClipboardPanel from './components/ClipboardPanel.vue'
 import MemoPanel from './components/MemoPanel.vue'
 import SandboxButton from './components/SandboxButton.vue'
 import Sidebar from './components/Sidebar.vue'
 import { bootstrap } from './stores/session'
+import { locale } from './locales'
 import { errorText } from './utils/error'
 
 /** 启动阶段的错误（后端没起来、接口报错）单独显示，不往各页面里塞。 */
 const error = ref('')
+
+/**
+ * Element Plus 自己的文案（表格空态、确认框按钮、分页）跟着界面语言走。
+ * 它和我们自己的文案是两套来源：前者由 EP 语言包提供，后者在 `locales/` 里。
+ */
+const epLocale = computed(() => (locale.value === 'en-US' ? en : zhCn))
 
 onMounted(async () => {
   try {
@@ -22,8 +30,8 @@ onMounted(async () => {
 </script>
 
 <template>
-  <!-- 中文语言包：不配的话表格空态、确认框这些会显示英文 -->
-  <el-config-provider :locale="zhCn">
+  <!-- EP 的语言包：不配的话表格空态、确认框这些会显示英文 -->
+  <el-config-provider :locale="epLocale">
     <div class="shell">
       <Sidebar />
 
@@ -221,14 +229,14 @@ onMounted(async () => {
 .topbar h1 {
   flex-shrink: 0;
   margin: 0;
-  font-size: 16px;
+  font-size: var(--fs-xl);
   font-weight: 600;
 }
 
 .topbar .hint {
   min-width: 0;
   overflow: hidden;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text-soft);
   text-overflow: ellipsis;
   white-space: nowrap;

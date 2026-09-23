@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { Plus } from '@element-plus/icons-vue'
 import { computed, defineAsyncComponent, onMounted, reactive, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 
 import { api } from '../api/client'
 import type { SkillGroup, SkillItem } from '../api/types'
 import { errorText } from '../utils/error'
+
+const { t } = useI18n()
 
 // 编辑器带着 CodeMirror（几百 KB），而只有真正打开弹窗时才需要它 ——
 // 异步加载能让这两个页面本身的包保持干净
@@ -118,14 +121,14 @@ async function submitSkill(): Promise<void> {
         description: skillForm.description.trim(),
         content: skillForm.content,
       })
-      ElMessage.success('已保存')
+      ElMessage.success(t('skills.saved'))
     } else {
       await api.post('/skills', {
         name: skillForm.name.trim(),
         description: skillForm.description.trim(),
         content: skillForm.content,
       })
-      ElMessage.success('已创建')
+      ElMessage.success(t('skills.created'))
     }
 
     skillDialogOpen.value = false
@@ -182,10 +185,10 @@ async function submit(): Promise<void> {
   try {
     if (editingId.value) {
       await api.put(`/skill-groups/${editingId.value}`, payload)
-      ElMessage.success('技能组已更新')
+      ElMessage.success(t('skills.groupUpdated'))
     } else {
       await api.post('/skill-groups', payload)
-      ElMessage.success('技能组已创建')
+      ElMessage.success(t('skills.groupCreated'))
     }
     dialogOpen.value = false
     await load()
@@ -199,10 +202,10 @@ async function submit(): Promise<void> {
 // 直接传整个对象过不了类型检查（openEdit 同理）
 async function remove(id: string, name: string): Promise<void> {
   try {
-    await ElMessageBox.confirm(`删除技能组「${name}」？`, '删除技能组', {
+    await ElMessageBox.confirm(t('skills.deleteGroupConfirm', { name }), t('skills.deleteGroupTitle'), {
       type: 'warning',
-      confirmButtonText: '删除',
-      cancelButtonText: '取消',
+      confirmButtonText: t('common.delete'),
+      cancelButtonText: t('common.cancel'),
     })
   } catch {
     return // 用户按了取消
@@ -210,7 +213,7 @@ async function remove(id: string, name: string): Promise<void> {
 
   await api.del(`/skill-groups/${id}`)
   await load()
-  ElMessage.success('已删除')
+  ElMessage.success(t('common.deleted'))
 }
 
 onMounted(() => {
@@ -221,50 +224,48 @@ onMounted(() => {
 <template>
   <div class="page">
     <Teleport to="#page-head-slot">
-      <h1>技能</h1>
-      <span class="hint">
-        正文存在 <code class="mono">{{ dir }}/&lt;技能名&gt;/SKILL.md</code>；技能组供模式引用
-      </span>
+      <h1>{{ t('skills.title') }}</h1>
+      <span class="hint" v-html="t('skills.intro', { dir })" />
     </Teleport>
 
     <!-- 上半：技能组 -->
     <section class="half">
       <div class="half-head">
-        <h2>技能组</h2>
+        <h2>{{ t('skills.groupTitle') }}</h2>
         <el-input
           v-model="groupKeyword"
           size="small"
-          placeholder="按名称或简介过滤"
+          :placeholder="t('skills.groupFilter')"
           clearable
           class="group-filter"
         />
-        <el-button size="small" type="primary" :icon="Plus" @click="openCreate">新建技能组</el-button>
+        <el-button size="small" type="primary" :icon="Plus" @click="openCreate">{{ t('skills.groupCreate') }}</el-button>
       </div>
 
       <el-scrollbar class="half-body">
         <el-table :data="visibleGroups" size="small" stripe>
           <el-table-column type="index" label="#" width="44" align="center" />
 
-          <el-table-column prop="name" label="技能组名" width="180">
+          <el-table-column prop="name" :label="t('skills.columnGroupName')" width="180">
             <template #default="{ row }">
               <span class="group-name">{{ row.name }}</span>
-              <el-tag v-if="row.builtin" size="small" effect="plain" class="builtin">内置</el-tag>
+              <el-tag v-if="row.builtin" size="small" effect="plain" class="builtin">{{ t('skills.builtin') }}</el-tag>
             </template>
           </el-table-column>
 
-          <el-table-column prop="description" label="功能简介" min-width="180" show-overflow-tooltip />
+          <el-table-column prop="description" :label="t('skills.columnDesc')" min-width="180" show-overflow-tooltip />
 
-          <el-table-column label="技能列表" min-width="200">
+          <el-table-column :label="t('skills.columnSkills')" min-width="200">
             <template #default="{ row }">
               <!-- 空列表是合法状态，必须显式说出来，否则看起来像漏填了 -->
-              <span v-if="!row.skills.length" class="muted">（空 —— 不给模型任何技能）</span>
+              <span v-if="!row.skills.length" class="muted">{{ t('skills.groupEmptySkills') }}</span>
               <el-tag v-for="name in row.skills" :key="name" size="small" class="skill-tag">
                 {{ name }}
               </el-tag>
             </template>
           </el-table-column>
 
-          <el-table-column label="操作" width="130" align="center">
+          <el-table-column :label="t('skills.columnActions')" width="130" align="center">
             <template #default="{ row }">
               <el-button
                 size="small"
@@ -272,7 +273,7 @@ onMounted(() => {
                 type="primary"
                 @click="openEdit(row.id, row.name, row.description, row.skills)"
               >
-                编辑
+                {{ t('common.edit') }}
               </el-button>
               <!-- 内置项不给删除入口，编辑照旧留着（硬约束在存储层，见
                    quill_agent/defaults.py） -->
@@ -283,13 +284,13 @@ onMounted(() => {
                 type="danger"
                 @click="remove(row.id, row.name)"
               >
-                删除
+                {{ t('common.delete') }}
               </el-button>
             </template>
           </el-table-column>
 
           <template #empty>
-            <el-empty description="还没有技能组；点右上角「新建技能组」创建" :image-size="60" />
+            <el-empty :description="t('skills.groupEmpty')" :image-size="60" />
           </template>
         </el-table>
       </el-scrollbar>
@@ -298,7 +299,7 @@ onMounted(() => {
     <!-- 下半：单个技能（含展开看正文、编辑弹窗） -->
     <section class="half">
       <div class="half-head">
-        <h2>全部技能</h2>
+        <h2>{{ t('skills.allTitle') }}</h2>
         <el-button
           size="small"
           type="primary"
@@ -306,7 +307,7 @@ onMounted(() => {
           class="add-btn"
           @click="openSkillCreate"
         >
-          添加技能
+          {{ t('skills.addSkill') }}
         </el-button>
       </div>
 
@@ -314,33 +315,33 @@ onMounted(() => {
         <el-table :data="skills" size="small" stripe @expand-change="onExpand">
           <el-table-column type="expand">
             <template #default="{ row }">
-              <pre class="mono body">{{ contents[row.name] ?? '（加载中…）' }}</pre>
+              <pre class="mono body">{{ contents[row.name] ?? t('skills.loading') }}</pre>
             </template>
           </el-table-column>
 
-          <el-table-column prop="name" label="名称" width="140" />
-          <el-table-column label="适用场景">
+          <el-table-column prop="name" :label="t('skills.columnName')" width="140" />
+          <el-table-column :label="t('skills.columnUsage')">
             <template #default="{ row }">
               <span :class="{ muted: !row.description }">
-                {{ row.description || '（未填写，模型看不出什么时候该用它）' }}
+                {{ row.description || t('skills.noUsage') }}
               </span>
             </template>
           </el-table-column>
 
           <!-- 这里不再有「启用」开关：给不给技能由模式的技能组决定 -->
 
-          <el-table-column label="操作" width="80" align="center">
+          <el-table-column :label="t('skills.columnActions')" width="80" align="center">
             <template #default="{ row }">
               <!-- 只传名字：row 的类型是宽泛的 DefaultRow -->
               <el-button size="small" text type="primary" @click="openSkillEdit(row.name)">
-                编辑
+                {{ t('common.edit') }}
               </el-button>
             </template>
           </el-table-column>
 
           <template #empty>
             <el-empty
-              description="还没有技能；点右上角「添加技能」创建"
+              :description="t('skills.skillsEmpty')"
               :image-size="60"
             />
           </template>
@@ -353,29 +354,29 @@ onMounted(() => {
          （详见 HelpButton.vue 里那段说明） -->
     <el-dialog
       v-model="dialogOpen"
-      :title="editingId ? '编辑技能组' : '新建技能组'"
+      :title="editingId ? t('skills.groupForm.editTitle') : t('skills.groupForm.createTitle')"
       width="480px"
       append-to-body
     >
       <el-form label-width="80px" size="default" @submit.prevent>
-        <el-form-item label="技能组名" required>
-          <el-input v-model="form.name" placeholder="例如：写作相关" maxlength="30" />
+        <el-form-item :label="t('skills.groupForm.name')" required>
+          <el-input v-model="form.name" :placeholder="t('skills.groupForm.namePlaceholder')" maxlength="30" />
         </el-form-item>
 
-        <el-form-item label="功能简介" required>
+        <el-form-item :label="t('skills.groupForm.desc')" required>
           <el-input
             v-model="form.description"
-            placeholder="一句话说明这组技能用来做什么"
+            :placeholder="t('skills.groupForm.descPlaceholder')"
             maxlength="60"
           />
         </el-form-item>
 
-        <el-form-item label="技能列表">
+        <el-form-item :label="t('skills.groupForm.skills')">
           <div class="select-block">
             <div class="select-bar">
-              <span class="muted count">已选 {{ form.skills.length }} / {{ skills.length }}</span>
-              <el-button link size="small" type="primary" @click="selectAllSkills">全选</el-button>
-              <el-button link size="small" @click="form.skills = []">清空</el-button>
+              <span class="muted count">{{ t('skills.groupForm.count', { selected: form.skills.length, total: skills.length }) }}</span>
+              <el-button link size="small" type="primary" @click="selectAllSkills">{{ t('skills.groupForm.selectAll') }}</el-button>
+              <el-button link size="small" @click="form.skills = []">{{ t('skills.groupForm.clear') }}</el-button>
             </div>
 
             <el-select
@@ -383,7 +384,7 @@ onMounted(() => {
               multiple
               collapse-tags
               collapse-tags-tooltip
-              placeholder="选择组内技能（可不选：空组 = 不给模型技能）"
+              :placeholder="t('skills.groupForm.selectPlaceholder')"
               class="skill-select"
             >
               <el-option
@@ -398,9 +399,9 @@ onMounted(() => {
       </el-form>
 
       <template #footer>
-        <el-button size="small" @click="dialogOpen = false">取消</el-button>
+        <el-button size="small" @click="dialogOpen = false">{{ t('common.cancel') }}</el-button>
         <el-button size="small" type="primary" :disabled="!canSubmit" @click="submit">
-          {{ editingId ? '保存' : '创建' }}
+          {{ editingId ? t('common.save') : t('common.create') }}
         </el-button>
       </template>
     </el-dialog>
@@ -408,46 +409,45 @@ onMounted(() => {
     <!-- 技能正文：新建 / 编辑共用。名字在编辑时锁住 —— 它是技能组里的引用标识 -->
     <el-dialog
       v-model="skillDialogOpen"
-      :title="editingSkill ? '编辑技能' : '添加技能'"
+      :title="editingSkill ? t('skills.skillForm.editTitle') : t('skills.skillForm.addTitle')"
       width="760px"
       top="6vh"
       append-to-body
     >
       <el-form label-width="80px" size="default" @submit.prevent>
-        <el-form-item label="名称" required>
+        <el-form-item :label="t('skills.skillForm.name')" required>
           <el-input
             v-model="skillForm.name"
             :disabled="Boolean(editingSkill)"
-            placeholder="例如：代码审查"
+            :placeholder="t('skills.skillForm.namePlaceholder')"
             maxlength="60"
           />
           <div v-if="editingSkill" class="field-hint muted">
-            技能名就是目录名，也是技能组里的引用标识，改掉会让已有的引用失效
+            {{ t('skills.skillForm.nameHint') }}
           </div>
         </el-form-item>
 
-        <el-form-item label="使用场景" required>
+        <el-form-item :label="t('skills.skillForm.usage')" required>
           <el-input
             v-model="skillForm.description"
-            placeholder="例如：当用户要求审查代码、评估实现好坏时使用"
+            :placeholder="t('skills.skillForm.usagePlaceholder')"
             maxlength="120"
           />
           <div class="field-hint muted">
-            这是模型判断「该不该加载它」的唯一依据 —— 写清「什么时候用我」，
-            别写成「处理代码」这种
+            {{ t('skills.skillForm.usageHint') }}
           </div>
         </el-form-item>
 
-        <el-form-item label="内容" required>
+        <el-form-item :label="t('skills.skillForm.content')" required>
           <MarkdownEditor
             v-model="skillForm.content"
-            placeholder="这类任务的完整做法，可以写得很长 —— 它平时不占上下文，模型需要时才读"
+            :placeholder="t('skills.skillForm.contentPlaceholder')"
           />
         </el-form-item>
       </el-form>
 
       <template #footer>
-        <el-button size="small" @click="skillDialogOpen = false">取消</el-button>
+        <el-button size="small" @click="skillDialogOpen = false">{{ t('common.cancel') }}</el-button>
         <el-button
           size="small"
           type="primary"
@@ -455,7 +455,7 @@ onMounted(() => {
           :disabled="!canSubmitSkill"
           @click="submitSkill"
         >
-          确认
+          {{ t('common.confirm') }}
         </el-button>
       </template>
     </el-dialog>
@@ -488,7 +488,7 @@ onMounted(() => {
 
 .half-head h2 {
   margin: 0;
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 600;
 }
 
@@ -505,7 +505,7 @@ onMounted(() => {
 
 .field-hint {
   margin-top: 4px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.4;
 }
 
@@ -541,7 +541,7 @@ onMounted(() => {
 
 .select-bar .count {
   margin-right: auto;
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 
 .body {

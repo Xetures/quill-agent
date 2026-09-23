@@ -1,10 +1,14 @@
 <script setup lang="ts">
 import { Plus } from '@element-plus/icons-vue'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 
 import { api } from '../api/client'
 import type { ToolGroup, ToolSpec } from '../api/types'
 import { errorText } from '../utils/error'
+import { useToolCategory } from '../utils/tool-category'
+
+const { t } = useI18n()
 
 // ---------------------------------------------------------------------------
 // 数据
@@ -29,6 +33,9 @@ const groups = ref<ToolGroup[]>([])
 
 const keyword = ref('')
 const category = ref('')
+
+// 分类的显示名与顺序都归它管（后端给的是 `files` 这种 key，不是文案）
+const { label: categoryLabel, sort: sortCategories } = useToolCategory()
 const groupKeyword = ref('')
 
 // 工具筛选放前端做：工具总量本来就很小，来回请求后端反而更慢，输入时也零延迟
@@ -58,7 +65,8 @@ async function load(): Promise<void> {
     api.get<{ servers: McpServerBrief[] }>('/mcp/servers'),
   ])
   tools.value = toolData.tools
-  categories.value = toolData.categories
+  // 顺序由前端定（按重要性，而不是后端那个字母序 —— 那是 key 的字母序，对界面没意义）
+  categories.value = sortCategories(toolData.categories)
   groups.value = groupData.groups
   mcpServers.value = mcpData.servers
 }
@@ -160,10 +168,10 @@ async function submit(): Promise<void> {
   try {
     if (editingId.value) {
       await api.put(`/tool-groups/${editingId.value}`, payload)
-      ElMessage.success('工具组已更新')
+      ElMessage.success(t('tools.groupUpdated'))
     } else {
       await api.post('/tool-groups', payload)
-      ElMessage.success('工具组已创建')
+      ElMessage.success(t('tools.groupCreated'))
     }
     dialogOpen.value = false
     await load()
@@ -177,10 +185,10 @@ async function submit(): Promise<void> {
 // 直接传整个对象过不了类型检查（openEdit 同理）
 async function remove(id: string, name: string): Promise<void> {
   try {
-    await ElMessageBox.confirm(`删除工具组「${name}」？`, '删除工具组', {
+    await ElMessageBox.confirm(t('tools.deleteConfirm', { name }), t('tools.deleteTitle'), {
       type: 'warning',
-      confirmButtonText: '删除',
-      cancelButtonText: '取消',
+      confirmButtonText: t('common.delete'),
+      cancelButtonText: t('common.cancel'),
     })
   } catch {
     return // 用户按了取消
@@ -188,7 +196,7 @@ async function remove(id: string, name: string): Promise<void> {
 
   await api.del(`/tool-groups/${id}`)
   await load()
-  ElMessage.success('已删除')
+  ElMessage.success(t('common.deleted'))
 }
 
 onMounted(() => {
@@ -199,44 +207,44 @@ onMounted(() => {
 <template>
   <div class="page">
     <Teleport to="#page-head-slot">
-      <h1>工具</h1>
+      <h1>{{ t('tools.title') }}</h1>
       <span class="hint">
-        工具组供模式引用；下方列出全部工具，启用与否由模式决定
+\1{{ t('tools.hint') }}
       </span>
     </Teleport>
 
     <!-- 上半：工具组 -->
     <section class="half">
       <div class="half-head">
-        <h2>工具组</h2>
+        <h2>{{ t('tools.groupTitle') }}</h2>
         <el-input
           v-model="groupKeyword"
           size="small"
-          placeholder="按名称或简介过滤"
+          :placeholder="t('tools.groupFilter')"
           clearable
           class="group-filter"
         />
-        <el-button size="small" type="primary" :icon="Plus" @click="openCreate">新建工具组</el-button>
+        <el-button size="small" type="primary" :icon="Plus" @click="openCreate">{{ t('tools.groupCreate') }}</el-button>
       </div>
 
       <el-scrollbar class="half-body">
         <el-table :data="visibleGroups" size="small" stripe>
           <el-table-column type="index" label="#" width="44" align="center" />
 
-          <el-table-column prop="name" label="工具组名" width="180">
+          <el-table-column prop="name" :label="t('tools.columnGroupName')" width="180">
             <template #default="{ row }">
               <span class="group-name">{{ row.name }}</span>
-              <el-tag v-if="row.builtin" size="small" effect="plain" class="builtin">内置</el-tag>
+              <el-tag v-if="row.builtin" size="small" effect="plain" class="builtin">{{ t('tools.builtin') }}</el-tag>
             </template>
           </el-table-column>
 
-          <el-table-column prop="description" label="功能简介" min-width="160" show-overflow-tooltip />
+          <el-table-column :label="t('tools.columnDesc')" prop="description" min-width="160" show-overflow-tooltip />
 
-          <el-table-column label="工具列表" min-width="220">
+          <el-table-column :label="t('tools.columnGroupTools')" min-width="220">
             <template #default="{ row }">
               <!-- 空列表是合法状态：「纯对话」组要的就是一个工具都不给。
                    必须显式说出来，否则看起来像漏填了 -->
-              <span v-if="!row.tools.length" class="muted">（空 —— 不给模型任何工具）</span>
+              <span v-if="!row.tools.length" class="muted">{{ t('tools.groupEmptyTools') }}</span>
               <template v-else>
                 <el-tag v-for="name in row.tools" :key="name" size="small" class="tool-tag">
                   {{ name }}
@@ -245,7 +253,7 @@ onMounted(() => {
             </template>
           </el-table-column>
 
-          <el-table-column label="操作" width="130" align="center">
+          <el-table-column :label="t('tools.columnActions')" width="130" align="center">
             <template #default="{ row }">
               <el-button
                 size="small"
@@ -253,7 +261,7 @@ onMounted(() => {
                 type="primary"
                 @click="openEdit(row.id, row.name, row.description, row.tools, row.confirm)"
               >
-                编辑
+\1{{ t('common.edit') }}
               </el-button>
               <!-- 内置项不给删除入口，编辑照旧留着（硬约束在存储层，见
                    quill_agent/defaults.py）。它装着注册表里的全部工具，
@@ -265,13 +273,13 @@ onMounted(() => {
                 type="danger"
                 @click="remove(row.id, row.name)"
               >
-                删除
+\1{{ t('common.delete') }}
               </el-button>
             </template>
           </el-table-column>
 
           <template #empty>
-            <el-empty description="还没有工具组；点右上角「新建工具组」创建" :image-size="60" />
+            <el-empty :description="t('tools.groupEmpty')" :image-size="60" />
           </template>
         </el-table>
       </el-scrollbar>
@@ -280,23 +288,34 @@ onMounted(() => {
     <!-- 下半：单个工具的开关（原有功能） -->
     <section class="half">
       <div class="half-head">
-        <h2>全部工具</h2>
-        <el-input v-model="keyword" size="small" placeholder="按名称过滤" clearable class="filter" />
-        <el-select v-model="category" size="small" placeholder="全部分类" clearable class="filter">
-          <el-option v-for="item in categories" :key="item" :label="item" :value="item" />
+        <h2>{{ t('tools.allTitle') }}</h2>
+        <el-input v-model="keyword" size="small" :placeholder="t('tools.filterByName')" clearable class="filter" />
+        <!-- 选项的值是**分类 key**（`files` 这种），标签才是翻译过的显示名 ——
+             筛选用值、显示用标签，两件事不能混 -->
+        <el-select v-model="category" size="small" :placeholder="t('tools.allCategories')" clearable class="filter">
+          <el-option
+            v-for="item in categories"
+            :key="item"
+            :label="categoryLabel(item)"
+            :value="item"
+          />
         </el-select>
       </div>
 
       <el-scrollbar class="half-body">
         <el-table :data="visible" size="small" stripe>
-          <el-table-column label="名称" width="150">
+          <el-table-column :label="t('tools.columnName')" width="150">
             <template #default="{ row }">
               <span class="mono">{{ row.name }}</span>
             </template>
           </el-table-column>
 
-          <el-table-column prop="category" label="分类" width="90" />
-          <el-table-column prop="description" label="功能简介" />
+          <el-table-column :label="t('tools.columnCategory')" width="90">
+            <template #default="{ row }">
+              <span class="muted">{{ categoryLabel(row.category) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column :label="t('tools.columnDesc')" prop="description" />
 
           <!-- 这里不再有「启用」开关：给不给工具由模式的工具组决定。
                全局开关留着就会出现「组里选了却用不了」，而界面上还查不出原因 -->
@@ -309,27 +328,27 @@ onMounted(() => {
          （详见 HelpButton.vue 里那段说明） -->
     <el-dialog
       v-model="dialogOpen"
-      :title="editingId ? '编辑工具组' : '新建工具组'"
+      :title="editingId ? t('tools.groupForm.editTitle') : t('tools.groupForm.createTitle')"
       width="480px"
       append-to-body
     >
       <el-form label-width="80px" size="default" @submit.prevent>
-        <el-form-item label="工具组名" required>
-          <el-input v-model="form.name" placeholder="例如：文件操作" maxlength="30" />
+        <el-form-item :label="t('tools.groupForm.name')" required>
+          <el-input v-model="form.name" :placeholder="t('tools.groupForm.namePlaceholder')" maxlength="30" />
         </el-form-item>
 
-        <el-form-item label="功能简介" required>
+        <el-form-item :label="t('tools.groupForm.desc')" required>
           <el-input
             v-model="form.description"
-            placeholder="一句话说明这组工具用来做什么"
+            :placeholder="t('tools.groupForm.descPlaceholder')"
             maxlength="60"
           />
         </el-form-item>
 
         <!-- 「引入整个服务器」放在逐个勾选**前面**：它是更粗的粒度，先决定要不要这批能力 -->
-        <el-form-item label="MCP 服务器">
+        <el-form-item :label="t('tools.groupForm.mcp')">
           <div v-if="!mcpServers.length" class="hint">
-            还没有配置 MCP 服务器 —— 去「偏好设置 → MCP」添加。
+            {{ t('tools.groupForm.mcpEmpty') }}
           </div>
           <div v-else class="mcp-refs">
             <el-checkbox
@@ -340,23 +359,21 @@ onMounted(() => {
             >
               {{ server.name }}
               <span class="muted">
-                （{{ server.connected ? `${server.tools.length} 个工具` : '未连接' }}）
+                （{{ server.connected ? t('tools.groupForm.mcpTools', { count: server.tools.length }) : t('tools.groupForm.mcpNotConnected') }}）
               </span>
             </el-checkbox>
           </div>
           <div class="hint">
-            引入的是<strong>整个服务器</strong>：它以后新增的工具会自动跟上 —— 逐个勾选的话，
-            服务器升级后多出来的工具不会出现在名单里，而没人会知道为什么。只想给其中几个的话，
-            就别在这里勾，改从下面的工具列表里逐个选。
+            <span v-html="t('tools.groupForm.mcpHint')" />
           </div>
         </el-form-item>
 
-        <el-form-item label="工具列表">
+        <el-form-item :label="t('tools.groupForm.tools')">
           <div class="select-block">
             <div class="select-bar">
-              <span class="muted count">已选 {{ form.tools.length }} / {{ tools.length }}</span>
-              <el-button link size="small" type="primary" @click="selectAllTools">全选</el-button>
-              <el-button link size="small" @click="form.tools = []">清空</el-button>
+              <span class="muted count">{{ t('tools.groupForm.count', { selected: form.tools.length, total: tools.length }) }}</span>
+              <el-button link size="small" type="primary" @click="selectAllTools">{{ t('tools.groupForm.selectAll') }}</el-button>
+              <el-button link size="small" @click="form.tools = []">{{ t('tools.groupForm.clear') }}</el-button>
             </div>
 
             <!-- multiple + collapse-tags：工具最多十几个，但每条较长，收起来才能
@@ -368,12 +385,12 @@ onMounted(() => {
               collapse-tags
               collapse-tags-tooltip
               popper-class="tool-opt-popper"
-              placeholder="选择组内工具（可不选：空组 = 不给模型工具）"
+              :placeholder="t('tools.groupForm.selectPlaceholder')"
               class="tool-select"
             >
               <el-option v-for="tool in tools" :key="tool.name" :label="tool.name" :value="tool.name">
                 <span class="opt-name mono">{{ tool.name }}</span>
-                <el-tag size="small" effect="plain">{{ tool.category }}</el-tag>
+                <el-tag size="small" effect="plain">{{ categoryLabel(tool.category) }}</el-tag>
                 <span class="opt-desc muted">{{ tool.description }}</span>
               </el-option>
             </el-select>
@@ -382,10 +399,10 @@ onMounted(() => {
 
         <!-- 「给，但动手前问我」。这是把 run_command 这类工具变得敢用的关键一档：
              没有它，用户只能在「把一台机器交给模型」和「这工具一点用没有」之间选 -->
-        <el-form-item label="需要确认">
+        <el-form-item :label="t('tools.groupForm.confirm')">
           <div class="select-block">
             <span class="muted confirm-hint">
-              勾上的工具每次调用前都会停下来问你一句。留空表示全部直接执行。
+              {{ t('tools.groupForm.confirmHint') }}
             </span>
 
             <el-select
@@ -396,7 +413,7 @@ onMounted(() => {
               popper-class="tool-opt-popper"
               :disabled="!form.tools.length"
               :placeholder="
-                form.tools.length ? '这些工具每次调用都要你点头' : '先从上面选几个工具'
+                form.tools.length ? t('tools.groupForm.confirmSome') : t('tools.groupForm.confirmNone')
               "
               class="tool-select"
             >
@@ -407,7 +424,7 @@ onMounted(() => {
                 :value="tool.name"
               >
                 <span class="opt-name mono">{{ tool.name }}</span>
-                <el-tag size="small" effect="plain">{{ tool.category }}</el-tag>
+                <el-tag size="small" effect="plain">{{ categoryLabel(tool.category) }}</el-tag>
                 <span class="opt-desc muted">{{ tool.description }}</span>
               </el-option>
             </el-select>
@@ -416,9 +433,9 @@ onMounted(() => {
       </el-form>
 
       <template #footer>
-        <el-button size="small" @click="dialogOpen = false">取消</el-button>
+        <el-button size="small" @click="dialogOpen = false">{{ t('common.cancel') }}</el-button>
         <el-button size="small" type="primary" :disabled="!canSubmit" @click="submit">
-          {{ editingId ? '保存' : '创建' }}
+          {{ editingId ? t('common.save') : t('common.create') }}
         </el-button>
       </template>
     </el-dialog>
@@ -451,7 +468,7 @@ onMounted(() => {
 
 .half-head h2 {
   margin: 0;
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 600;
 }
 
@@ -487,7 +504,7 @@ onMounted(() => {
 .confirm-hint {
   display: block;
   margin-bottom: 6px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 
 /* MCP 服务器引用：竖排复选框，每个一行 */
@@ -499,7 +516,7 @@ onMounted(() => {
 
 .hint {
   margin: 4px 0 0;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.6;
   color: var(--text-soft);
 }
@@ -519,6 +536,6 @@ onMounted(() => {
 
 .select-bar .count {
   margin-right: auto;
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 </style>

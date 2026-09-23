@@ -313,7 +313,7 @@ _NO_CONCLUSION = (
         f"最多 {MAX_PARALLEL_AGENTS} 个真正同时跑（多出来的排队等），"
         f"一次最多派 {MAX_SUBAGENT_TASKS} 个。"
     ),
-    category="子代理",
+    category="subagent",
     parameters={
         "type": "object",
         "properties": {

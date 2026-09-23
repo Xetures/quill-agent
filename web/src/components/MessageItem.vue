@@ -454,7 +454,7 @@ const statsText = computed(() => {
  * 没法单独包一层。display: block 让它各自占一行，同时保留 pre 的空白语义 */
 .diff {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.55;
   overflow-x: auto;
 }
@@ -491,7 +491,7 @@ const statsText = computed(() => {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 
 /* 用户消息靠右，和模型的左右区分开 */
@@ -564,6 +564,6 @@ const statsText = computed(() => {
 }
 
 .stats {
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 </style>

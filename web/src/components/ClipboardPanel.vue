@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { ArrowLeft, ArrowRight, Close, CopyDocument, Delete } from '@element-plus/icons-vue'
+import { useI18n } from 'vue-i18n'
 
 import { clipboard, clearClipboard, removeClipboardItem } from '../stores/clipboard'
+
+const { t } = useI18n()
 
 /**
  * 右侧的公共剪贴板：一个贴在边缘的箭头，点开拉出面板。
@@ -20,9 +23,9 @@ function timeText(at: number): string {
 async function reCopy(text: string): Promise<void> {
   try {
     await navigator.clipboard.writeText(text)
-    ElMessage.success('已复制')
+    ElMessage.success(t('clipboard.copied'))
   } catch {
-    ElMessage.error('复制失败：浏览器拒绝了剪贴板访问。')
+    ElMessage.error(t('clipboard.copyFailed'))
   }
 }
 </script>
@@ -34,7 +37,7 @@ async function reCopy(text: string): Promise<void> {
   <button
     class="clip-zone"
     :class="{ 'is-open': clipboard.open }"
-    :title="clipboard.open ? '收起公共剪贴板' : '公共剪贴板'"
+    :title="clipboard.open ? t('clipboard.collapse') : t('clipboard.title')"
     @click="clipboard.open = !clipboard.open"
   >
     <el-icon>
@@ -45,8 +48,8 @@ async function reCopy(text: string): Promise<void> {
   <Transition name="clip-slide">
     <aside v-if="clipboard.open" class="clip-panel">
       <header class="clip-head">
-        <span class="title">公共剪贴板</span>
-        <span class="muted count">{{ clipboard.items.length }} 条</span>
+        <span class="title">{{ t('clipboard.title') }}</span>
+        <span class="muted count">{{ t('clipboard.count', { count: clipboard.items.length }) }}</span>
         <el-button
           text
           size="small"
@@ -54,26 +57,26 @@ async function reCopy(text: string): Promise<void> {
           class="clear"
           @click="clearClipboard"
         >
-          清空
+          {{ t('clipboard.clear') }}
         </el-button>
-        <el-button text size="small" :icon="Close" title="收起" @click="clipboard.open = false" />
+        <el-button text size="small" :icon="Close" :title="t('clipboard.collapseShort')" @click="clipboard.open = false" />
       </header>
 
       <el-scrollbar class="clip-body">
         <p v-if="!clipboard.items.length" class="empty muted">
-          应用内复制的内容会自动收到这里 —— 比如消息下面那对「复制 / 删除」里的复制。
+          {{ t('clipboard.hint') }}
         </p>
 
         <ul v-else class="list">
           <li v-for="item in clipboard.items" :key="item.id" class="item">
             <div class="meta">
-              <span class="from">{{ item.from || '复制' }}</span>
+              <span class="from">{{ item.from || t('clipboard.copy') }}</span>
               <span class="muted time">{{ timeText(item.at) }}</span>
               <el-button
                 text
                 size="small"
                 :icon="CopyDocument"
-                title="再复制一次"
+                :title="t('clipboard.copyAgain')"
                 class="act"
                 @click="reCopy(item.text)"
               />
@@ -81,7 +84,7 @@ async function reCopy(text: string): Promise<void> {
                 text
                 size="small"
                 :icon="Delete"
-                title="从剪贴板里删掉"
+                :title="t('clipboard.remove')"
                 class="act"
                 @click="removeClipboardItem(item.id)"
               />
@@ -118,7 +121,7 @@ async function reCopy(text: string): Promise<void> {
   background: transparent;
   border: none;
   color: var(--text-faint);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   cursor: pointer;
   transition: color 0.15s ease;
 }
@@ -197,12 +200,12 @@ async function reCopy(text: string): Promise<void> {
 }
 
 .title {
-  font-size: 13px;
+  font-size: var(--fs-sm);
   font-weight: 600;
 }
 
 .count {
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 
 /* 「清空」推到右边，紧挨着收起按钮 */
@@ -217,7 +220,7 @@ async function reCopy(text: string): Promise<void> {
 
 .empty {
   margin: 16px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.6;
 }
 
@@ -245,13 +248,13 @@ async function reCopy(text: string): Promise<void> {
 }
 
 .from {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   color: var(--text-soft);
 }
 
 .time {
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   font-variant-numeric: tabular-nums;
 }
 
@@ -274,7 +277,7 @@ async function reCopy(text: string): Promise<void> {
   margin: 0;
   font-family:
     ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.6;
   white-space: pre-wrap;
   overflow-wrap: anywhere;

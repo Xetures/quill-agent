@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { Folder, FolderOpened, Top } from '@element-plus/icons-vue'
 import { computed, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 
 import { api } from '../api/client'
 import type { BrowseResult } from '../api/types'
 import { changeWorkdir, pickWorkdir, resetWorkdir, session } from '../stores/session'
 import { errorText } from '../utils/error'
+
+const { t } = useI18n()
 
 /**
  * 工具栏上只显示末级目录名。
@@ -74,7 +77,7 @@ async function onClick(): Promise<void> {
       await changeWorkdir(result.path)
       // 提示里用切换后的值而不是 result.path：系统对话框给的路径带尾部斜杠
       // （`POSIX path of` 就这格式），后端规范化过的那份才是最终生效的
-      ElMessage.success(`工作目录已切换到 ${session.workdir}`)
+      ElMessage.success(t('workdir.switched', { path: session.workdir }))
     }
   } catch (exc) {
     ElMessage.error(errorText(exc))
@@ -94,7 +97,7 @@ async function use(): Promise<void> {
 
   try {
     await changeWorkdir(path)
-    ElMessage.success(`工作目录已切换到 ${path}`)
+    ElMessage.success(t('workdir.switched', { path }))
     open.value = false
   } catch (exc) {
     // 会话可能刚好发了消息、或目录被删掉：后端文案比前端猜的准，原样显示
@@ -104,7 +107,7 @@ async function use(): Promise<void> {
 
 async function reset(): Promise<void> {
   await resetWorkdir()
-  ElMessage.success('已恢复默认工作目录')
+  ElMessage.success(t('workdir.restored'))
   await load()
 }
 </script>
@@ -115,7 +118,7 @@ async function reset(): Promise<void> {
     :icon="FolderOpened"
     :disabled="!canChange"
     :loading="picking"
-    :title="canChange ? '选择工作目录' : '会话已经开始，工作目录不能再改（新建任务时可换）'"
+    :title="canChange ? t('workdir.pickTitle') : t('workdir.lockedHint')"
     @click="onClick"
   >
     {{ currentName }}
@@ -123,9 +126,9 @@ async function reset(): Promise<void> {
 
   <!-- 浏览器里的目录浏览，只在没有系统对话框时才会打开。
        用 dialog 而不是 popover：它是给「慢慢翻目录」用的，需要遮罩来收拢注意力 -->
-  <el-dialog v-model="open" title="选择工作目录" width="420px" append-to-body>
+  <el-dialog v-model="open" :title="t('workdir.pickTitle')" width="420px" append-to-body>
     <div class="picker">
-      <div class="browse-path" :title="browsing?.path ?? ''">{{ browsing?.path ?? '读取中…' }}</div>
+      <div class="browse-path" :title="browsing?.path ?? ''">{{ browsing?.path ?? t('workdir.loading') }}</div>
 
       <div class="actions">
         <el-button
@@ -135,14 +138,14 @@ async function reset(): Promise<void> {
           :disabled="!browsing?.parent"
           @click="load(browsing?.parent)"
         >
-          上一级
+          {{ t('workdir.up') }}
         </el-button>
-        <el-button size="small" text @click="reset">恢复默认</el-button>
+        <el-button size="small" text @click="reset">{{ t('workdir.resetDefault') }}</el-button>
       </div>
 
       <el-scrollbar max-height="240px">
         <p v-if="browsing?.error" class="hint">{{ browsing.error }}</p>
-        <p v-else-if="!browsing?.dirs.length" class="hint">没有子目录</p>
+        <p v-else-if="!browsing?.dirs.length" class="hint">{{ t('workdir.emptyDirs') }}</p>
 
         <div
           v-for="dir in browsing?.dirs ?? []"
@@ -160,8 +163,8 @@ async function reset(): Promise<void> {
     <template #footer>
       <!-- 浏览和切换刻意分成两步：点目录只是「进去看看」，要真正生效得再点一下，
            免得误点就把文件工具的边界给换了 -->
-      <el-button size="small" @click="open = false">取消</el-button>
-      <el-button size="small" type="primary" @click="use">用这个目录</el-button>
+      <el-button size="small" @click="open = false">{{ t('common.cancel') }}</el-button>
+      <el-button size="small" type="primary" @click="use">{{ t('workdir.useThis') }}</el-button>
     </template>
   </el-dialog>
 </template>
@@ -174,7 +177,7 @@ async function reset(): Promise<void> {
 }
 
 .browse-path {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.4;
   color: var(--text-soft);
 
@@ -196,7 +199,7 @@ async function reset(): Promise<void> {
   gap: 6px;
   padding: 5px 6px;
   border-radius: 4px;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   cursor: pointer;
 }
 
@@ -213,7 +216,7 @@ async function reset(): Promise<void> {
 
 .hint {
   margin: 6px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text-soft);
 }
 </style>

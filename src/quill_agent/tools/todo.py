@@ -212,7 +212,7 @@ def _publish(items: Sequence[TodoItem]) -> None:
         "状态用 pending / in_progress / completed，**同一时刻只留一项 in_progress**。"
         "做完一项就立刻更新一次，别攒到最后一起写 —— 那样进度条就没有意义了。"
     ),
-    category="规划",
+    category="plan",
     parameters={
         "type": "object",
         "properties": {

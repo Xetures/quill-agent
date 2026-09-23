@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { Plus } from '@element-plus/icons-vue'
 import { computed, defineAsyncComponent, onMounted, reactive, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 
 import { api } from '../api/client'
 import type { PromptGroup, PromptItem, PromptLib } from '../api/types'
 import { loadOptions } from '../stores/session'
 import { errorText } from '../utils/error'
+
+const { t } = useI18n()
 
 // 编辑器带着 CodeMirror（几百 KB），而只有真正打开弹窗时才需要它 ——
 // 异步加载能让这两个页面本身的包保持干净
@@ -81,7 +84,7 @@ function refsOf(ids: string[]): { id: string; label: string; missing: boolean }[
     const item = itemById.value.get(id)
     return item
       ? { id, label: `${item.category}：${item.name}`, missing: false }
-      : { id, label: `已删除（${id}）`, missing: true }
+      : { id, label: t('prompts.deletedMissing', { id }), missing: true }
   })
 }
 
@@ -149,10 +152,10 @@ async function submit(): Promise<void> {
   try {
     if (editingId.value) {
       await api.put(`/prompt-groups/${editingId.value}`, payload)
-      ElMessage.success('提示词组已更新')
+      ElMessage.success(t('prompts.groupUpdated'))
     } else {
       await api.post('/prompt-groups', payload)
-      ElMessage.success('提示词组已创建')
+      ElMessage.success(t('prompts.groupCreated'))
     }
     dialogOpen.value = false
     await load()
@@ -167,10 +170,10 @@ async function submit(): Promise<void> {
 
 async function remove(id: string, name: string): Promise<void> {
   try {
-    await ElMessageBox.confirm(`删除提示词组「${name}」？`, '删除提示词组', {
+    await ElMessageBox.confirm(t('prompts.deleteGroupConfirm', { name }), t('prompts.deleteGroupTitle'), {
       type: 'warning',
-      confirmButtonText: '删除',
-      cancelButtonText: '取消',
+      confirmButtonText: t('common.delete'),
+      cancelButtonText: t('common.cancel'),
     })
   } catch {
     return // 用户按了取消
@@ -179,7 +182,7 @@ async function remove(id: string, name: string): Promise<void> {
   await api.del(`/prompt-groups/${id}`)
   await load()
   await loadOptions()
-  ElMessage.success('已删除')
+  ElMessage.success(t('common.deleted'))
 }
 
 // ---------------------------------------------------------------------------
@@ -247,10 +250,10 @@ async function submitPrompt(): Promise<void> {
 
     if (editingPrompt.value) {
       await api.put(`/prompts/${encodeURIComponent(editingPrompt.value)}`, payload)
-      ElMessage.success('已保存')
+      ElMessage.success(t('prompts.saved'))
     } else {
       await api.post('/prompts', payload)
-      ElMessage.success('已创建')
+      ElMessage.success(t('prompts.created'))
     }
 
     promptDialogOpen.value = false
@@ -278,14 +281,17 @@ async function removePrompt(item: { id: string; name: string }): Promise<void> {
     .map((group) => group.name)
 
   const hint = usedBy.length
-    ? `有 ${usedBy.length} 个提示词组在引用它：${usedBy.join('、')}，删除后那些组里会少这一条。`
-    : '没有提示词组在引用它。'
+    ? t('prompts.deletePromptUsed', { count: usedBy.length, groups: usedBy.join('、') })
+    : t('prompts.deletePromptUnused')
 
   try {
-    await ElMessageBox.confirm(`删除提示词「${item.name}」？${hint}`, '删除提示词', {
+    await ElMessageBox.confirm(
+      t('prompts.deletePromptConfirm', { name: item.name, hint }),
+      t('prompts.deletePromptTitle'),
+      {
       type: 'warning',
-      confirmButtonText: '删除',
-      cancelButtonText: '取消',
+      confirmButtonText: t('common.delete'),
+      cancelButtonText: t('common.cancel'),
     })
   } catch {
     return // 用户按了取消
@@ -311,8 +317,8 @@ async function removePrompt(item: { id: string; name: string }): Promise<void> {
   await loadOptions()
   ElMessage.success(
     touched.length
-      ? `已删除，并从 ${touched.length} 个提示词组中移除：${touched.join('、')}`
-      : '已删除',
+      ? t('prompts.deletedAndRemoved', { count: touched.length, groups: touched.join('、') })
+      : t('common.deleted'),
   )
 }
 
@@ -342,25 +348,25 @@ onMounted(() => {
 <template>
   <div class="page">
     <Teleport to="#page-head-slot">
-      <h1>提示词</h1>
+      <h1>{{ t('prompts.title') }}</h1>
       <span class="hint">
-        六类提示词各挑一条拼成一个组，供模式引用；正文存在 prompt/ 目录
+        {{ t('prompts.hint') }}
       </span>
     </Teleport>
 
     <!-- 上半：提示词组 -->
     <section class="half">
       <div class="half-head">
-        <h2>提示词组</h2>
+        <h2>{{ t('prompts.groupTitle') }}</h2>
         <el-input
           v-model="keyword"
           size="small"
-          placeholder="按名称或简介过滤"
+          :placeholder="t('prompts.groupFilter')"
           clearable
           class="group-filter"
         />
         <el-button size="small" type="primary" :icon="Plus" @click="openCreate">
-          新建提示词组
+          {{ t('prompts.groupCreate') }}
         </el-button>
       </div>
 
@@ -368,21 +374,21 @@ onMounted(() => {
         <el-table :data="visibleGroups" size="small" stripe>
           <el-table-column type="index" label="#" width="44" align="center" />
 
-          <el-table-column prop="name" label="组名" width="180">
+          <el-table-column :label="t('prompts.columnGroupName')" prop="name" width="180">
             <template #default="{ row }">
               <span class="group-name">{{ row.name }}</span>
-              <el-tag v-if="row.builtin" size="small" effect="plain" class="builtin">内置</el-tag>
+              <el-tag v-if="row.builtin" size="small" effect="plain" class="builtin">{{ t('prompts.builtin') }}</el-tag>
             </template>
           </el-table-column>
 
-          <el-table-column prop="description" label="功能简介" min-width="150" show-overflow-tooltip />
+          <el-table-column :label="t('prompts.columnDesc')" prop="description" min-width="150" show-overflow-tooltip />
 
-          <el-table-column label="提示词" min-width="240">
+          <el-table-column :label="t('prompts.columnPrompts')" min-width="240">
             <template #default="{ row }">
               <!-- 一条都不选是合法状态：那就是不带任何系统提示词的纯问答 ——
                    必须显式说出来，否则看起来像漏填了 -->
               <span v-if="!refsOf(row.prompts).length" class="muted">
-                （空 —— 不带系统提示词）
+                {{ t('prompts.groupEmptyPrompts') }}
               </span>
               <template v-else>
                 <el-tag
@@ -399,7 +405,7 @@ onMounted(() => {
             </template>
           </el-table-column>
 
-          <el-table-column label="操作" width="130" align="center">
+          <el-table-column :label="t('prompts.columnActions')" width="130" align="center">
             <template #default="{ row }">
               <el-button
                 size="small"
@@ -407,7 +413,7 @@ onMounted(() => {
                 type="primary"
                 @click="openEdit(row.id, row.name, row.description, row.prompts)"
               >
-                编辑
+                {{ t('common.edit') }}
               </el-button>
               <!-- 内置项不给删除入口（编辑照旧留着）。真正的拒绝在存储层（见
                    quill_agent/defaults.py）—— 这里少了判断，用户点了只会拿到一句 400 -->
@@ -418,13 +424,13 @@ onMounted(() => {
                 type="danger"
                 @click="remove(row.id, row.name)"
               >
-                删除
+                {{ t('common.delete') }}
               </el-button>
             </template>
           </el-table-column>
 
           <template #empty>
-            <el-empty description="还没有提示词组；点右上角「新建提示词组」创建" :image-size="60" />
+            <el-empty :description="t('prompts.groupEmpty')" :image-size="60" />
           </template>
         </el-table>
       </el-scrollbar>
@@ -433,7 +439,7 @@ onMounted(() => {
     <!-- 下半：提示词正文（只读） -->
     <section class="half">
       <div class="half-head">
-        <h2>提示词库</h2>
+        <h2>{{ t('prompts.libTitle') }}</h2>
 
         <!-- 六个类别铺成六个按钮，紧跟标题。
              原来是下拉：要点开、看清、再选，三步；而类别总共只有六个、还是固定不变的
@@ -447,7 +453,7 @@ onMounted(() => {
         <el-input
           v-model="promptKeyword"
           size="small"
-          placeholder="按名称过滤"
+          :placeholder="t('prompts.libFilter')"
           clearable
           class="filter"
         />
@@ -458,7 +464,7 @@ onMounted(() => {
           class="add-btn"
           @click="openPromptCreate"
         >
-          添加提示词
+          {{ t('prompts.addPrompt') }}
         </el-button>
       </div>
 
@@ -466,23 +472,23 @@ onMounted(() => {
         <el-table :data="visiblePrompts" size="small" stripe @expand-change="onExpand">
           <el-table-column type="expand">
             <template #default="{ row }">
-              <pre class="prompt-body">{{ contents[row.id] ?? '加载中…' }}</pre>
+              <pre class="prompt-body">{{ contents[row.id] ?? t('prompts.loading') }}</pre>
             </template>
           </el-table-column>
 
-          <el-table-column prop="category" label="类别" width="110" />
-          <el-table-column prop="name" label="名称" min-width="200">
+          <el-table-column :label="t('prompts.columnCategory')" prop="category" width="110" />
+          <el-table-column :label="t('prompts.columnName')" prop="name" min-width="200">
             <template #default="{ row }">
               <span>{{ row.name }}</span>
-              <el-tag v-if="row.builtin" size="small" effect="plain" class="builtin">内置</el-tag>
+              <el-tag v-if="row.builtin" size="small" effect="plain" class="builtin">{{ t('prompts.builtin') }}</el-tag>
             </template>
           </el-table-column>
 
-          <el-table-column label="操作" width="130" align="center">
+          <el-table-column :label="t('prompts.columnActions')" width="130" align="center">
             <template #default="{ row }">
               <!-- 只传行内字段：row 的类型是宽泛的 DefaultRow，整个对象传不进具体类型 -->
               <el-button size="small" text type="primary" @click="openPromptEdit({ id: row.id })">
-                编辑
+                {{ t('common.edit') }}
               </el-button>
               <!-- 内置提示词不给删除入口：它是出厂内容，而出厂的那个提示词组正引用着
                    它，删掉之后整组就散了。**编辑照旧留着** —— 改措辞是正当需求，
@@ -494,14 +500,14 @@ onMounted(() => {
                 type="danger"
                 @click="removePrompt({ id: row.id, name: row.name })"
               >
-                删除
+                {{ t('common.delete') }}
               </el-button>
             </template>
           </el-table-column>
 
           <template #empty>
             <el-empty
-              description="prompt/ 目录下还没有提示词；点右上角「添加提示词」创建"
+              :description="t('prompts.libEmpty')"
               :image-size="60"
             />
           </template>
@@ -514,24 +520,24 @@ onMounted(() => {
          （详见 HelpButton.vue 里那段说明） -->
     <el-dialog
       v-model="dialogOpen"
-      :title="editingId ? '编辑提示词组' : '新建提示词组'"
+      :title="editingId ? t('prompts.groupForm.editTitle') : t('prompts.groupForm.createTitle')"
       width="520px"
       append-to-body
     >
       <el-form label-width="90px" size="default" @submit.prevent>
-        <el-form-item label="组名" required>
-          <el-input v-model="form.name" placeholder="例如：严谨分析" maxlength="30" />
+        <el-form-item :label="t('prompts.groupForm.name')" required>
+          <el-input v-model="form.name" :placeholder="t('prompts.groupForm.namePlaceholder')" maxlength="30" />
         </el-form-item>
 
-        <el-form-item label="功能简介" required>
+        <el-form-item :label="t('prompts.groupForm.desc')" required>
           <el-input
             v-model="form.description"
-            placeholder="一句话说明这组提示词用来做什么"
+            :placeholder="t('prompts.groupForm.descPlaceholder')"
             maxlength="60"
           />
         </el-form-item>
 
-        <el-divider content-position="left">提示词搭配</el-divider>
+        <el-divider content-position="left">{{ t('prompts.groupForm.pairing') }}</el-divider>
 
         <!-- 六类各一个多选框。每类都可以不选，也可以选多条 —— 引用用的是 id，
              不再有「一个分类只能选一条」的限制 -->
@@ -540,7 +546,7 @@ onMounted(() => {
             :model-value="formIdsOf(category)"
             multiple
             collapse-tags
-            :placeholder="`不选用${category}`"
+            :placeholder="t('prompts.groupForm.notChosen', { category })"
             class="wide"
             @update:model-value="setFormCategory(category, $event)"
           >
@@ -555,9 +561,9 @@ onMounted(() => {
       </el-form>
 
       <template #footer>
-        <el-button size="small" @click="dialogOpen = false">取消</el-button>
+        <el-button size="small" @click="dialogOpen = false">{{ t('common.cancel') }}</el-button>
         <el-button size="small" type="primary" :disabled="!canSubmit" @click="submit">
-          {{ editingId ? '保存' : '创建' }}
+          {{ editingId ? t('common.save') : t('common.create') }}
         </el-button>
       </template>
     </el-dialog>
@@ -566,35 +572,35 @@ onMounted(() => {
          引用用的是 id，改完不影响任何已有的提示词组 -->
     <el-dialog
       v-model="promptDialogOpen"
-      :title="editingPrompt ? '编辑提示词' : '添加提示词'"
+      :title="editingPrompt ? t('prompts.promptForm.editTitle') : t('prompts.promptForm.addTitle')"
       width="760px"
       top="6vh"
       append-to-body
     >
       <el-form label-width="70px" size="default" @submit.prevent>
-        <el-form-item label="名称" required>
-          <el-input v-model="promptForm.name" placeholder="例如：Agent助手" maxlength="60" />
+        <el-form-item :label="t('prompts.promptForm.name')" required>
+          <el-input v-model="promptForm.name" :placeholder="t('prompts.promptForm.namePlaceholder')" maxlength="60" />
           <div class="field-hint muted">
-            名称与分类都只是说明，随便改 —— 提示词组引用的是这条提示词本身
+            {{ t('prompts.promptForm.nameHint') }}
           </div>
         </el-form-item>
 
-        <el-form-item label="分类" required>
+        <el-form-item :label="t('prompts.promptForm.category')" required>
           <el-select v-model="promptForm.category" class="wide">
             <el-option v-for="item in lib.categories" :key="item" :label="item" :value="item" />
           </el-select>
         </el-form-item>
 
-        <el-form-item label="正文" required>
+        <el-form-item :label="t('prompts.promptForm.body')" required>
           <MarkdownEditor
             v-model="promptForm.content"
-            placeholder="写这个提示词的正文，支持 Markdown"
+            :placeholder="t('prompts.promptForm.bodyPlaceholder')"
           />
         </el-form-item>
       </el-form>
 
       <template #footer>
-        <el-button size="small" @click="promptDialogOpen = false">取消</el-button>
+        <el-button size="small" @click="promptDialogOpen = false">{{ t('common.cancel') }}</el-button>
         <el-button
           size="small"
           type="primary"
@@ -602,7 +608,7 @@ onMounted(() => {
           :disabled="!canSubmitPrompt"
           @click="submitPrompt"
         >
-          确认
+          {{ t('common.confirm') }}
         </el-button>
       </template>
     </el-dialog>
@@ -654,7 +660,7 @@ onMounted(() => {
 
 .half-head h2 {
   margin: 0;
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 600;
 }
 
@@ -690,7 +696,7 @@ onMounted(() => {
 
 .field-hint {
   margin-top: 4px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.4;
 }
 
@@ -705,7 +711,7 @@ onMounted(() => {
   padding: 10px 12px;
   overflow: auto;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;

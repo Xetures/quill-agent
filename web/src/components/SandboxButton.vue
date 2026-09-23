@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Lock, Unlock } from '@element-plus/icons-vue'
 import { computed, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 
 import { api } from '../api/client'
 import { errorText } from '../utils/error'
@@ -43,7 +44,35 @@ const saving = ref(false)
 const draftMode = ref('')
 const draftNetwork = ref(false)
 
-const label = computed(() => status.value?.mode_label ?? '执行权限')
+const { t } = useI18n()
+
+/**
+ * 档位的显示名与说明。**按 `mode` 的值查前端文案**，不用后端随清单给的那份 ——
+ * 界面文案要跟着用户选的语言走，而后端并不知道用户此刻用的是哪种语言
+ * （后端那份 label / hint 留给回执这类非界面场合）。
+ *
+ * 「有哪些档位」仍然由后端说了算（清单是它给的），这里只负责把值翻成话。
+ */
+function modeLabel(value: string | undefined): string {
+  if (value === 'read-only') return t('sandbox.mode.readOnly.label')
+  if (value === 'workspace-write') return t('sandbox.mode.workspaceWrite.label')
+  return t('sandbox.mode.off.label')
+}
+
+function modeHint(value: string | undefined): string {
+  if (value === 'read-only') return t('sandbox.mode.readOnly.hint')
+  if (value === 'workspace-write') return t('sandbox.mode.workspaceWrite.hint')
+  return t('sandbox.mode.off.hint')
+}
+
+/**
+ * 档位名（顶栏那个）。取不到状态时给一个占位符，**不能回落到「执行权限」** ——
+ * 模板里已经写了那个前缀，回落的结果是「执行权限：执行权限」。
+ *
+ * 这个分支在真机上只是接口没返回时的一瞬，但它会实实在在画出来（比如后端刚起、
+ * 或某个接口挂了），而顶栏这一处是最不该出现自相矛盾文案的地方。
+ */
+const label = computed(() => (status.value ? modeLabel(status.value.mode) : '—'))
 
 /** 关着就是开着的锁 —— 不点开弹窗也能一眼看出现在有没有边界。 */
 const icon = computed(() => (status.value?.mode === 'off' ? Unlock : Lock))
@@ -70,17 +99,20 @@ const backendMissing = computed(
 )
 
 const title = computed(() => {
-  if (!status.value) return '执行权限'
-  const base = `执行权限：${status.value.mode_label}`
+  if (!status.value) return t('sandbox.label')
+  const base = t('sandbox.labelValue', { value: label.value })
   return status.value.available || status.value.mode === 'off'
-    ? `${base}（点击修改）`
-    : `${base}（这台机器没有可用的沙箱后端，命令会被拒绝执行）`
+    ? base + t('sandbox.tipClick')
+    : base + t('sandbox.tipNoBackend')
 })
 
-/** 当前选中档位管什么。文案由后端给（见 `SandboxMode.hint`），前端不另抄一份。 */
-const hint = computed(
-  () => status.value?.modes.find((item) => item.value === draftMode.value)?.hint ?? '',
-)
+/**
+ * 当前选中档位管什么。
+ *
+ * 按档位的**值**查前端文案，不用后端随清单给的那份（理由见上面 `modeLabel`）。
+ * 清单本身仍以后端为准 —— 加一档不该改前端。
+ */
+const hint = computed(() => (status.value ? modeHint(draftMode.value) : ''))
 
 async function load(): Promise<void> {
   error.value = ''
@@ -135,63 +167,49 @@ async function save(): Promise<void> {
     :title="title"
     @click="openDialog"
   >
-    <span class="label">执行权限：{{ label }}</span>
+    <span class="label">{{ t('sandbox.labelValue', { value: label }) }}</span>
   </el-button>
 
   <!-- append-to-body 必须留着（理由见 HelpButton 里那段说明）：这个入口在顶栏，
        不挂到 body 的话弹窗会被顶栏那块玻璃板的层叠上下文困住 -->
-  <el-dialog v-model="open" title="执行权限（沙箱）" width="560px" append-to-body>
+  <el-dialog v-model="open" :title="t('sandbox.dialogTitle')" width="560px" append-to-body>
     <el-alert v-if="error" type="error" :closable="false" :title="error" class="block" />
 
-    <p class="desc">
-      沙箱限制<strong>命令够得着什么</strong> —— 由操作系统内核执行，越界的写入和联网
-      直接失败，和模型怎么写命令无关。
-    </p>
-    <p class="desc note">
-      它和「危险命令先问用户」那套审批<strong>不是一回事</strong>：审批管
-      <strong>要不要问</strong>，沙箱管<strong>够不够得着</strong>。两者互相独立。
-    </p>
+    <!-- 这两段带 <strong> / <code>，文案在 locales 里，所以用 v-html 渲染 ——
+         这些字符串是我们自己写的，不含用户输入。scoped 样式够不到 v-html 的内容，
+         相关选择器因此都写了 :deep()（见下面样式） -->
+    <p class="desc" v-html="t('sandbox.intro')" />
+    <p class="desc note" v-html="t('sandbox.notApproval')" />
 
     <el-radio-group v-model="draftMode" class="modes">
       <el-radio-button v-for="item in status?.modes ?? []" :key="item.value" :value="item.value">
-        {{ item.label }}
+        {{ modeLabel(item.value) }}
       </el-radio-button>
     </el-radio-group>
     <p v-if="hint" class="muted hint">{{ hint }}</p>
 
     <div class="row">
       <el-switch v-model="draftNetwork" />
-      <span>允许命令联网</span>
+      <span>{{ t('sandbox.network') }}</span>
     </div>
-    <p class="muted hint">
-      默认断网：数据外传是这类 Agent 最实际的风险，而多数编码任务用不上网络
-      （装依赖那一下可以临时打开）。
-    </p>
+    <p class="muted hint">{{ t('sandbox.networkHint') }}</p>
 
     <el-alert
       v-if="backendMissing"
       type="warning"
       :closable="false"
       class="block"
-      title="这台机器没有可用的沙箱后端"
-      :description="
-        `${status?.unavailable_reason ?? ''} 选「不隔离」以外的档位，会让所有命令被拒绝执行。`
-      "
+      :title="t('sandbox.noBackend')"
+      :description="`${status?.unavailable_reason ?? ''} ${t('sandbox.noBackendSuffix')}`"
     />
 
-    <p v-if="status?.customized" class="muted scope">
-      当前档位是<strong>在界面上设的</strong>，它会盖过 <code>.env</code> 里的
-      <code>SANDBOX_MODE</code>。
-    </p>
+    <p v-if="status?.customized" class="muted scope" v-html="t('sandbox.fromUi')" />
 
-    <p class="muted scope">
-      这是<strong>整台机器</strong>的设置：保存后对所有任务生效，正在跑的那一轮也会在
-      下一条命令上换用新档位。它不属于某个对话，所以入口在顶栏、不在输入框那一排。
-    </p>
+    <p class="muted scope" v-html="t('sandbox.machineWide')" />
 
     <template #footer>
-      <el-button @click="open = false">取消</el-button>
-      <el-button type="primary" :loading="saving" @click="save">保存</el-button>
+      <el-button @click="open = false">{{ t('sandbox.cancel') }}</el-button>
+      <el-button type="primary" :loading="saving" @click="save">{{ t('sandbox.save') }}</el-button>
     </template>
   </el-dialog>
 </template>
@@ -251,7 +269,7 @@ async function save(): Promise<void> {
 
 .desc {
   margin: 0 0 8px;
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 
 .desc.note {
@@ -264,7 +282,7 @@ async function save(): Promise<void> {
 
 .hint {
   margin: 6px 0 0;
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 
 .row {
@@ -272,7 +290,7 @@ async function save(): Promise<void> {
   align-items: center;
   gap: 8px;
   margin: 16px 0 0;
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 
 .block {
@@ -281,15 +299,18 @@ async function save(): Promise<void> {
 
 .scope {
   margin: 12px 0 0;
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 
-.scope code {
+/* `code` 来自 v-html 的文案里（`.scope` 本身是模板元素，不需要 :deep）——
+ * scoped 样式够不到 v-html 生成的内容，漏了这条那两个 `.env` / `SANDBOX_MODE`
+ * 会退化成没样式的裸文本 */
+.scope :deep(code) {
   padding: 1px 4px;
   border-radius: 4px;
   background: var(--bg-soft);
   font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
-  font-size: 11px;
+  font-size: var(--fs-2xs);
 }
 
 /* 窄窗口下让位：页面标题和提示比这个状态更重要，图标留着就够认 */

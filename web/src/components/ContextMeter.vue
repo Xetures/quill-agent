@@ -169,13 +169,13 @@ const tooltip = computed(() => {
 }
 
 .value {
-  font-size: 13px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   white-space: nowrap;
 }
 
 .unit {
-  font-size: 11px;
+  font-size: var(--fs-2xs);
 }
 
 /* 缓存命中率（见模板）。和右边的读数一样是「数字 + 小字单位」两段，
@@ -191,12 +191,12 @@ const tooltip = computed(() => {
 }
 
 .cache .value {
-  font-size: 13px;
+  font-size: var(--fs-sm);
   font-weight: 600;
 }
 
 .cache .unit {
-  font-size: 11px;
+  font-size: var(--fs-2xs);
 }
 
 /*

@@ -11,8 +11,8 @@
     <title>Quill</title>
 
     <script>
-      // 在样式表生效之前把主题挂到 <html> 上，避免深色用户看到一闪的白屏。
-      // 必须内联：外链模块要等下载 + 解析完才执行，那时页面已经白过了
+      // 主题、字号、语言都必须在样式表生效之前落到 <html> 上，否则用户会看到一次跳动
+      // （深色闪白、字号突变）。必须内联：外链模块要等下载 + 解析完才执行，那时已经晚了
       ;(function () {
         try {
           var saved = localStorage.getItem('quill:theme') || 'auto'
@@ -21,8 +21,18 @@
             (saved === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches)
           document.documentElement.classList.toggle('dark', dark)
           document.documentElement.dataset.theme = dark ? 'dark' : 'light'
+
+          // 字号：只认这两个值，其余（没选过、写坏了）一律标准档 —— 与 stores/font-size.ts 一致
+          var size = localStorage.getItem('quill:font-size')
+          document.documentElement.dataset.fontSize =
+            size === 'small' || size === 'large' ? size : 'standard'
+
+          // 语言：文案由 vue-i18n 接管（见 locales/），这里只把 lang 属性挂对 ——
+          // 断词规则和读屏发音都靠它
+          var locale = localStorage.getItem('quill:locale')
+          if (locale) document.documentElement.lang = locale
         } catch (e) {
-          // localStorage 不可用（隐私模式）时按浅色走，不影响其它功能
+          // localStorage 不可用（隐私模式）时按默认走，不影响其它功能
         }
       })()
     </script>

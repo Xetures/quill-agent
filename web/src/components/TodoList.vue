@@ -100,7 +100,7 @@ const MARKS: Record<TodoStatus, string> = {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   font-weight: 600;
 }
 
@@ -113,7 +113,7 @@ const MARKS: Record<TodoStatus, string> = {
 .arrow {
   align-self: center;
   color: var(--text-soft);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   transition: transform 0.2s ease;
 }
 
@@ -126,7 +126,7 @@ const MARKS: Record<TodoStatus, string> = {
 .count {
   margin-left: auto;
   color: var(--text-soft);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   font-weight: 400;
 }
 
@@ -156,7 +156,7 @@ const MARKS: Record<TodoStatus, string> = {
   margin: 10px 0 0;
   padding: 0;
   list-style: none;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   line-height: 1.9;
 }
 

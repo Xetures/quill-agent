@@ -8,6 +8,7 @@ import {
   WarningFilled,
 } from '@element-plus/icons-vue'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 
 import ContextMeter from '../components/ContextMeter.vue'
 import MessageItem from '../components/MessageItem.vue'
@@ -30,6 +31,8 @@ import {
 // 这里读到的 currentId 多半还是空串 —— bootstrap 在父组件 App 的 onMounted 里
 // 才跑，子组件的 setup 比它早。真正加载草稿的是下面那个 watch(currentId)。
 // 留着这一行是为了覆盖「刷新页面时 bootstrap 已经跑完」的情况。
+const { t } = useI18n()
+
 const draft = ref(loadDraft(session.currentId))
 
 /** 这一轮要随消息一起发出去的附件。发完就清空 —— 它们已经落到工作目录了。 */
@@ -193,17 +196,17 @@ const runPhaseText = computed(() => {
 
   switch (phase.kind) {
     case 'connecting':
-      return '正在连接…'
+      return t('chat.phase.connecting')
     case 'waiting':
-      return '等待模型响应…'
+      return t('chat.phase.waiting')
     case 'thinking':
-      return '正在思考…'
+      return t('chat.phase.thinking')
     case 'generating':
-      return '正在生成…'
+      return t('chat.phase.generating')
     case 'tool':
-      return `正在执行 ${phase.name}…`
+      return t('chat.phase.tool', { name: phase.name })
     case 'asking':
-      return '等待你的回答…'
+      return t('chat.phase.asking')
   }
 })
 
@@ -269,7 +272,7 @@ const runMetaText = computed(() => {
   const round = session.liveRound
   if (round) {
     // 收尾轮不占工具预算（它不带工具），报「第 31/30 轮」只会让人困惑
-    parts.push(round.index > round.total ? '收尾中' : `第 ${round.index}/${round.total} 轮`)
+    parts.push(round.index > round.total ? t('chat.roundWrapping') : t('chat.roundProgress', { index: round.index, total: round.total }))
   }
 
   return parts.join(' · ')
@@ -286,7 +289,7 @@ const runMetaText = computed(() => {
 watch(
   () => session.pendingQuestion,
   (question) => {
-    document.title = question ? '⚠ 等待你的确认 · Quill' : 'Quill'
+    document.title = question ? t('chat.docTitleWaiting') : 'Quill'
   },
 )
 
@@ -424,7 +427,7 @@ function onKeydown(event: Event | KeyboardEvent): void {
   <div class="chat">
     <!-- 投递到顶栏。Teleport 不产生实际节点，所以不影响下面 .chat 的 flex 布局 -->
     <Teleport to="#page-head-slot">
-      <h1>任务</h1>
+      <h1>{{ t('chat.title') }}</h1>
       <!-- 会话名 + 运行状态：**居中**挂在顶栏正中，状态折在名字下面一行（见 .head-center）。
            两样都是随会话切换、随运行出现消失的东西，参与排布的话每换一次会话、
            每跑一轮，左边的「任务」都要被推一下。 -->
@@ -466,7 +469,7 @@ function onKeydown(event: Event | KeyboardEvent): void {
 
         <!-- 执行前确认、子代理看板、任务清单都不在这里了：它们挪到了输入区上方的
              浮层里，理由见 .floater 那段样式说明 -->
-        <el-empty v-if="!session.messages.length" description="在下面输入内容，开始对话" />
+        <el-empty v-if="!session.messages.length" :description="t('chat.empty')" />
       </div>
     </el-scrollbar>
 
@@ -503,8 +506,8 @@ function onKeydown(event: Event | KeyboardEvent): void {
             <el-icon class="confirm-icon spin"><Loading /></el-icon>
             <span>{{
               runningSubagentCount > 1
-                ? `${runningSubagentCount} 个子代理正在工作`
-                : '子代理正在工作'
+                ? t('chat.subagentMany', { count: runningSubagentCount })
+                : t('chat.subagentOne')
             }}</span>
           </div>
 
@@ -550,7 +553,7 @@ function onKeydown(event: Event | KeyboardEvent): void {
             v-model="planNote"
             size="small"
             class="confirm-note"
-            placeholder="补充说明（驳回时请写清要改什么）"
+            :placeholder="t('chat.planNotePlaceholder')"
           />
 
           <div class="confirm-actions">
@@ -574,7 +577,7 @@ function onKeydown(event: Event | KeyboardEvent): void {
                 v-model="freeAnswer"
                 size="small"
                 class="confirm-input"
-                placeholder="输入你的回答"
+                :placeholder="t('chat.answerPlaceholder')"
                 @keydown.enter="freeAnswer.trim() && answerTo(freeAnswer)"
               />
               <el-button
@@ -583,7 +586,7 @@ function onKeydown(event: Event | KeyboardEvent): void {
                 :disabled="!freeAnswer.trim()"
                 @click="answerTo(freeAnswer)"
               >
-                回答
+                {{ t('chat.label.answer') }}
               </el-button>
             </template>
           </div>
@@ -597,11 +600,11 @@ function onKeydown(event: Event | KeyboardEvent): void {
            模式决定这一轮用哪些提示词、工具、技能和记忆，所以排在第一位 -->
       <div class="tools">
         <div class="tool-group">
-          <span class="label">模式</span>
+          <span class="label">{{ t('chat.label.mode') }}</span>
           <el-select
             v-model="session.modeId"
             size="small"
-            :placeholder="session.modes.length ? '选择模式' : '还没有模式'"
+            :placeholder="session.modes.length ? t('chat.selectMode') : t('chat.noMode')"
             class="mode-select"
             @change="persistMode"
           >
@@ -615,11 +618,11 @@ function onKeydown(event: Event | KeyboardEvent): void {
         </div>
 
         <div class="tool-group">
-          <span class="label">模型</span>
+          <span class="label">{{ t('chat.label.model') }}</span>
           <el-select
             v-model="session.modelKey"
             size="small"
-            placeholder="选择模型"
+            :placeholder="t('chat.selectModel')"
             class="model-select"
             @change="persistModel"
           >
@@ -633,15 +636,15 @@ function onKeydown(event: Event | KeyboardEvent): void {
         </div>
 
         <div class="tool-group">
-          <span class="label">工作目录</span>
+          <span class="label">{{ t('chat.label.workDir') }}</span>
           <WorkDirPicker />
         </div>
 
         <div class="tool-group">
-          <span class="label">附件</span>
+          <span class="label">{{ t('chat.label.attachments') }}</span>
           <!-- 只剩加号：标签已经说明这一格是什么，按钮里再写一遍「附件」就重复了。
                悬停有「上传文件」的说明兜底 -->
-          <el-button size="small" :icon="Plus" title="上传文件" @click="pickFiles" />
+          <el-button size="small" :icon="Plus" :title="t('chat.uploadFile')" @click="pickFiles" />
         </div>
 
         <!-- 原生 file input 藏起来，由上面的按钮代为触发：
@@ -652,10 +655,10 @@ function onKeydown(event: Event | KeyboardEvent): void {
              正文一个字都给不出来，这时该关掉；大模型不需要关 —— 默认开着 -->
         <el-tooltip
           placement="top"
-          content="关闭后不带思维链。小模型常因思考耗尽输出预算，这时该关掉它"
+          :content="t('chat.thinkingHint')"
         >
           <div class="think-toggle">
-            <span>思考</span>
+            <span>{{ t('chat.label.thinking') }}</span>
             <el-switch
               v-model="session.thinking"
               size="small"
@@ -692,8 +695,8 @@ function onKeydown(event: Event | KeyboardEvent): void {
           :disabled="session.busy"
           :placeholder="
             session.modes.length
-              ? '输入内容，Enter 发送，Shift + Enter 换行'
-              : '请先在「模式」页创建一个模式 —— 没有模式就没有提示词、工具和技能'
+              ? t('chat.inputPlaceholder')
+              : t('chat.inputNoMode')
           "
           @keydown="onKeydown"
         />
@@ -705,7 +708,7 @@ function onKeydown(event: Event | KeyboardEvent): void {
           class="send"
           circle
           :icon="CloseBold"
-          title="停止这一轮"
+          :title="t('chat.stop')"
           @click="stopRun"
         />
         <el-button
@@ -715,7 +718,7 @@ function onKeydown(event: Event | KeyboardEvent): void {
           circle
           :icon="Promotion"
           :disabled="!canSend"
-          title="发送"
+          :title="t('chat.send')"
           @click="send"
         />
       </div>
@@ -780,7 +783,7 @@ function onKeydown(event: Event | KeyboardEvent): void {
 .head-center .hint {
   max-width: 100%;
   overflow: hidden;
-  font-size: 14px;
+  font-size: var(--fs-base);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -791,7 +794,7 @@ function onKeydown(event: Event | KeyboardEvent): void {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text-soft);
   white-space: nowrap;
 }
@@ -878,7 +881,7 @@ function onKeydown(event: Event | KeyboardEvent): void {
   background: var(--bg);
   color: var(--text-soft);
   font-family: var(--mono, monospace);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   /* pre：保留换行；pre-wrap 让长命令自己折行，不至于横向撑出去 */
   white-space: pre-wrap;
   word-break: break-all;
@@ -891,7 +894,7 @@ function onKeydown(event: Event | KeyboardEvent): void {
   max-height: 340px;
   overflow: auto;
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 
 .confirm-note {
@@ -910,7 +913,7 @@ function onKeydown(event: Event | KeyboardEvent): void {
   margin-top: 10px;
   max-height: 160px;
   overflow: auto;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.7;
 }
 
@@ -930,7 +933,7 @@ function onKeydown(event: Event | KeyboardEvent): void {
   padding: 0 4px;
   border-radius: 3px;
   background: rgba(127, 127, 127, 0.16);
-  font-size: 11px;
+  font-size: var(--fs-2xs);
 }
 
 /* 图标转起来 —— 不转的话它看着像个静态装饰，传达不了「还在跑」 */
@@ -992,7 +995,7 @@ function onKeydown(event: Event | KeyboardEvent): void {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text-soft);
   cursor: pointer;
 }
@@ -1007,7 +1010,7 @@ function onKeydown(event: Event | KeyboardEvent): void {
 
 /* 组前头那两个字。和「思考」开关的字同一副样子：都是对控件的说明，不是内容 */
 .tool-group .label {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text-soft);
   white-space: nowrap;
 }

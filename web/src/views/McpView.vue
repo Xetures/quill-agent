@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { Plus, Refresh } from '@element-plus/icons-vue'
 import { computed, onMounted, reactive, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 
 import { api } from '../api/client'
 import { useTableHeight } from '../composables/useTableHeight'
 import { errorText } from '../utils/error'
+
+const { t } = useI18n()
 
 /**
  * MCP 服务器管理。
@@ -94,7 +97,8 @@ async function load(): Promise<void> {
   loading.value = true
   try {
     const data = await api.get<{ servers: McpServerRow[] }>('/mcp/servers')
-    servers.value = data.servers
+    // `?? []`：字段缺失也要能打开页面与弹窗（下面到处在 `.length` / 迭代它）
+    servers.value = data.servers ?? []
   } catch (exc) {
     ElMessage.error(errorText(exc))
   } finally {
@@ -153,10 +157,10 @@ async function save(): Promise<void> {
   try {
     if (editingId.value) {
       await api.put(`/mcp/servers/${encodeURIComponent(editingId.value)}`, payload())
-      ElMessage.success('已更新')
+      ElMessage.success(t('mcp.updated'))
     } else {
       await api.post('/mcp/servers', payload())
-      ElMessage.success('已添加')
+      ElMessage.success(t('mcp.added'))
     }
   } catch (exc) {
     ElMessage.error(errorText(exc))
@@ -179,9 +183,9 @@ async function toggle(row: McpServerRow): Promise<void> {
 async function remove(row: McpServerRow): Promise<void> {
   try {
     await ElMessageBox.confirm(
-      `删除 MCP 服务器「${row.name}」？它提供的 ${row.tools.length} 个工具会立刻从可用工具里消失。`,
-      '删除 MCP 服务器',
-      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+      t('mcp.deleteConfirm', { name: row.name, count: row.tools.length }),
+      t('mcp.deleteTitle'),
+      { type: 'warning', confirmButtonText: t('common.delete'), cancelButtonText: t('common.cancel') },
     )
   } catch {
     return
@@ -204,7 +208,7 @@ async function reload(): Promise<void> {
     ElMessage.error(errorText(exc))
   }
   await load()
-  ElMessage.success('已重新连接')
+  ElMessage.success(t('mcp.reconnected'))
 }
 
 onMounted(load)
@@ -214,16 +218,14 @@ onMounted(load)
   <div class="mcp">
     <div class="head">
       <div>
-        <h2>MCP 服务器</h2>
+        <h2>{{ t('mcp.title') }}</h2>
         <p class="hint">
-          接入外部工具来源。<strong>添加一个服务器 = 允许它在这台机器上执行任意代码</strong>
-          —— stdio 会起一个进程，而且它<strong>不在沙箱内</strong>（沙箱管的是模型执行的命令）。
-          只添加你信任的服务器。
+          <span v-html="t('mcp.warning')" />
         </p>
       </div>
       <div class="head-actions">
-        <el-button :icon="Refresh" :loading="loading" @click="reload">重新连接</el-button>
-        <el-button type="primary" :icon="Plus" @click="openCreate">添加服务器</el-button>
+        <el-button :icon="Refresh" :loading="loading" @click="reload">{{ t('mcp.reconnect') }}</el-button>
+        <el-button type="primary" :icon="Plus" @click="openCreate">{{ t('mcp.add') }}</el-button>
       </div>
     </div>
 
@@ -233,19 +235,19 @@ onMounted(load)
         :data="servers"
         :height="tableHeight"
         v-loading="loading"
-        empty-text="还没有配置 MCP 服务器"
+        :empty-text="t('mcp.empty')"
       >
-      <el-table-column label="名称" min-width="140">
+      <el-table-column :label="t('mcp.columnName')" min-width="140">
         <template #default="{ row }">
           <div class="name">
             <span>{{ row.name }}</span>
-            <el-tag v-if="!row.enabled" size="small" type="info" effect="plain">已停用</el-tag>
+            <el-tag v-if="!row.enabled" size="small" type="info" effect="plain">{{ t('mcp.disabled') }}</el-tag>
           </div>
           <div v-if="row.description" class="muted desc">{{ row.description }}</div>
         </template>
       </el-table-column>
 
-      <el-table-column label="连接方式" width="150">
+      <el-table-column :label="t('mcp.columnTransport')" width="150">
         <template #default="{ row }">
           <div class="mono transport">{{ row.transport }}</div>
           <div class="muted mono cmd" :title="[row.command, ...row.args].join(' ')">
@@ -254,30 +256,30 @@ onMounted(load)
         </template>
       </el-table-column>
 
-      <el-table-column label="状态" min-width="200">
+      <el-table-column :label="t('mcp.columnStatus')" min-width="200">
         <template #default="{ row }">
           <template v-if="!row.enabled">
-            <span class="muted">已停用</span>
+            <span class="muted">{{ t('mcp.disabled') }}</span>
           </template>
           <template v-else-if="row.connected">
             <el-tag size="small" type="success" effect="plain">
-              已连接 · {{ row.tools.length }} 个工具
+              {{ t('mcp.connected', { count: row.tools.length }) }}
             </el-tag>
           </template>
           <template v-else>
-            <el-tooltip :content="row.error || '尚未连接'" placement="top">
-              <el-tag size="small" type="danger" effect="plain">连接失败</el-tag>
+            <el-tooltip :content="row.error || t('mcp.notConnected')" placement="top">
+              <el-tag size="small" type="danger" effect="plain">{{ t('mcp.connectFailed') }}</el-tag>
             </el-tooltip>
-            <div class="muted error-text">{{ row.error || '尚未连接' }}</div>
+            <div class="muted error-text">{{ row.error || t('mcp.notConnected') }}</div>
           </template>
         </template>
       </el-table-column>
 
-      <el-table-column label="操作" width="210" align="right">
+      <el-table-column :label="t('mcp.columnActions')" width="210" align="right">
         <template #default="{ row }">
-          <el-button size="small" text @click="openEdit(row as McpServerRow)">编辑</el-button>
+          <el-button size="small" text @click="openEdit(row as McpServerRow)">{{ t('common.edit') }}</el-button>
           <el-button size="small" text @click="toggle(row as McpServerRow)">
-            {{ row.enabled ? '停用' : '启用' }}
+            {{ row.enabled ? t('mcp.disable') : t('mcp.enable') }}
           </el-button>
           <el-button size="small" text type="danger" @click="remove(row as McpServerRow)">
             删除
@@ -291,74 +293,73 @@ onMounted(load)
          （详见 HelpButton.vue 里那段说明） -->
     <el-dialog
       v-model="dialog"
-      :title="editingId ? '编辑 MCP 服务器' : '添加 MCP 服务器'"
+      :title="editingId ? t('mcp.editTitle') : t('mcp.addTitle')"
       width="640px"
       append-to-body
     >
       <el-form label-width="92px" label-position="left">
-        <el-form-item label="名称">
-          <el-input v-model="form.name" placeholder="如 filesystem" />
+        <el-form-item :label="t('mcp.form.name')">
+          <el-input v-model="form.name" :placeholder="t('mcp.form.namePlaceholder')" />
           <div class="hint">
-            只能是字母、数字、下划线、短横 —— 它会成为工具名的前缀（
-            <span class="mono">mcp__名称__工具</span>），而模型 API 对名字有字符集限制。
+            <span v-html="t('mcp.form.nameHint')" />
           </div>
         </el-form-item>
-        <el-form-item label="说明">
-          <el-input v-model="form.description" placeholder="可选，帮你想起它是干嘛的" />
+        <el-form-item :label="t('mcp.form.description')">
+          <el-input v-model="form.description" :placeholder="t('mcp.form.descriptionPlaceholder')" />
         </el-form-item>
-        <el-form-item label="连接方式">
+        <el-form-item :label="t('mcp.form.transport')">
           <el-radio-group v-model="form.transport">
-            <el-radio-button value="stdio">stdio（本地进程）</el-radio-button>
-            <el-radio-button value="http">http（远程）</el-radio-button>
+            <el-radio-button value="stdio">{{ t('mcp.form.transportStdio') }}</el-radio-button>
+            <el-radio-button value="http">{{ t('mcp.form.transportHttp') }}</el-radio-button>
           </el-radio-group>
         </el-form-item>
 
         <template v-if="isStdio">
-          <el-form-item label="命令">
-            <el-input v-model="form.command" placeholder="如 npx 或 uvx" />
+          <el-form-item :label="t('mcp.form.command')">
+            <el-input v-model="form.command" :placeholder="t('mcp.form.commandPlaceholder')" />
           </el-form-item>
-          <el-form-item label="参数">
+          <el-form-item :label="t('mcp.form.args')">
             <el-input
               v-model="form.argsText"
               type="textarea"
               :rows="3"
-              placeholder="每行一个，例如：&#10;-y&#10;@modelcontextprotocol/server-filesystem&#10;/tmp"
+              :placeholder="t('mcp.form.argsPlaceholder')"
             />
           </el-form-item>
-          <el-form-item label="环境变量">
+          <el-form-item :label="t('mcp.form.env')">
             <el-input
               v-model="form.envText"
               type="textarea"
               :rows="2"
-              placeholder="每行一个 KEY=VALUE，可选"
+              :placeholder="t('mcp.form.envPlaceholder')"
             />
           </el-form-item>
         </template>
 
-        <el-form-item v-else label="地址">
-          <el-input v-model="form.url" placeholder="如 http://127.0.0.1:3000/mcp" />
+        <el-form-item v-else :label="t('mcp.form.url')">
+          <el-input v-model="form.url" :placeholder="t('mcp.form.urlPlaceholder')" />
         </el-form-item>
 
-        <el-form-item label="超时">
+        <el-form-item :label="t('mcp.form.timeout')">
           <el-input-number v-model="form.timeout" :min="5" :max="300" :step="5" />
-          <span class="hint inline">秒。单次调用的上限 —— 超时后等待会被放弃。</span>
+          <span class="hint inline">{{ t('mcp.form.timeoutHint') }}</span>
         </el-form-item>
 
         <!-- 保存前先试一次：能不能起、能不能列出工具 -->
         <el-form-item label=" ">
-          <el-button :loading="testing" @click="testConnection">试连接</el-button>
+          <el-button :loading="testing" @click="testConnection">{{ t('mcp.form.test') }}</el-button>
           <span v-if="probe" class="probe">
             <el-tag v-if="probe.ok" size="small" type="success" effect="plain">
-              成功 · {{ probe.tools.length }} 个工具
+              {{ t('mcp.form.testOk', { count: probe.tools.length }) }}
             </el-tag>
-            <el-tag v-else size="small" type="danger" effect="plain">失败</el-tag>
+            <el-tag v-else size="small" type="danger" effect="plain">{{ t('mcp.form.testFailed') }}</el-tag>
           </span>
         </el-form-item>
       </el-form>
 
       <div v-if="probe" class="probe-box">
         <template v-if="probe.ok">
-          <div class="muted">它提供这些工具：</div>
+          <div class="muted">{{ t('mcp.form.provides') }}</div>
           <div v-for="tool in probe.tools" :key="tool.name" class="mono probe-line">
             {{ tool.name }} <span class="muted">← {{ tool.remote }}</span>
           </div>
@@ -367,8 +368,8 @@ onMounted(load)
       </div>
 
       <template #footer>
-        <el-button @click="dialog = false">取消</el-button>
-        <el-button type="primary" :disabled="!form.name.trim()" @click="save">保存</el-button>
+        <el-button @click="dialog = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" :disabled="!form.name.trim()" @click="save">{{ t('common.save') }}</el-button>
       </template>
     </el-dialog>
   </div>
@@ -403,7 +404,7 @@ onMounted(load)
 
 .head h2 {
   margin: 0 0 6px;
-  font-size: 15px;
+  font-size: var(--fs-lg);
 }
 
 .head-actions {
@@ -414,7 +415,7 @@ onMounted(load)
 
 .hint {
   margin: 4px 0 0;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.6;
   color: var(--text-soft);
 }
@@ -433,13 +434,13 @@ onMounted(load)
 .desc,
 .cmd,
 .error-text {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   margin-top: 2px;
 }
 
 .cmd,
 .transport {
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 
 /* 命令行会很长，截断并靠 title 显示全文 */
@@ -462,7 +463,7 @@ onMounted(load)
 .probe-box {
   border-top: 1px solid var(--border);
   padding-top: 10px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   max-height: 180px;
   overflow-y: auto;
 }

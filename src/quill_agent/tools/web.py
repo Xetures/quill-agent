@@ -74,7 +74,7 @@ def _format_hits(hits: list[SearchHit]) -> str:
         "那用文件工具更准。"
         "一次搜索通常就够了；结果不理想时换个说法再搜一次，比反复搜同一句有用。"
     ),
-    category="联网",
+    category="web",
     parameters={
         "type": "object",
         "properties": {
@@ -192,7 +192,7 @@ def _summarize(text: str, prompt: str, *, url: str, title: str) -> str | None:
         "一次别抓太多篇：每抓一篇都是一次网络请求加一次模型调用，"
         "而且两篇里往往只有一篇真正回答了问题。"
     ),
-    category="联网",
+    category="web",
     parameters={
         "type": "object",
         "properties": {
