@@ -29,6 +29,7 @@ from urllib.request import Request, urlopen
 
 from pydantic import BaseModel, Field, ValidationError
 
+from quill_agent.locking import atomic_write_text, file_lock
 from quill_agent.store import read_json
 
 # 搜索请求超时（秒）。搜索是「等结果才有下一步」的操作，用户就在那儿盯着，
@@ -170,14 +171,19 @@ class SearchStore:
             return SearchConfig()
 
     def save(self, config: SearchConfig) -> None:
-        """整体覆写。"""
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(
-            # mode="json"：让枚举落成它的取值（"tavily"）而不是枚举对象，
-            # 存出来的文件直接可读可手改
-            json.dumps(config.model_dump(mode="json"), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        """整体覆写。
+
+        和其它几个 store 一样是「持锁进入 + 原子替换」（理由见 `store.py` 的
+        `_save_all` 那段）：不持锁的话两个进程会互相覆盖，不用原子替换的话别的进程
+        可能读到写了一半的文件。
+        """
+        with file_lock(self._path):
+            atomic_write_text(
+                self._path,
+                # mode="json"：让枚举落成它的取值（"tavily"）而不是枚举对象，
+                # 存出来的文件直接可读可手改
+                json.dumps(config.model_dump(mode="json"), ensure_ascii=False, indent=2),
+            )
 
 
 @dataclass(frozen=True)

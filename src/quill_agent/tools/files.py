@@ -46,6 +46,7 @@ from pathlib import Path
 
 from quill_agent import changes
 from quill_agent.config import get_settings
+from quill_agent.locking import atomic_write_text
 from quill_agent.preferences import PreferenceStore
 from quill_agent.tools.base import registry
 
@@ -416,15 +417,14 @@ def pick_dir_with_system_dialog() -> tuple[str | None, str | None]:
 
 
 def _atomic_write(target: Path, content: str) -> None:
-    """先写临时文件再改名 —— 写到一半崩了也不会留下半截文件。"""
-    tmp = target.with_name(f".{target.name}.tmp{os.getpid()}")
-    try:
-        tmp.write_text(content, encoding="utf-8")
-        tmp.replace(target)
-    finally:
-        # 正常路径下 replace 之后 tmp 已不存在；异常时清掉残留
-        if tmp.exists():
-            tmp.unlink(missing_ok=True)
+    """先写临时文件再改名 —— 写到一半崩了也不会留下半截文件。
+
+    实现委托给 `locking.atomic_write_text`，那是全项目共用的那一份。原先这里自己
+    写了一版，少了 Windows 上的一处处理：那边**不允许替换被打开的文件**，而这里写的
+    正是用户正在编辑的源码 —— 被编辑器攥着很常见。共用那份会短暂重试再抛，自己留一
+    版迟早漏掉这类细节。
+    """
+    atomic_write_text(target, content)
 
 
 def _target(

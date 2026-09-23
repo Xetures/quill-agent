@@ -24,6 +24,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from quill_agent.locking import atomic_write_text
 from quill_agent.models import Protocol
 from quill_agent.store import read_json
 
@@ -278,10 +279,12 @@ def refresh(
         return False, "同步失败：返回里没有解析出模型规格", 0
 
     target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(
+    # 原子替换，**不加锁**：这两份是「丢了随时能再拉一遍」的快照，就算两次同步撞在
+    # 一起，写进去的也是同一份内容 —— 后到的覆盖先到的没有损失。真正要挡的是
+    # 「写到一半」（比如下载完还没落完盘就退了），那是原子写管的事。
+    atomic_write_text(
+        target,
         json.dumps(dict(sorted(entries.items())), ensure_ascii=False, indent=2),
-        encoding="utf-8",
     )
 
     # 服务商目录。写不出来（缓存坏了、磁盘满）不让这次同步翻船 ——
@@ -290,10 +293,9 @@ def refresh(
         providers = _providers(payload)
         if providers:
             target = Path(providers_path)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(
+            atomic_write_text(
+                target,
                 json.dumps(providers, ensure_ascii=False, indent=2),
-                encoding="utf-8",
             )
 
     return True, f"已收录 {len(entries)} 个模型", len(entries)

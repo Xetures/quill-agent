@@ -25,6 +25,8 @@ import type {
 } from '../api/types'
 import { adoptStoredLocale, i18n, PREF_LANGUAGE } from '../locales'
 import { errorText } from '../utils/error'
+import { adoptStoredFontSize, PREF_FONT_SIZE } from './font-size'
+import { adoptStoredTheme, PREF_THEME } from './theme'
 
 /* 这里不是组件，取不到 useI18n() —— 用实例上的全局 t */
 const t = i18n.global.t
@@ -427,6 +429,10 @@ export async function loadPreferences(): Promise<void> {
   // 语言：只在本地没存过时才采纳后端那份（换了浏览器、清了站点数据的情况）。
   // 本地有值就听本地的 —— 那是更新的一次选择
   adoptStoredLocale(prefs[PREF_LANGUAGE])
+  // 主题与字号：同一套规则（见那两个 store 里的说明）。localStorage 是首屏那一帧要
+  // 用的，偏好是换环境之后还在的那一份；两边都在时听本地的。
+  adoptStoredTheme(prefs[PREF_THEME])
+  adoptStoredFontSize(prefs[PREF_FONT_SIZE])
 
   // 这里不解析模式：它是按会话记的，而此刻还不知道会落到哪个会话。
   // `loadMessages` 会负责把它取回来

@@ -32,6 +32,7 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
+from quill_agent.locking import atomic_write_text
 from quill_agent.naming import safe_name
 
 # 技能目录里约定的入口文件名
@@ -186,8 +187,10 @@ class SkillLibrary:
         if create_only and path.exists():
             raise ValueError(f"技能「{clean}」已经存在了，换个名字，或直接编辑它。")
 
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(compose_skill(description, body), encoding="utf-8")
+        # 原子替换，但**不加 file_lock**：技能目录是给用户看、也给用户自己在编辑器里
+        # 改的地方，每份 SKILL.md 旁边再躺一个 .lock 是噪音；而且这把锁管不住用户的
+        # 编辑器（它不知道我们加了锁），真正要挡的是「写到一半」，那是原子写管的事。
+        atomic_write_text(path, compose_skill(description, body))
         return clean
 
     def delete(self, name: str) -> str:
