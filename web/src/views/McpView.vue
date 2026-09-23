@@ -193,7 +193,7 @@ async function remove(row: McpServerRow): Promise<void> {
 
   try {
     await api.del(`/mcp/servers/${encodeURIComponent(row.id)}`)
-    ElMessage.success('已删除')
+    ElMessage.success(t('common.deleted'))
   } catch (exc) {
     ElMessage.error(errorText(exc))
   }
@@ -282,7 +282,7 @@ onMounted(load)
             {{ row.enabled ? t('mcp.disable') : t('mcp.enable') }}
           </el-button>
           <el-button size="small" text type="danger" @click="remove(row as McpServerRow)">
-            删除
+            {{ t('common.delete') }}
           </el-button>
         </template>
       </el-table-column>

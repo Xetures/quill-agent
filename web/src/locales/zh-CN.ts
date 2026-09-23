@@ -451,6 +451,65 @@ export default {
     cleared: '已清空',
   },
 
+  /* 消息气泡：复制 / 删除 / 还原、压缩摘要提示 */
+  messageItem: {
+    noTextToCopy: '这条消息没有可以复制的文本。',
+    fromUser: '我的提问',
+    fromAssistant: '助手回答',
+    deleteConfirm: '删除这条消息？删除后它不再参与后续对话 —— 模型下一轮就看不到它了。',
+    deleteTitle: '删除消息',
+    reasoning: '思考过程',
+    binaryTooBig: '（二进制或文件过大，内容未记录）',
+    linesAdded: '（新建 {count} 行）',
+    revertConfirm: '把这一轮改动过的 {count} 个文件还原到改动前？',
+    revertWarning: '\n\n注意：这一轮「执行过的命令」造成的改动不会还原（比如 mv、sed -i、git checkout）。',
+    revertTitle: '还原改动',
+    revert: '还原',
+    reverted: '已还原 {count} 个文件',
+    revertedPartial: '已还原 {count} 个文件；{skipped} 个没能还原（二进制或过大）',
+    compressedHint: '📦 更早的 {count} 条对话已压缩为摘要（原文仍在会话记录里）',
+    changedFiles: '改了 {count} 个文件：{files}',
+    copyTitle: '复制',
+    deleteButtonTitle: '删除',
+  },
+
+  /* 任务清单（一轮里的 todo） */
+  todoList: { title: '任务清单' },
+
+  /* 上下文窗口读数 */
+  contextMeter: {
+    noReading: '还没有可用读数。\n服务商不返回缓存用量时，这里会一直是「—」。',
+    cacheHit: '缓存命中率 {rate}%（{cached} / {used} tokens）\n',
+    cacheHitHint: '命中部分是这次请求复用的前缀 —— 越高越省钱、也越快。\n',
+    cacheHitMissing: '服务商不返回这项数据时显示 0%。',
+    noWindow: '当前模型没有配置上下文窗口大小（去「API 设置」里填）',
+    usage: '上下文占用 {percent}%（{used} / {size} tokens）',
+    cacheLabel: '缓存',
+    contextLabel: '上下文',
+  },
+
+  /* App.vue 的启动失败页 + 关于页 */
+  app: {
+    bootFailedTitle: '启动失败',
+    bootFailedDesc: '{error}（后端在跑吗？）',
+    aboutDesc: '本地 Agent 工作台',
+  },
+
+  /* 会话 store 的提示语（日志也算：出错时那一行会进界面上的 notices） */
+  session: {
+    requestFailed: '请求失败：{detail}',
+    cancelIgnored: '取消请求没有被接受，这一轮可能已经结束',
+    cancelFailed: '取消请求没有发出去：',
+    notDelivered: '这个回答没能送达（这一轮可能已经结束或被中断），模型未必看得到它。',
+  },
+
+  /* 对话 API 与通用请求层的报错文案 */
+  chatApi: {
+    idleTimeout: '超过 {seconds} 秒没有收到任何数据，连接可能已经断开',
+    requestFailed: '对话请求失败（{status}）',
+  },
+  client: { requestFailed: '请求失败（{status}）' },
+
   /* MCP 服务器页 */
   mcp: {
     title: 'MCP 服务器',

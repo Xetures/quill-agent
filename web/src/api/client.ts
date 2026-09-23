@@ -3,6 +3,10 @@
  *
  * 只做两件事：拼 URL、把后端的错误信息翻成异常。不引 axios —— 原生 fetch
  * 够用，少一个依赖就少一份要跟着升级的东西。
+ *
+ * 这里刻意**不引 i18n**：locales/index.ts 反过来要用 api（语言偏好要发给后端），
+ * 底下的 client 再 import 回去就成环了 —— 成环的那一环会在初始化没走完时取到
+ * undefined，整个前端就白屏了。要翻译由上面的调用方（chat.ts / session.ts）负责。
  */
 
 const BASE = '/api'

@@ -23,8 +23,11 @@ import type {
   TodoItem,
   WorkDirInfo,
 } from '../api/types'
-import { adoptStoredLocale, PREF_LANGUAGE } from '../locales'
+import { adoptStoredLocale, i18n, PREF_LANGUAGE } from '../locales'
 import { errorText } from '../utils/error'
+
+/* 这里不是组件，取不到 useI18n() —— 用实例上的全局 t */
+const t = i18n.global.t
 
 export const session = reactive({
   // 会话
@@ -735,7 +738,7 @@ export async function sendMessage(options: {
   } catch (exc) {
     // 用户自己点了「停止」不算失败：在气泡里留一条「请求失败」
     // 只会让他以为出了故障
-    if (!run.controller.signal.aborted) reply.notices?.push(`请求失败：${errorText(exc)}`)
+    if (!run.controller.signal.aborted) reply.notices?.push(t('session.requestFailed', { detail: errorText(exc) }))
   } finally {
     // 只清理**属于自己那一份**：`runs` 按会话存，万一已有更晚的一轮接管了它
     // （同会话并发时 `set` 会覆盖），无条件 delete 会把对方的记录一并抹掉 ——
@@ -794,12 +797,12 @@ export async function stopRun(): Promise<void> {
     if (!accepted) {
       // 和回答一样：没被接受通常是正常竞态（那一轮刚好自己结束了），不弹错误。
       // 真正的失败信号在流那边 —— 收不到 done 才是要管的事
-      console.warn('取消请求没有被接受，这一轮可能已经结束')
+      console.warn(t('session.cancelIgnored'))
     }
   } catch (exc) {
     // 网络出错同理：这一轮多半也收不到 done，但那是另一条流自己会处理的事，
     // 不该让一个 rejected promise 冒到点击处理器外面去
-    console.warn('取消请求没有发出去：', errorText(exc))
+    console.warn(t('session.cancelFailed'), errorText(exc))
   }
 }
 
@@ -827,7 +830,7 @@ export async function answerQuestion(value: string): Promise<void> {
     // 所以不弹错误，但必须说一句 —— 不说的话用户会以为答案生效了，
     // 而模型那边收到的其实是「没能问到用户」
     const last = session.messages[session.messages.length - 1]
-    last?.notices?.push('这个回答没能送达（这一轮可能已经结束或被中断），模型未必看得到它。')
+    last?.notices?.push(t('session.notDelivered'))
   }
 }
 

@@ -12,8 +12,11 @@
  */
 import { ArrowDown } from '@element-plus/icons-vue'
 import { computed, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 
 import type { TodoItem, TodoStatus } from '../api/types'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   items: TodoItem[]
@@ -54,7 +57,7 @@ const MARKS: Record<TodoStatus, string> = {
 <template>
   <div class="todos" :class="{ live }">
     <div class="head" :class="{ clickable: collapsible }" @click="collapsible && (open = !open)">
-      <span>任务清单</span>
+      <span>{{ t('todoList.title') }}</span>
       <!-- 数字和进度条都要：条是「一眼看到还剩多少」，数字是「确切还剩几步」。
            收起时只剩这个数字 —— 它本来就是这一行里最要紧的信息 -->
       <span class="count mono">{{ done }}/{{ items.length }}</span>

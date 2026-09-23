@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { CopyDocument, Delete } from '@element-plus/icons-vue'
 import { computed, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 
 import { api } from '../api/client'
 import type { FileChange, Message, MessagePart, ToolStep } from '../api/types'
@@ -9,6 +10,8 @@ import { session } from '../stores/session'
 import { errorText } from '../utils/error'
 import { renderMarkdown } from '../utils/markdown'
 import TodoList from './TodoList.vue'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   message: Message
@@ -48,20 +51,20 @@ const deletable = computed(
 async function copyMessage(): Promise<void> {
   const text = props.message.content || props.message.reasoning || ''
   if (!text.trim()) {
-    ElMessage.info('这条消息没有可以复制的文本。')
+    ElMessage.info(t('messageItem.noTextToCopy'))
     return
   }
 
   // **先记进公共剪贴板**：这是「留着」，和系统剪贴板成不成是两件事 ——
   // 后者可能被浏览器拒掉（非安全上下文、权限被改），那时用户至少还能从面板里取走
-  pushClipboard(text, props.message.role === 'user' ? '我的提问' : '助手回答')
+  pushClipboard(text, props.message.role === 'user' ? t('messageItem.fromUser') : t('messageItem.fromAssistant'))
 
   try {
     await navigator.clipboard.writeText(text)
-    ElMessage.success('已复制')
+    ElMessage.success(t('clipboard.copied'))
   } catch {
     // 剪贴板 API 需要安全上下文（https 或 localhost）；被拒时别装作成功
-    ElMessage.error('复制失败：浏览器拒绝了剪贴板访问。')
+    ElMessage.error(t('clipboard.copyFailed'))
   }
 }
 
@@ -70,9 +73,9 @@ async function deleteMessage(): Promise<void> {
   try {
     await ElMessageBox.confirm(
       // 说清后果：只讲「删除」的话，用户不知道删掉之后模型还记不记得
-      '删除这条消息？删除后它不再参与后续对话 —— 模型下一轮就看不到它了。',
-      '删除消息',
-      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+      t('messageItem.deleteConfirm'),
+      t('messageItem.deleteTitle'),
+      { type: 'warning', confirmButtonText: t('common.delete'), cancelButtonText: t('common.cancel') },
     )
   } catch {
     return // 用户按了取消
@@ -82,7 +85,7 @@ async function deleteMessage(): Promise<void> {
     await api.del(
       `/conversations/${encodeURIComponent(session.currentId)}/messages/${props.index}`,
     )
-    ElMessage.success('已删除')
+    ElMessage.success(t('common.deleted'))
     // 让父组件重新拉一遍消息：删掉一条之后，后面每条的索引都往前挪了一位，
     // 就地改本地数组很容易漏掉这一点
     emit('deleted')
@@ -128,7 +131,7 @@ const flow = computed<Flow[]>(() => {
       return { kind: 'tool', key, title: stepTitle(part.step), step: part.step }
     }
     return part.type === 'reasoning'
-      ? { kind: 'reasoning', key, title: '思考过程', html: renderMarkdown(part.content) }
+      ? { kind: 'reasoning', key, title: t('messageItem.reasoning'), html: renderMarkdown(part.content) }
       : { kind: 'text', key, html: renderMarkdown(part.content) }
   })
 })
@@ -191,14 +194,14 @@ function diffLines(changes: FileChange[] | undefined): DiffLine[] {
     })
 
     if (change.binary) {
-      out.push({ key: `${change.path}#bin`, cls: 'ctx', text: '（二进制或文件过大，内容未记录）' })
+      out.push({ key: `${change.path}#bin`, cls: 'ctx', text: t('messageItem.binaryTooBig') })
       continue
     }
 
     const lines = change.diff ? change.diff.split('\n') : []
     if (!lines.length) {
       // 新建文件没有 diff（见后端）：那份「改动」就是全文，全绿的一片没有信息量
-      out.push({ key: `${change.path}#new`, cls: 'ctx', text: `（新建 ${change.added} 行）` })
+      out.push({ key: `${change.path}#new`, cls: 'ctx', text: t('messageItem.linesAdded', { count: change.added }) })
       continue
     }
 
@@ -246,11 +249,11 @@ async function restore(): Promise<void> {
 
   try {
     await ElMessageBox.confirm(
-      `把这一轮改动过的 ${changedFiles.value.length} 个文件还原到改动前？` +
+      t('messageItem.revertConfirm', { count: changedFiles.value.length }) +
         // 不用 Markdown 记号的星号：确认框是纯文本，星号会原样显示出来
-        '\n\n注意：这一轮「执行过的命令」造成的改动不会还原（比如 mv、sed -i、git checkout）。',
-      '还原改动',
-      { type: 'warning', confirmButtonText: '还原', cancelButtonText: '取消' },
+        t('messageItem.revertWarning'),
+      t('messageItem.revertTitle'),
+      { type: 'warning', confirmButtonText: t('messageItem.revert'), cancelButtonText: t('common.cancel') },
     )
   } catch {
     return // 用户按了取消
@@ -265,8 +268,8 @@ async function restore(): Promise<void> {
 
     ElMessage.success(
       result.skipped.length
-        ? `已还原 ${result.restored.length} 个文件；${result.skipped.length} 个没能还原（二进制或过大）`
-        : `已还原 ${result.restored.length} 个文件`,
+        ? t('messageItem.revertedPartial', { count: result.restored.length, skipped: result.skipped.length })
+        : t('messageItem.reverted', { count: result.restored.length }),
     )
 
     // 那份改动已经不存在了，把入口收掉
@@ -302,7 +305,7 @@ const statsText = computed(() => {
     <el-collapse v-if="message.role === 'summary'" class="folds">
       <el-collapse-item
         name="summary"
-        :title="`📦 更早的 ${message.covers ?? 0} 条对话已压缩为摘要（原文仍在会话记录里）`"
+        :title="t('messageItem.compressedHint', { count: message.covers ?? 0 })"
       >
         <div class="md reasoning" v-html="html"></div>
       </el-collapse-item>
@@ -363,8 +366,8 @@ const statsText = computed(() => {
       <!-- **常驻但很淡**：只 hover 才露出来的按钮用户很难发现，而全亮又抢正文的注意力。
            悬停只改透明度、不加底色 —— 加底色会让它在消息框里显得像个突然冒出来的控件 -->
       <div v-if="deletable" class="actions">
-        <el-button text size="small" :icon="Delete" title="删除" @click="deleteMessage" />
-        <el-button text size="small" :icon="CopyDocument" title="复制" @click="copyMessage" />
+        <el-button text size="small" :icon="Delete" :title="t('messageItem.deleteButtonTitle')" @click="deleteMessage" />
+        <el-button text size="small" :icon="CopyDocument" :title="t('messageItem.copyTitle')" @click="copyMessage" />
       </div>
     </div>
 
@@ -388,7 +391,7 @@ const statsText = computed(() => {
          而工具步骤是「这一次调用」的粒度 -->
     <div v-if="changedFiles.length" class="changes">
       <span class="muted">
-        ✎ 改了 {{ changedFiles.length }} 个文件：{{ changedFiles.map((item) => item.path).join('、') }}
+        ✎ {{ t('messageItem.changedFiles', { count: changedFiles.length, files: changedFiles.map((item) => item.path).join('、') }) }}
       </span>
       <el-button
         size="small"
@@ -397,7 +400,7 @@ const statsText = computed(() => {
         :loading="restoring"
         @click="restore"
       >
-        还原
+        {{ t('messageItem.revert') }}
       </el-button>
     </div>
 

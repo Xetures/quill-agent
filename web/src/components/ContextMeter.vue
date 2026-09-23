@@ -17,8 +17,11 @@
  * 只是暂时还没有数据。
  */
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 
 import { session } from '../stores/session'
+
+const { t } = useI18n()
 
 /**
  * 从后往前找最后一条有统计的消息，取出「上下文读数 + 缓存命中数」。
@@ -105,12 +108,12 @@ const hitRate = computed(() => {
 /** 命中率的悬停说明：把分子分母都摆出来，用户才知道这个数是怎么来的。 */
 const cacheTooltip = computed(() => {
   if (hitRate.value === null) {
-    return '还没有可用读数。\n服务商不返回缓存用量时，这里会一直是「—」。'
+    return t('contextMeter.noReading')
   }
   return (
-    `缓存命中率 ${hitRate.value}%（${cached.value} / ${used.value} tokens）\n` +
-    '命中部分是这次请求复用的前缀 —— 越高越省钱、也越快。\n' +
-    '服务商不返回这项数据时显示 0%。'
+    `${t('contextMeter.cacheHit', { rate: hitRate.value, cached: cached.value, used: used.value })}\n` +
+    `${t('contextMeter.cacheHitHint')}\n` +
+    t('contextMeter.cacheHitMissing')
   )
 })
 
@@ -119,8 +122,8 @@ const cacheTooltip = computed(() => {
  * 它是个确切的数（`上下文占用 37%（48k / 128k tokens）`），比一个看不出刻度的圈准。
  */
 const tooltip = computed(() => {
-  if (!windowSize.value) return '当前模型没有配置上下文窗口大小（去「API 设置」里填）'
-  return `上下文占用 ${percent.value}%（${used.value} / ${windowSize.value} tokens）`
+  if (!windowSize.value) return t('contextMeter.noWindow')
+  return t('contextMeter.usage', { percent: percent.value, used: used.value, size: windowSize.value })
 })
 </script>
 
@@ -133,14 +136,14 @@ const tooltip = computed(() => {
          「有没有会话、这一轮跑没跑过」忽有忽无，旁边那处跟着来回跳 -->
     <div class="cache" :title="cacheTooltip">
       <span class="value mono">{{ hitRate === null ? '—' : `${hitRate}%` }}</span>
-      <span class="unit muted">缓存</span>
+      <span class="unit muted">{{ t('contextMeter.cacheLabel') }}</span>
     </div>
 
     <!-- 悬停说明挂在这一格上（见 tooltip）：外层 .meter 不生成盒子，挂它上面悬不到 -->
     <div class="caption" :title="tooltip">
       <!-- 等宽字体 + 固定不折行，数字跳动时宽度不抖 -->
       <div class="value mono">{{ caption }}</div>
-      <div class="unit muted">上下文</div>
+      <div class="unit muted">{{ t('contextMeter.contextLabel') }}</div>
     </div>
   </div>
 </template>

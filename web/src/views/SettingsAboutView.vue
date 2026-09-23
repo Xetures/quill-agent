@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 
 import { api } from '../api/client'
 import quillIconLarge from '../assets/quill-icon-large.svg'
+
+const { t } = useI18n()
 
 const version = ref('')
 
@@ -23,7 +26,7 @@ onMounted(async () => {
     <img class="app-icon" :src="quillIconLarge" alt="" />
     <div>
       <div class="app-name">Quill</div>
-      <div class="muted app-desc">本地 Agent 工作台{{ version ? ` · v${version}` : '' }}</div>
+      <div class="muted app-desc">{{ t('app.aboutDesc') }}{{ version ? ` · v${version}` : '' }}</div>
     </div>
   </div>
 </template>

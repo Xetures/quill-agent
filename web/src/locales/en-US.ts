@@ -470,6 +470,66 @@ export default {
     cleared: 'Cleared',
   },
 
+  /* Message bubble: copy / delete / revert, compressed-summary hint */
+  messageItem: {
+    noTextToCopy: 'This message has no text to copy.',
+    fromUser: 'My question',
+    fromAssistant: 'Assistant reply',
+    deleteConfirm: 'Delete this message? It drops out of the conversation — the model will not see it next turn.',
+    deleteTitle: 'Delete message',
+    reasoning: 'Reasoning',
+    binaryTooBig: '(binary or too large, contents not recorded)',
+    linesAdded: '({count} new lines)',
+    revertConfirm: 'Revert the {count} files this turn changed back to how they were?',
+    revertWarning:
+      '\n\nNote: changes made by commands run this turn are not reverted (mv, sed -i, git checkout and friends).',
+    revertTitle: 'Revert changes',
+    revert: 'Revert',
+    reverted: 'Reverted {count} files',
+    revertedPartial: 'Reverted {count} files; {skipped} could not be reverted (binary or too large)',
+    compressedHint: '📦 {count} earlier messages compressed into a summary (the originals stay in the chat record)',
+    changedFiles: '{count} files changed: {files}',
+    copyTitle: 'Copy',
+    deleteButtonTitle: 'Delete',
+  },
+
+  /* Todo list (per-turn todos) */
+  todoList: { title: 'Todos' },
+
+  /* Context window meter */
+  contextMeter: {
+    noReading: 'No reading available yet.\nWhen the provider does not report cache usage, this stays “—”.',
+    cacheHit: 'Cache hit rate {rate}% ({cached} / {used} tokens)\n',
+    cacheHitHint: 'The hit part is the prefix reused by this request — higher means cheaper and faster.\n',
+    cacheHitMissing: 'Shown as 0% when the provider does not report it.',
+    noWindow: 'This model has no context window configured (set it under API settings)',
+    usage: 'Context usage {percent}% ({used} / {size} tokens)',
+    cacheLabel: 'Cache',
+    contextLabel: 'Context',
+  },
+
+  /* App.vue boot failure screen + about page */
+  app: {
+    bootFailedTitle: 'Startup failed',
+    bootFailedDesc: '{error} (is the backend running?)',
+    aboutDesc: 'Local agent workbench',
+  },
+
+  /* Session store notices (they surface in the UI, so they are copy) */
+  session: {
+    requestFailed: 'Request failed: {detail}',
+    cancelIgnored: 'The cancel request was not accepted; this turn has probably ended',
+    cancelFailed: 'Cancel request never went out: ',
+    notDelivered: 'This reply did not get through (the turn may have ended or been interrupted), so the model may never see it.',
+  },
+
+  /* Chat API and shared request-layer error copy */
+  chatApi: {
+    idleTimeout: 'No data for over {seconds} seconds — the connection may be gone',
+    requestFailed: 'Chat request failed ({status})',
+  },
+  client: { requestFailed: 'Request failed ({status})' },
+
   /* MCP servers page */
   mcp: {
     title: 'MCP servers',

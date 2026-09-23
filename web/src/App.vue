@@ -2,6 +2,7 @@
 import en from 'element-plus/es/locale/lang/en'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import { computed, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 
 import ClipboardPanel from './components/ClipboardPanel.vue'
 import MemoPanel from './components/MemoPanel.vue'
@@ -10,6 +11,8 @@ import Sidebar from './components/Sidebar.vue'
 import { bootstrap } from './stores/session'
 import { locale } from './locales'
 import { errorText } from './utils/error'
+
+const { t } = useI18n()
 
 /** 启动阶段的错误（后端没起来、接口报错）单独显示，不往各页面里塞。 */
 const error = ref('')
@@ -40,8 +43,8 @@ onMounted(async () => {
           v-if="error"
           type="error"
           :closable="false"
-          title="启动失败"
-          :description="`${error}（后端在跑吗？）`"
+          :title="t('app.bootFailedTitle')"
+          :description="t('app.bootFailedDesc', { error })"
           class="boot-error"
         />
 

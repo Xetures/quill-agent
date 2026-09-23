@@ -8,6 +8,10 @@
  */
 
 import type { ChatEvent, Message, Question, SubagentEvent, TodoItem, ToolStep } from './types'
+import { i18n } from '../locales'
+
+/* 这里不是组件，取不到 useI18n() —— 用实例上的全局 t */
+const t = i18n.global.t
 
 const BASE = '/api'
 
@@ -69,7 +73,7 @@ async function readWithIdleTimeout(
       () =>
         reject(
           new Error(
-            `超过 ${Math.round(IDLE_TIMEOUT_MS / 1000)} 秒没有收到任何数据，连接可能已经断开`,
+            t('chatApi.idleTimeout', { seconds: Math.round(IDLE_TIMEOUT_MS / 1000) }),
           ),
         ),
       IDLE_TIMEOUT_MS,
@@ -112,7 +116,7 @@ export async function* streamChat(
   })
 
   if (!response.ok || !response.body) {
-    throw new Error(`对话请求失败（${response.status}）`)
+    throw new Error(t('chatApi.requestFailed', { status: response.status }))
   }
 
   const reader = response.body.getReader()
