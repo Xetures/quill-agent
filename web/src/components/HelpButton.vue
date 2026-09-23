@@ -9,7 +9,7 @@ import { ref } from 'vue'
  * 开关，得在任何页面都够得着，而说明是「第一次打开看一眼」的东西，放品牌区更合适。
  *
  * 弹窗里的内容刻意写得很短：它只解决「第一次打开该点哪儿」，完整的设计说明在
- * README 里，这里不重复一遍 —— 两处长文迟早会对不上。
+ * README-developer.md / ARCHITECTURE.md 里，这里不重复一遍 —— 两处长文迟早会对不上。
  */
 const open = ref(false)
 </script>

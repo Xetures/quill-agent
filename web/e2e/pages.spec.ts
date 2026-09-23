@@ -35,7 +35,7 @@ for (const { path, title } of PAGES) {
     await mockApi(page)
     await page.goto(path)
 
-    // 标题由各页 Teleport 到顶栏（见 README 7.9），用它断言这一页确实起来了
+    // 标题由各页 Teleport 到顶栏（见 README-developer.md 7.9），用它断言这一页确实起来了
     await expect(page.locator('h1').first()).toHaveText(title, { timeout: 10_000 })
     expect(errors, `控制台报错：\n${errors.join('\n')}`).toEqual([])
   })

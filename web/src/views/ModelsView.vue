@@ -337,7 +337,7 @@ function openCreate(): void {
  * 打开编辑弹窗。
  *
  * 只收 id、按 id 从本地列表里取回整条记录 —— el-table 插槽给的 row 是宽泛的
- * DefaultRow，把整个对象传给要求 ModelConfig 的函数过不了类型检查（见 README 7.12）。
+ * DefaultRow，把整个对象传给要求 ModelConfig 的函数过不了类型检查（见 README-developer.md 7.12）。
  */
 function openEdit(id: string): void {
   const config = configs.value.find((item) => item.id === id)

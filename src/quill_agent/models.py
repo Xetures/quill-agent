@@ -296,7 +296,7 @@ class SkillGroup(BaseModel):
 class PromptGroup(BaseModel):
     """一个提示词组：从六类提示词里各挑一个（可以不挑）拼成一套提示词。
 
-    与 ToolGroup / SkillGroup 同一套思路（见 README 3.6）。原先这个东西就叫
+    与 ToolGroup / SkillGroup 同一套思路（见 README-developer.md 3.6）。原先这个东西就叫
     「模式」，现在模式指四类组的组合（见 `Mode`），它只是其中提示词那一类。
 
     Attributes:

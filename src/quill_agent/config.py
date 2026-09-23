@@ -232,7 +232,7 @@ class Settings(BaseSettings):
     )
 
     # MCP：外部工具来源。默认**空** —— 加一个服务器等于允许它在这台机器上跑进程，
-    # 所以不预置任何默认值，全部由用户显式添加（见 README 的 MCP 一节）。
+    # 所以不预置任何默认值，全部由用户显式添加（见 README-developer.md 的 MCP 一节）。
     mcp_servers_path: Path = Field(
         default=Path("data/mcp_servers.json"), description="MCP 服务器配置 JSON 路径"
     )

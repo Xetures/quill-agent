@@ -89,7 +89,7 @@ _LITE_CONSTRAINTS = "a1000016"
 #
 # `run_command` 刻意不在里面：它覆盖面太广（跑测试、装依赖都算），每次都问会把审批
 # 变成噪音，用户很快就会条件反射地点「同意」—— 那样的审批等于没有。它该有的约束是
-# **沙箱**（见 README 3.10）：边界由内核保证，而不是靠一个个弹窗。
+# **沙箱**（见 README-developer.md 3.10）：边界由内核保证，而不是靠一个个弹窗。
 BUILTIN_TOOL_CONFIRM = ("delete_file", "delete_skill", "spawn_agents")
 
 # 与 `skills/` 里出厂自带的技能对应。写死名字、而不是播种时现扫目录：扫出来的内容会随
